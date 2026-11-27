@@ -10,6 +10,7 @@
 // 断りの文をここに集め、単体テストで値を確かめる。
 
 import { localize } from '../../../../nls.js';
+import { paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotGroup, IParadisBotGroupRecord, PARADIS_BOT_GROUP_LIMITS, ParadisBotGroupMentionResult, paradisSanitizeBotGroupName } from './paradisBotGroups.js';
 
 /** 記録の 1 行の頭（誰が誰に）。本文は別の要素に出す。 */
@@ -33,6 +34,19 @@ export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, '
 		case 'unknown': return localize('paradis.botGroups.record.unknown', "届いたか分からない");
 		case undefined: return undefined;
 	}
+}
+
+/**
+ * その Bot のエージェントが、ほかの Bot からの伝言を受け取れる種類か（作業中の発言を次の番まで待たせられる。今は
+ * Claude Code だけ）。受け取れても、届けるときに入力欄の mod が無ければ断る（ここでは見ない）。
+ */
+export function paradisBotCanReceiveBotMessages(agent: string): boolean {
+	return paradisAgentDescriptor(agent)?.queuesWhileWorking === true;
+}
+
+/** 伝言を受け取れない Bot に添える文。 */
+export function paradisBotCannotReceiveLabel(): string {
+	return localize('paradis.botGroups.cannotReceive', "伝言を受け取れません");
 }
 
 /** 名指しを読めなかったときの文。読めたら undefined。 */

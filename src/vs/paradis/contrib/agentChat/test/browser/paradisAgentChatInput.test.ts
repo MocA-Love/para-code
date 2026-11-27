@@ -35,8 +35,6 @@ class FakeTerminal implements IParadisAgentChatTerminal {
 	bracketedPasteMode(): boolean { return this.paste; }
 	status: ParadisAgentStatus | undefined;
 	agentStatus(): ParadisAgentStatus | undefined { return this.status; }
-	focused = false;
-	hasKeyboardFocus(): boolean { return this.focused; }
 }
 
 const PERMISSION_SCREEN = [
@@ -160,43 +158,38 @@ suite('ParadisAgentChatInput', () => {
 		assert.deepStrictEqual({ refused, sent }, { refused: 'ターミナルで画面が開いています。閉じてから送ってください', sent: undefined });
 	});
 
-	test('delivers a bot message to a working agent only when it holds messages until its next turn, and never on top of the owner\'s draft', async () => {
-		const claude = setup({ agent: 'claude' });
+	test('delivers a bot message only to an agent that holds messages while working and whose draft can be read, and never on top of the owner\'s draft', async () => {
+		const safe = { safeOnly: true };
+		const modClaude = setup({ agent: 'claude' });
+		modClaude.source.getAgentChatDraft = async () => '';
+		const noModClaude = setup({ agent: 'claude' });
+		noModClaude.source.getAgentChatDraft = async () => undefined;
 		const codex = setup({ agent: 'codex' });
-		const working = { working: true, refuseDraft: true };
+		codex.source.getAgentChatDraft = async () => '';
 		const results = {
-			claudeWorking: await claude.input.sendMessageOutcome(1, 't', 'hi', working),
-			codexWorking: await codex.input.sendMessageOutcome(1, 't', 'hi', working),
-			codexIdle: await codex.input.sendMessageOutcome(1, 't', 'hi', { working: false, refuseDraft: true }),
+			modClaude: await modClaude.input.sendMessageOutcome(1, 't', 'hi', safe),
+			noModClaude: await noModClaude.input.sendMessageOutcome(1, 't', 'hi', safe),
+			codex: await codex.input.sendMessageOutcome(1, 't', 'hi', safe),
+			// 利用者自身の送信は今までどおり（mod の無い Claude Code・Codex にも送る）
+			ownNoMod: await noModClaude.input.sendMessage(1, 't', 'mine'),
 		};
 		const drafting = setup({ agent: 'claude' });
 		let draft: string | undefined = 'まだ途中の指示';
 		drafting.source.getAgentChatDraft = async () => draft;
-		const draftRefused = await drafting.input.sendMessageOutcome(1, 't', 'hi', working);
+		const draftRefused = await drafting.input.sendMessageOutcome(1, 't', 'hi', safe);
 		const typedBeforeDraftRefused = drafting.terminal.sent.length;
 		draft = '';
-		const draftEmpty = await drafting.input.sendMessageOutcome(1, 't', 'hi', working);
+		const draftEmpty = await drafting.input.sendMessageOutcome(1, 't', 'hi', safe);
 		// 貼った後に利用者が打ち足した: Enter を送らない（届いたか分からない）
 		const appended = setup({ agent: 'claude' });
 		let appendedDraft = '';
 		appended.source.getAgentChatDraft = async () => appendedDraft;
 		appended.terminal.onKey = text => { appendedDraft = `${text} と追記`; };
-		const appendedResult = await appended.input.sendMessageOutcome(1, 't', 'hi', working);
-		// 書きかけを読めない宛先（Codex）: 利用者がそのターミナルを操作中なら送らない、離れていれば送る
-		const unreadable = setup({ agent: 'codex' });
-		unreadable.terminal.focused = true;
-		const focusedResult = await unreadable.input.sendMessageOutcome(1, 't', 'hi', { working: false, refuseDraft: true });
-		const typedWhileFocused = unreadable.terminal.sent.length;
-		const focusedOwnSend = await unreadable.input.sendMessage(1, 't', 'mine');
-		unreadable.terminal.focused = false;
-		const unfocusedResult = await unreadable.input.sendMessageOutcome(1, 't', 'hi', { working: false, refuseDraft: true });
+		const appendedResult = await appended.input.sendMessageOutcome(1, 't', 'hi', safe);
+		const unsafe = { kind: 'refused', code: 'unsafe', message: 'このエージェントには外から安全に届けられません（Claude Code と Para Code の入力欄の mod が要ります）' };
 		assert.deepStrictEqual({
-			focusedResult,
-			typedWhileFocused,
-			focusedOwnSend,
-			unfocusedResult: unfocusedResult.kind,
 			...results,
-			typedClaude: claude.terminal.sent,
+			typedModClaude: modClaude.terminal.sent,
 			typedCodex: codex.terminal.sent,
 			draftRefused,
 			typedBeforeDraftRefused,
@@ -205,22 +198,18 @@ suite('ParadisAgentChatInput', () => {
 			appendedTyped: appended.terminal.sent,
 			draftOnly: [paradisDraftIsOnly('', undefined), paradisDraftIsOnly('hi', undefined), paradisDraftIsOnly('hi', 'hi'), paradisDraftIsOnly('[Pasted text #1 +4 lines]', 'long'), paradisDraftIsOnly('x hi', 'hi')],
 		}, {
-			claudeWorking: { kind: 'sent' },
-			codexWorking: { kind: 'refused', code: 'working', message: 'エージェントが作業中です。終わってから送ってください' },
-			codexIdle: { kind: 'sent' },
-			typedClaude: ['paste:"hi"', '"\\r"'],
-			typedCodex: ['paste:"hi"', '"\\r"'],
+			modClaude: { kind: 'sent' },
+			noModClaude: unsafe,
+			codex: unsafe,
+			ownNoMod: undefined,
+			typedModClaude: ['paste:"hi"', '"\\r"'],
+			typedCodex: [],
 			draftRefused: { kind: 'refused', code: 'draft', message: '入力欄に書きかけの文があります' },
 			typedBeforeDraftRefused: 0,
 			draftEmpty: 'sent',
 			appended: 'unknown',
 			appendedTyped: ['paste:"hi"'],
 			draftOnly: [true, false, true, true, false],
-			focusedResult: { kind: 'refused', code: 'focused', message: '利用者がこのターミナルを操作中です' },
-			typedWhileFocused: 0,
-			// 利用者自身の送信（チャット表示・部屋）はフォーカスで止めない
-			focusedOwnSend: undefined,
-			unfocusedResult: 'sent',
 		});
 	});
 

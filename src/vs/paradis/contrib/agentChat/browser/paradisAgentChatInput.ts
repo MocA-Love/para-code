@@ -42,8 +42,6 @@ export interface IParadisAgentChatTerminal {
 	bracketedPasteMode(): boolean;
 	/** ペインの状態（hook と OSC 7501 から決めたもの）。無ければ見ない。Antigravity CLI の許可待ちはこれでしか分からない。 */
 	agentStatus?(): ParadisAgentStatus | undefined;
-	/** キーボードがこのターミナルに向いているか（ウィンドウが前面で、このターミナルにフォーカスがある）。無ければ見ない。 */
-	hasKeyboardFocus?(): boolean;
 }
 
 /** その種類の記述。種類が分からない会話は Claude Code と同じに扱う（キーで渡す）。 */
@@ -77,21 +75,20 @@ function paradisAntigravitySendBlockReason(block: ParadisAntigravitySendBlock): 
 export type ParadisAgentChatSendOutcome =
 	| { readonly kind: 'sent' }
 	/**
-	 * `code` は呼ぶ側が分けたい断り（`working` 作業中で順番待ちに入れられない、`draft` 利用者が入力欄に書きかけ、
-	 * `focused` 書きかけを読めない宛先で、利用者がそのターミナルを操作中）。
+	 * `code` は呼ぶ側が分けたい断り（`unsafe` 外から安全に届けられない宛先、`draft` 利用者が入力欄に書きかけ）。
 	 */
-	| { readonly kind: 'refused'; readonly message: string; readonly code?: 'working' | 'draft' | 'focused' }
+	| { readonly kind: 'refused'; readonly message: string; readonly code?: 'unsafe' | 'draft' }
 	| { readonly kind: 'unknown'; readonly message: string };
 
 /** 外から届ける発言（Bot 同士の伝言）の追加の確認。 */
 export interface IParadisAgentChatDeliverOptions {
-	/** 宛先が作業中か。作業中なら、今のターンを止めずに次の番まで待たせられる種類（`queuesWhileWorking`）にだけ送る。 */
-	readonly working: boolean;
 	/**
-	 * 入力欄に利用者の書きかけがあれば送らない（貼る前は空、Enter の前は貼った文だけ）。書きかけを読めない種類・mod の
-	 * 無い会話は、利用者がそのターミナルにキーボードを向けている（打っているかもしれない）間は送らない。
+	 * 打ち込みで安全に届けられる宛先にだけ送る。安全なのは、作業中の発言を次の番まで待たせられ（`queuesWhileWorking`）、
+	 * 入力欄の書きかけを読める（入力欄の mod がある）会話だけ（今は mod のある Claude Code）。それ以外は何も書かずに
+	 * `unsafe` で断る。送るときも、貼る前に入力欄が空、Enter の前に貼った文だけのときに進み、書きかけがあれば `draft` で断る。
+	 * 作業中かを先に読んでも、届く前に始まったターンを打ち切らない（待たせられる種類だけに送る）。
 	 */
-	readonly refuseDraft: boolean;
+	readonly safeOnly: boolean;
 }
 
 export interface IParadisAgentChatInputDependencies {
@@ -203,9 +200,9 @@ export class ParadisAgentChatInput {
 	 */
 	async sendMessageOutcome(instanceId: number, token: string, rawText: string, options?: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome> {
 		const refused = (message: string): ParadisAgentChatSendOutcome => ({ kind: 'refused', message });
-		const refusedWorking: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'working', message: localize('paradisAgentChat.errorWorkingNoQueue', "エージェントが作業中です。終わってから送ってください") };
+		const refusedUnsafe: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'unsafe', message: localize('paradisAgentChat.errorUnsafeDelivery', "このエージェントには外から安全に届けられません（Claude Code と Para Code の入力欄の mod が要ります）") };
 		const refusedDraft: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'draft', message: localize('paradisAgentChat.errorDraft', "入力欄に書きかけの文があります") };
-		const refusedFocused: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'focused', message: localize('paradisAgentChat.errorFocused', "利用者がこのターミナルを操作中です") };
+		const safeOnly = options?.safeOnly === true;
 		const terminal = this.dependencies.terminal(instanceId, token);
 		if (terminal === undefined) {
 			return refused(localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません"));
@@ -224,8 +221,8 @@ export class ParadisAgentChatInput {
 		}
 		const state = session.state;
 		if (state !== undefined && descriptorOf(state.agent).send.includes('api')) {
-			if (options?.working === true && !descriptorOf(state.agent).queuesWhileWorking) {
-				return refusedWorking;
+			if (safeOnly && !descriptorOf(state.agent).queuesWhileWorking) {
+				return refusedUnsafe;
 			}
 			if (this.dependencies.terminal(instanceId, token) !== terminal || state.agentExited || !state.sessionId || state.interaction !== null) {
 				return refused(localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています"));
@@ -240,9 +237,9 @@ export class ParadisAgentChatInput {
 		if (reason !== undefined) {
 			return refused(reason);
 		}
-		// messageBlockReason が取り直した後の種類で、作業中の扱いを決める
-		if (options?.working === true && !descriptorOf(session.state?.agent).queuesWhileWorking) {
-			return refusedWorking;
+		// messageBlockReason が取り直した後の種類と、書きかけを読めるかで決める
+		if (safeOnly && (!descriptorOf(session.state?.agent).queuesWhileWorking || await this.readDraft(token) === undefined)) {
+			return refusedUnsafe;
 		}
 		let lateReason: string | undefined;
 		let draftBlocked: ParadisAgentChatSendOutcome | undefined;
@@ -257,16 +254,14 @@ export class ParadisAgentChatInput {
 						return false;
 					}
 					// 貼る前（1 回目）は入力欄が空、Enter の前（2 回目）は貼った文だけのときに進む
-					if (options?.refuseDraft === true) {
-						const draft = (await this.dependencies.source.getAgentChatDraft?.(token).catch(() => undefined))?.trim();
-						const first = checks++ === 0;
-						if (draft !== undefined && !paradisDraftIsOnly(draft, first ? undefined : paradisStripAgentInvisibleCharacters(text).trim())) {
-							draftBlocked = refusedDraft;
+					if (safeOnly) {
+						const draft = await this.readDraft(token);
+						if (draft === undefined) {
+							draftBlocked = refusedUnsafe;
 							return false;
 						}
-						// 書きかけを読めない: 利用者がこのターミナルを操作中なら貼らない（貼った後は Enter の前の確かめに任せる）
-						if (draft === undefined && first && terminal.hasKeyboardFocus?.() === true) {
-							draftBlocked = refusedFocused;
+						if (!paradisDraftIsOnly(draft, checks++ === 0 ? undefined : paradisStripAgentInvisibleCharacters(text).trim())) {
+							draftBlocked = refusedDraft;
 							return false;
 						}
 					}
@@ -286,6 +281,11 @@ export class ParadisAgentChatInput {
 			return { kind: 'unknown', message: localize('paradisAgentChat.errorSend', "ターミナルへ送れませんでした") };
 		}
 		return { kind: 'sent' };
+	}
+
+	/** 入力欄の書きかけ（前後の空白を除く）。読めなければ undefined。 */
+	private async readDraft(token: string): Promise<string | undefined> {
+		return (await this.dependencies.source.getAgentChatDraft?.(token).catch(() => undefined))?.trim();
 	}
 
 	/** 待っている interaction がまだ同じか（中継から取り直して確かめる）。 */

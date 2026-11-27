@@ -734,8 +734,6 @@ function paradisChatTerminalFor(instance: ITerminalInstance, agentStatus: () => 
 			return 'unknown';
 		},
 		bracketedPasteMode: () => instance.xterm?.raw.modes.bracketedPasteMode === true,
-		// ターミナルの要素にフォーカスがあり、そのウィンドウが前面にあるとき（別のアプリを使っている間は打てない）
-		hasKeyboardFocus: () => instance.hasFocus && instance.domElement.ownerDocument.hasFocus(),
 	};
 }
 

@@ -39,7 +39,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { IParadisBotItem } from '../common/paradisBotItems.js';
 import { paradisBotItemGroups } from '../common/paradisBotPageModel.js';
-import { paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../common/paradisBotGroupRoomModel.js';
+import { paradisBotCanReceiveBotMessages, paradisBotCannotReceiveLabel, paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../common/paradisBotGroupRoomModel.js';
 import { IParadisBotGroup, paradisBotGroupMembers, paradisResolveBotGroupMentions, ParadisBotGroupReplyMode } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsService } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, IParadisBotSummary, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -270,7 +270,13 @@ export class ParadisBotGroupEditor extends EditorPane {
 			names('elsewhere') && localize('paradis.botGroups.elsewhere', "別のスペースで動作中: {0}", names('elsewhere')),
 			names('none') && localize('paradis.botGroups.notStarted', "起動していません: {0}", names('none')),
 			names('paused') && localize('paradis.botGroups.pausedNote', "停止中: {0}", names('paused')),
-		].filter(note => !!note);
+		];
+		const cannotReceive = members.filter(bot => !paradisBotCanReceiveBotMessages(bot.agent)).map(bot => bot.name).join('・');
+		if (cannotReceive) {
+			// allow-any-unicode-next-line
+			notes.push(localize('paradis.botGroups.cannotReceiveNote', "{0}: {1}（Bot 同士の伝言は Claude Code の Bot だけが受け取れます）", paradisBotCannotReceiveLabel(), cannotReceive));
+		}
+		this.where.textContent = notes.filter(note => !!note).join('　');
 		this.where.textContent = notes.join('　');
 	}
 
