@@ -65,4 +65,6 @@ export interface IParadisAgentChatService {
 	 * 理由の文。チャット表示を開いていなくても送れる。送った文はそのペインの入力欄の履歴に残る。
 	 */
 	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined>;
+	/** チャット表示とターミナル表示を切り替えるキーの表記（ホバーに出す）。割り当てが無ければ undefined。 */
+	getToggleKeybindingLabel(): string | undefined;
 }
