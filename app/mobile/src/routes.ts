@@ -12,6 +12,8 @@
  * | `/pc/[pcId]/review/[spaceId]?path=…` | 差分レビュー |
  * | `/pc/[pcId]/files/[spaceId]?path=…` | ファイル |
  * | `/pc/[pcId]/note/[spaceId]` | スペースのメモ |
+ * | `/pc/[pcId]/bot/[botId]` | Bot のページ（項目・会話・ファイル・設定。`bots.page.v1`） |
+ * | `/pc/[pcId]/bot/[botId]/item/[uid]` | Bot の項目 1 つ |
  * | `/pc/[pcId]/session/[spaceId]/activity?terminal=…&epoch=…` | エージェントのサブエージェントとタスク |
  * | `/pc/[pcId]/session/[spaceId]/activity/[agentId]?terminal=…&epoch=…` | サブエージェント1つの詳細 |
  * | `/pc/[pcId]/session/[spaceId]/activity/advisor/[advisorId]?terminal=…&epoch=…` | Advisor への相談 1 回の詳細 |
@@ -120,6 +122,16 @@ export const routes = {
 	note: (pcId: string, spaceId: string): RouteHref => ({
 		pathname: '/pc/[pcId]/note/[spaceId]',
 		params: { pcId, spaceId },
+	}),
+	/** Bot のページ（`bots.page.v1`）。 */
+	bot: (pcId: string, botId: string): RouteHref => ({
+		pathname: '/pc/[pcId]/bot/[botId]',
+		params: { pcId, botId },
+	}),
+	/** Bot の項目 1 つ。 */
+	botItem: (pcId: string, botId: string, uid: string): RouteHref => ({
+		pathname: '/pc/[pcId]/bot/[botId]/item/[uid]',
+		params: { pcId, botId, uid },
 	}),
 	/**
 	 * エージェント（`terminalKey` のターミナル）のサブエージェントとタスク。`epoch` は開いたときの
