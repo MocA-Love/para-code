@@ -338,15 +338,15 @@ export class ParadisBotSettingsPanel {
 	}
 
 	/**
-	 * 整理の前の写し（本体が会話の Bot を起動するたびに取る。新しい順に 5 件まで）。時刻・件数・一部だけかを並べ、
-	 * 一番新しい写しにだけ取り消しのボタンを置く（取り消しが戻すのは一番新しい写し）。
+	 * 記憶の写し（会話の Bot を起動するたびに本体が取る自動の写しと、整理の前に取る写し。新しい順、種類ごとに 5 件まで）。
+	 * 時刻・件数・一部だけか・整理の前かを並べ、どの行からもその写しに戻せる。
 	 */
 	private renderSnapshots(body: HTMLElement, bot: IParadisBotSummary, store: DisposableStore): void {
 		if (this.snapshots === undefined && !this.snapshotsLoading) {
 			void this.loadSnapshots();
 		}
 		const section = DOM.append(body, $('.paradis-bot-snapshots'));
-		DOM.append(section, $('.paradis-bot-page-section')).textContent = localize('paradis.botPage.snapshots.title', "整理の前の写し");
+		DOM.append(section, $('.paradis-bot-page-section')).textContent = localize('paradis.botPage.snapshots.title', "記憶の写し");
 		const snapshots = this.snapshots;
 		if (snapshots === undefined) {
 			DOM.append(section, $('.paradis-bot-settings-help')).textContent = localize('paradis.botPage.snapshots.loading', "読み込んでいます…");
@@ -356,22 +356,18 @@ export class ParadisBotSettingsPanel {
 			DOM.append(section, $('.paradis-bot-settings-help')).textContent = localize('paradis.botPage.snapshots.empty', "まだ写しはありません。会話の Bot を起動するたびに、記憶の写しを取ります。");
 		} else {
 			const list = DOM.append(section, $('.paradis-bot-snapshots-list'));
-			snapshots.forEach((snapshot, index) => {
+			for (const snapshot of snapshots) {
 				const row = DOM.append(list, $('.paradis-bot-snapshots-row'));
-				// 取り消しで戻せるのは一番新しい写しだけなので、古い写しの行は淡く出す
-				row.classList.toggle('older', index > 0);
 				DOM.append(row, $('span.paradis-bot-snapshots-time')).textContent = new Date(snapshot.takenAt).toLocaleString();
 				DOM.append(row, $('span.paradis-bot-snapshots-count')).textContent = paradisBotMemorySnapshotCount(snapshot);
+				if (snapshot.kind === 'manual') {
+					createParadisChip(row, localize('paradis.botPage.snapshots.beforeTidy', "整理の前"), 'info');
+				}
 				if (snapshot.partial) {
 					createParadisChip(row, localize('paradis.botPage.snapshots.partialChip', "一部だけ"), 'warning');
 				}
-				if (index === 0) {
-					const undo = store.add(new ParadisButton(row, { kind: 'secondary', small: true, label: localize('paradis.botPage.snapshots.undo', "この写しに戻す..."), disabled: this.undoing }));
-					store.add(undo.onDidClick(() => void this.undoMemoryTidy(bot)));
-				}
-			});
-			if (snapshots.length > 1) {
-				DOM.append(section, $('.paradis-bot-settings-help')).textContent = localize('paradis.botPage.snapshots.onlyNewest', "記憶の整理を取り消して戻せるのは、一番新しい写しだけです。");
+				const undo = store.add(new ParadisButton(row, { kind: 'secondary', small: true, label: localize('paradis.botPage.snapshots.undo', "この写しに戻す..."), disabled: this.undoing }));
+				store.add(undo.onDidClick(() => void this.undoMemoryTidy(bot, snapshot.takenAt)));
 			}
 		}
 		if (this.lastUndo !== undefined) {
@@ -399,12 +395,11 @@ export class ParadisBotSettingsPanel {
 	}
 
 	/** 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは消さずに知らせる）。 */
-	private async undoMemoryTidy(bot: IParadisBotSummary): Promise<void> {
+	/** 選んだ写し（`takenAt`）に記憶を戻す。 */
+	private async undoMemoryTidy(bot: IParadisBotSummary, takenAt: number): Promise<void> {
 		const { confirmed } = await this.services.paradisDialogService.confirm({
-			message: localize('paradis.botPage.files.undoTidyConfirm', "「{0}」の記憶の整理を取り消しますか?", bot.name),
-			detail: Array.isArray(this.snapshots) && this.snapshots.length > 0
-				? localize('paradis.botPage.files.undoTidyDetailAt', "{0} に取った写しを書き戻します。その後に書き足した記憶も、写しの時点に戻ります。", new Date(this.snapshots[0].takenAt).toLocaleString())
-				: localize('paradis.botPage.files.undoTidyDetail', "整理の前に取った写しを書き戻します。整理の後に書き足した記憶も、写しの時点に戻ります。"),
+			message: localize('paradis.botPage.files.undoTidyConfirm', "「{0}」の記憶を写しに戻しますか?", bot.name),
+			detail: localize('paradis.botPage.files.undoTidyDetailAt', "{0} に取った写しを書き戻します。その後に書き足した記憶も、写しの時点に戻ります。", new Date(takenAt).toLocaleString()),
 			primaryButton: localize('paradis.botPage.files.undoTidyAction', "取り消す"),
 			destructive: true,
 		});
@@ -414,9 +409,12 @@ export class ParadisBotSettingsPanel {
 		this.undoing = true;
 		this.rerender();
 		try {
-			const result = await this.services.botsService.undoMemoryTidy(this.botId);
+			const result = await this.services.botsService.undoMemoryTidy(this.botId, takenAt);
 			if (!result.ok) {
-				this.services.notificationService.warn(localize('paradis.botPage.files.undoTidyFailed', "記憶の整理を取り消せませんでした: {0}", result.message));
+				this.services.notificationService.warn(result.code === 'not_found'
+					// 写しは種類ごとに 5 件までで、古いものから消える。一覧は finally で読み直す
+					? localize('paradis.botPage.files.undoTidyNotFound', "{0} の写しはもうありません（古い写しから消えていきます）。写しの一覧を読み直しました。", new Date(takenAt).toLocaleString())
+					: localize('paradis.botPage.files.undoTidyFailed', "記憶を写しに戻せませんでした: {0}", result.message));
 				return;
 			}
 			// 結果（戻した件数・残したファイル・書き戻せなかったファイル）は写しの一覧の下に出す

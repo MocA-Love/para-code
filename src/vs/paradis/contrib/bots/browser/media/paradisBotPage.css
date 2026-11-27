@@ -506,7 +506,7 @@ button.paradis-bot-page-link:hover {
 	margin-top: var(--vscode-spacing-size120);
 }
 
-/* The memory copies taken before a tidy-up: time, count, whether only part was copied; undo sits on the newest. */
+/* The memory copies (taken when the bot's chat starts, and before a tidy-up): time, count, kind, partial; each row restores its copy. */
 .paradis-bot-snapshots {
 	display: flex;
 	flex-direction: column;
@@ -530,13 +530,13 @@ button.paradis-bot-page-link:hover {
 	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
 }
 
-/* Older copies cannot be restored by the undo (only the newest), so they read as secondary. */
-.paradis-bot-snapshots-row.older > .paradis-bot-snapshots-time {
-	color: var(--vscode-paradis-textMuted);
-}
-
 .paradis-bot-snapshots-row + .paradis-bot-snapshots-row {
 	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+/* The restore button keeps to the right edge, also when a narrow row wraps it onto its own line. */
+.paradis-bot-snapshots-row > .paradis-button {
+	margin-left: auto;
 }
 
 .paradis-bot-snapshots-time {

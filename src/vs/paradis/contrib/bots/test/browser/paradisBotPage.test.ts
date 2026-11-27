@@ -47,6 +47,7 @@ const ASK: IParadisHumanAskEntry = {
 };
 
 const SNAPSHOT_AT = new Date(2026, 10, 27, 21, 4).getTime();
+const OLDER_AT = new Date(2026, 10, 27, 20, 4).getTime();
 
 const ITEMS: IParadisBotItem[] = [
 	{ uid: 'u42', number: 42, botId: 'release', title: 'Safari でログインが切れる', status: 'needs_you', ask: { eventId: 3, questions: [{ prompt: '全員を一度ログアウトさせますか?', options: [{ label: '一度ログアウトさせる' }, { label: '今のセッションを残す' }], recommended: 1 }] }, links: [], events: [{ id: 1, kind: 'made', actor: 'bot', at: now }], lastEventId: 3, lastActivityAt: now, createdAt: now, updatedAt: now },
@@ -66,6 +67,7 @@ suite('Paradis bots page overlay', () => {
 		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
 		const failAnswer = { value: false };
 		const sendFails = { value: false };
+		const snapshotGone = { value: false };
 		const calls: string[] = [];
 		const confirms: IParadisConfirmation[] = [];
 		const files = new Map<string, string>([['SOUL.md', '# リリース係\n'], ['MEMORY.md', '# Memory\n']]);
@@ -80,9 +82,12 @@ suite('Paradis bots page overlay', () => {
 			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'started', createdAt: 1 } }; },
 			markSuggestionStarted: async (id: string) => { calls.push(`started ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: 'r', run: 'r', state: 'started', createdAt: 1 } }; },
 			dismissSuggestion: async (id: string) => { calls.push(`dismiss ${id}`); return { ok: true, value: {} }; },
-			undoMemoryTidy: async () => { calls.push('undo'); return { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/new.md'], takenAt: SNAPSHOT_AT, skipped: ['SOUL.md'] } }; },
+			undoMemoryTidy: async (_bot: string, takenAt: number) => {
+				calls.push(`undo ${takenAt === SNAPSHOT_AT ? 'newest' : 'older'}`);
+				return snapshotGone.value ? { ok: false, code: 'not_found', message: 'gone' } : { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/new.md'], takenAt, skipped: ['SOUL.md'] } };
+			},
 			listMemorySnapshots: async () => {
-				return { ok: true, value: [{ takenAt: SNAPSHOT_AT, files: 200, total: 206, partial: true }, { takenAt: SNAPSHOT_AT - 3_600_000, files: 3, total: 3, partial: false }] };
+				return { ok: true, value: [{ takenAt: SNAPSHOT_AT, files: 200, total: 206, partial: true, kind: 'auto' }, { takenAt: OLDER_AT, files: 3, total: 3, partial: false, kind: 'manual' }] };
 			},
 			ownerSetStatus: async (uid: string, to: string) => { statuses.push(`${uid}:${to}`); return { ok: true, value: items[0] }; },
 			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
@@ -130,7 +135,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, measureClamp));
-		return { container, page, configuration, panes, changed, answered, disposables, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
+		return { container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -322,8 +327,8 @@ suite('Paradis bots page overlay', () => {
 		]);
 	});
 
-	test('ファイル: 整理の前の写しを時刻・件数・一部だけで並べ、一番新しい写しから確かめて取り消し、結果と書き戻せなかったファイルを一覧の下に出す', async () => {
-		const { container, page, calls, confirms, warnings } = setup();
+	test('ファイル: 記憶の写しを時刻・件数・整理の前・一部だけで並べ、どの行からも確かめてその写しに戻し、結果と書き戻せなかったファイルを一覧の下に出す。消えた写しは知らせる', async () => {
+		const { container, page, calls, confirms, warnings, snapshotGone } = setup();
 		page.setInstance(1);
 		await settle();
 		tab(container, 2);
@@ -331,33 +336,41 @@ suite('Paradis bots page overlay', () => {
 		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
 		await settle();
 		await settle();
+		const title = container.querySelector('.paradis-bot-snapshots .paradis-bot-page-section')?.textContent;
 		const rows = Array.from(container.getElementsByClassName('paradis-bot-snapshots-row')).map(row => [
 			row.getElementsByClassName('paradis-bot-snapshots-count')[0].textContent,
-			row.getElementsByClassName('paradis-chip').length,
+			Array.from(row.getElementsByClassName('paradis-chip')).map(chip => chip.textContent),
 			row.getElementsByClassName('paradis-button').length,
-			row.classList.contains('older'),
 		]);
-		(container.querySelector('.paradis-bot-snapshots-row .paradis-button') as HTMLElement).click();
+		const undo = (index: number) => (container.getElementsByClassName('paradis-bot-snapshots-row')[index].getElementsByClassName('paradis-button')[0] as HTMLElement).click();
+		undo(1);
 		await settle();
 		await settle();
 		await settle();
 		const result = Array.from(container.querySelectorAll('.paradis-bot-snapshots-result > *')).map(line => [line.textContent, line.classList.contains('attention')]);
+		snapshotGone.value = true;
+		undo(0);
+		await settle();
+		await settle();
+		await settle();
 		assert.deepStrictEqual({
+			title,
 			rows,
 			calls,
-			confirm: confirms.map(confirmation => [confirmation.primaryButton, confirmation.destructive, String(confirmation.detail).includes(new Date(SNAPSHOT_AT).toLocaleString())]),
+			confirm: confirms.map(confirmation => [confirmation.primaryButton, String(confirmation.detail).includes(new Date(OLDER_AT).toLocaleString()), String(confirmation.detail).includes(new Date(SNAPSHOT_AT).toLocaleString())]),
 			result,
 			warnings,
 		}, {
-			rows: [['206 件中 200 件だけ写しました', 1, 1, false], ['3 件', 0, 0, true]],
-			calls: ['undo'],
-			confirm: [['取り消す', true, true]],
+			title: '記憶の写し',
+			rows: [['206 件中 200 件だけ写しました', ['一部だけ'], 1], ['3 件', ['整理の前'], 1]],
+			calls: ['undo older', 'undo newest'],
+			confirm: [['取り消す', true, false], ['取り消す', false, true]],
 			result: [
-				[`${new Date(SNAPSHOT_AT).toLocaleString()} の写しに戻しました（1 件）。`, false],
+				[`${new Date(OLDER_AT).toLocaleString()} の写しに戻しました（1 件）。`, false],
 				['整理でできたファイルは消さずに残しています: memory/new.md', false],
 				['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md', true],
 			],
-			warnings: [],
+			warnings: [`${new Date(SNAPSHOT_AT).toLocaleString()} の写しはもうありません（古い写しから消えていきます）。写しの一覧を読み直しました。`],
 		});
 	});
 

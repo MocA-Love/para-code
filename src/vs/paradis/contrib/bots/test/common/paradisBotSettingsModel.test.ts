@@ -80,8 +80,8 @@ suite('Paradis bots settings', () => {
 
 	test('写しの件数の文と、取り消しの結果の行', () => {
 		assert.deepStrictEqual([
-			paradisBotMemorySnapshotCount({ takenAt: 1, files: 4, total: 4, partial: false }),
-			paradisBotMemorySnapshotCount({ takenAt: 1, files: 200, total: 250, partial: true }),
+			paradisBotMemorySnapshotCount({ takenAt: 1, files: 4, total: 4, partial: false, kind: 'auto' }),
+			paradisBotMemorySnapshotCount({ takenAt: 1, files: 200, total: 250, partial: true, kind: 'manual' }),
 			paradisBotUndoTidyLines({ restored: ['MEMORY.md', 'memory/a.md'], added: [], takenAt: 5, skipped: [] }, at => `t${at}`),
 		], [
 			'4 件',

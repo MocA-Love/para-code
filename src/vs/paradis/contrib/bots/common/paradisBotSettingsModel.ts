@@ -164,7 +164,7 @@ export function paradisBotHomeFileDiff(base: string | undefined, latest: string 
 	return lines;
 }
 
-/** 記憶の写し（本体が会話の Bot を起動するたびに取る。新しい順に最大 5 件）。 */
+/** 記憶の写し（新しい順。種類ごとに最大 5 件）。 */
 export interface IParadisBotMemorySnapshotInfo {
 	readonly takenAt: number;
 	/** 写したファイルの数。 */
@@ -172,6 +172,8 @@ export interface IParadisBotMemorySnapshotInfo {
 	/** 記憶のファイルの数（上限で打ち切ったときは `files` より多い）。 */
 	readonly total: number;
 	readonly partial: boolean;
+	/** `auto` は会話の Bot の起動時に本体が取った写し、`manual` は整理の前に取った写し（種類の無い古い写しも manual）。 */
+	readonly kind: 'auto' | 'manual';
 }
 
 /** 写しの一覧の 1 行の件数の文（一部だけなら何件中かを出す）。 */
