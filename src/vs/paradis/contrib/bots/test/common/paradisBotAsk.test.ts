@@ -278,7 +278,10 @@ suite('Paradis bot ask', () => {
 			paradisBotPatrolTemplateRefusal('codex', 'codex --dangerously-bypass-approvals-and-sandbox {prompt}'),
 			paradisBotPatrolTemplateRefusal('codex', 'codex -p work {prompt}'),
 			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt} -c mcp_servers.slack.enabled=true'),
-		], [undefined, '--dangerously-skip-permissions', '--permission-mode', '--settings', undefined, '--dangerously-bypass-approvals-and-sandbox', '-p', '-c']);
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt}', '--model gpt', '-c model_reasoning_effort=high'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt}', '--model gpt -c features.apps=true'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt}', '', '-c model_reasoning_effort=high -c features.plugins=true'),
+		], [undefined, '--dangerously-skip-permissions', '--permission-mode', '--settings', undefined, '--dangerously-bypass-approvals-and-sandbox', '-p', '-c', undefined, '-c', '-c']);
 	});
 
 	test('見回りの引数をシェルの 1 行にした形: 空白のあるパスは 1 つの引数、TOML の文字列は単一引用符のまま（二重引用符を使わない）', () => {

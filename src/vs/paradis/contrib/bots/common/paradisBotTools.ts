@@ -314,10 +314,17 @@ const PATROL_TEMPLATE_FORBIDDEN: Readonly<Record<'claude' | 'codex', readonly st
 	codex: ['--dangerously-bypass-approvals-and-sandbox', '--yolo', '--full-auto', '--approve-for-me', '-s', '--sandbox', '-a', '--ask-for-approval', '-c', '--config', '-p', '--profile', '--enable', '--disable'],
 };
 
-/** 雛形の `command` に、見回りの制限を書き換えうる引数があればその引数を返す（無ければ undefined）。 */
-export function paradisBotPatrolTemplateRefusal(agent: 'claude' | 'codex', command: string): string | undefined {
+/** Codex のエフォートの既定の形（`paradisCodexEffortFlag`）。禁止の `-c` に当たるが、値が 1 語だけなので通す。 */
+const CODEX_EFFORT_FLAG = /^-c model_reasoning_effort=[\w-]+$/;
+
+/**
+ * 見回りで使う雛形の引数（`command` と、Bot が選んだモデル・エフォートのフラグ。利用者が書いた行ではどれにも任意の
+ * 引数を書ける）に、制限を書き換えうる引数があればその引数を返す（無ければ undefined）。
+ */
+export function paradisBotPatrolTemplateRefusal(agent: 'claude' | 'codex', command: string, modelFlag: string = '', effortFlag: string = ''): string | undefined {
 	const forbidden = PATROL_TEMPLATE_FORBIDDEN[agent];
-	for (const word of command.split(/\s+/)) {
+	const texts = [command, modelFlag, CODEX_EFFORT_FLAG.test(effortFlag) ? '' : effortFlag];
+	for (const word of texts.join(' ').split(/\s+/)) {
 		const bare = word.replace(/^['"]+|['"]+$/g, '');
 		const name = bare.startsWith('--') ? bare.split('=')[0] : bare;
 		if (forbidden.includes(name) || (agent === 'claude' && bare.includes('bypassPermissions'))) {
