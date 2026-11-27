@@ -118,7 +118,16 @@ suite('Paradis bots page overlay', () => {
 			},
 			showTerminal: (id: number) => headerCalls.push(`terminal ${id}`),
 		} as unknown as IParadisAgentChatService);
-		instantiation.stub(ITerminalService, { getInstanceFromId: (id: number) => id === 1 ? { isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => { calls.push(`send ${text} ${execute} ${paste}`); } } : undefined } as unknown as ITerminalService);
+		instantiation.stub(ITerminalService, {
+			getInstanceFromId: (id: number) => id === 1 ? {
+				isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => {
+					calls.push(`send ${text} ${execute} ${paste}`);
+					if (sendFails.value) {
+						throw new Error('the terminal is gone');
+					}
+				}
+			} : undefined
+		} as unknown as ITerminalService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
 		const warnings: string[] = [];
