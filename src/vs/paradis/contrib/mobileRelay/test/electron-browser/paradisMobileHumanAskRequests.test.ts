@@ -11,7 +11,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IParadisHumanAskService, ParadisHumanAskAnswer, ParadisHumanAskClientResult } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
-import { ParadisMobileHumanAskOpResults } from '../../common/paradisMobileHumanAsks.js';
+import { IParadisMobileHumanAskAnswerReply } from '../../common/paradisMobileHumanAsks.js';
+import { ParadisMobileOpResults } from '../../common/paradisMobileOpResults.js';
 import { paradisCreateMobileHumanAskAnswerHandler, paradisCreateMobileHumanAsksHandler } from '../../electron-browser/paradisMobileHumanAskRequests.js';
 import { IParadisMobileRequest, IParadisMobileRequestContext } from '../../electron-browser/paradisMobileRequestHandlers.js';
 
@@ -36,7 +37,7 @@ suite('ParadisMobileHumanAskRequests', () => {
 			const context = { channel: 'fs', mobileId, root: undefined, reply: (reply: object) => replies.push(reply) } as unknown as IParadisMobileRequestContext;
 			await handler.handle({} as ServicesAccessor, { id: 'r', ...body } as IParadisMobileRequest, context);
 		};
-		const answer = paradisCreateMobileHumanAskAnswerHandler(() => service, new ParadisMobileHumanAskOpResults());
+		const answer = paradisCreateMobileHumanAskAnswerHandler(() => service, new ParadisMobileOpResults<IParadisMobileHumanAskAnswerReply>());
 		await send('phone', { t: 'humanAsks' }, paradisCreateMobileHumanAsksHandler(() => service));
 		const pick = { type: 'answers', answers: [{ questionId: 'q0', optionIds: ['0'] }] };
 		await send('phone', { t: 'humanAskAnswer', opId: 'op-1', key: 'board:b1', answer: pick });
@@ -82,7 +83,7 @@ suite('ParadisMobileHumanAskRequests', () => {
 				return calls === 2 ? Promise.reject(new Error('channel closed')) : new Promise(resolve => release = resolve);
 			},
 		};
-		const handler = paradisCreateMobileHumanAskAnswerHandler(() => service, new ParadisMobileHumanAskOpResults());
+		const handler = paradisCreateMobileHumanAskAnswerHandler(() => service, new ParadisMobileOpResults<IParadisMobileHumanAskAnswerReply>());
 		const replies: unknown[] = [];
 		const send = async (opId: string) => {
 			const context = { channel: 'fs', mobileId: 'phone', root: undefined, reply: (reply: object) => replies.push(reply) } as unknown as IParadisMobileRequestContext;
