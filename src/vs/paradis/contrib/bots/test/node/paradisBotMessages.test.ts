@@ -160,6 +160,9 @@ suite('Paradis bot messages', () => {
 			markUndelivered: async (groupId: string, recordId: string, reason?: string) => {
 				undelivered.push(`${groupId}/${recordId}/${reason}`);
 			},
+			markQueued: async (groupId: string, recordId: string) => {
+				undelivered.push(`${groupId}/${recordId}/queued`);
+			},
 		};
 		let available = true;
 		const tools = new ParadisBotMessageToolProvider(service, () => settings.enabled, () => available ? port : undefined, () => clock);
@@ -279,8 +282,8 @@ suite('Paradis bot messages', () => {
 			listed: { member: ['bot_tell', 'bot_ask'], patrol: 0, outsider: 2, stranger: 0, instructions: 'Bot messages (bot_tell, bot_ask): text b' },
 			recipientClosed: 'error: "レビュー係" is not open in a Para Code windo',
 			windowNotConnected: 'error: "レビュー係" is not open in a Para Code windo',
-			// 届かなかった分は、記録を増やさずに印だけ直した
-			undelivered: ['g1/r4/refused', 'g1/r5/unreachable', 'g1/r6/unknown', 'g1/r7/refused', 'g1/r8/refused', 'g1/r9/refused', 'g1/r11/unknown', 'g1/r12/unknown'],
+			// 届かなかった分と順番待ちに入れた分は、記録を増やさずに印だけ直した
+			undelivered: ['g1/r4/refused', 'g1/r5/unreachable', 'g1/r6/unknown', 'g1/r7/refused', 'g1/r8/refused', 'g1/r9/refused', 'g1/r10/queued', 'g1/r11/unknown', 'g1/r12/unknown'],
 			told: { to: 'レビュー係', sent: 'message' },
 			asked: { to: 'レビュー係', sent: 'question', note: 'The answer comes back to this terminal as a message from "レビュー係".' },
 			refusals: {
