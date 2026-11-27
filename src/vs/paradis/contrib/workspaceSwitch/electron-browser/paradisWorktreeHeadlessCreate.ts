@@ -447,8 +447,8 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 	readonly modelId?: string;
 	readonly effortId?: string;
 	readonly permissionId?: string;
-	/** 固定の一覧から組み立てた、引用済みの追加の引数（IParadisAgentLaunchOptions.extraFlags）。 */
-	readonly extraFlags?: string;
+	/** 固定の一覧から組み立てた追加の引数（IParadisAgentLaunchOptions.extraFlags。文字列は引用済み、配列はシェルに合わせて引用する）。 */
+	readonly extraFlags?: string | readonly string[];
 	/**
 	 * true なら新しいターミナルが利用者のフォーカスを奪わない（今のスペースへ起動しても前に出さない）。
 	 * エージェントや定期実行のように、利用者の入力の最中に起動しうる呼び出し元が使う。既定は従来どおり。

@@ -16,11 +16,12 @@ import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskCh
 import { PARADIS_BOT_CLAUDE_BODY, PARADIS_BOT_GENERATED_BEGIN, PARADIS_BOT_GENERATED_END, paradisBotInstructionName, paradisBotInstructions, paradisBotOwnerFile, paradisMergeBotGeneratedFile, paradisParseBotOwnerFile } from '../../common/paradisBotHome.js';
 import { IParadisBotLaunch } from '../../common/paradisBotsApi.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../../agentBrowser/common/paradisMcpReadOnlyTools.js';
-import { paradisBotPatrolLaunchFlags } from '../../common/paradisBotTools.js';
+import { paradisBotPatrolLaunchArgs } from '../../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes, PARADIS_BOT_HOME_FILE_LIMIT } from '../../node/paradisBotHomes.js';
 import { ParadisBotsChannel } from '../../node/paradisBotsChannel.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from '../../node/paradisBotMemorySnapshots.js';
+import { paradisPrepareBotPatrolLaunch } from '../../node/paradisBotPatrolLaunch.js';
 import { createParadisBotItemsFile, createParadisBotsFile, createParadisBotSuggestionsFile } from '../../node/paradisBotsStore.js';
 
 const BOT = { id: 'b1', name: 'リリース係', folder: 'bot' };
@@ -425,24 +426,81 @@ suite('Paradis bot homes', () => {
 		assert.strictEqual(await homes.read(BOT, 'SOUL.md'), '# リリース係\n\n（この Bot が何をするのかを、ここに 1 文で書いてください）\n\n## 仕事の進め方\n\n- （どこを見て、どこへ知らせるか）\n');
 	});
 
-	test('見回りの起動: 読むだけの引数で、Bot の権限の設定を使わない。設定がオフ・制限できないエージェントは断る', async () => {
+	test('見回りの起動: 読むだけの引数で、Bot の権限の設定を使わない。設定がオフ・制限できないエージェント・用意できない・危ない雛形は断る', async () => {
 		const userData = join(root, '..', 'userData');
-		const settings = { enabled: true };
+		const settings = { enabled: true, prepared: true, command: 'claude {model} {prompt}' };
+		const context = { agent: 'claude', settingsFile: '/data/s.json', mcpConfigFile: '/data/m.json' } as const;
+		const prepared: string[] = [];
 		let ids = 0;
-		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled }));
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled,
+			preparePatrol: async (agent, botId) => {
+				prepared.push(`${agent}:${botId}`);
+				return settings.prepared ? context : 'not ready';
+			},
+			agentCommand: () => settings.command,
+		}));
 		const claude = await service.createBot({ name: 'リリース係', agent: 'claude', permissionId: 'skip-permissions' });
 		const other = await service.createBot({ name: 'B', agent: 'opencode' });
 		assert.ok(claude.ok && other.ok);
 		const patrol = await service.requestLaunch(claude.value.id, 'patrol');
 		const chat = await service.requestLaunch(claude.value.id, 'chat');
 		const unsupported = await service.requestLaunch(other.value.id, 'patrol');
+		settings.command = 'claude --dangerously-skip-permissions {prompt}';
+		const unsafe = await service.requestLaunch(claude.value.id, 'patrol');
+		settings.command = 'claude {prompt}';
+		settings.prepared = false;
+		const unprepared = await service.requestLaunch(claude.value.id, 'patrol');
 		settings.enabled = false;
 		const off = await service.requestLaunch(claude.value.id, 'patrol');
 		assert.deepStrictEqual({
-			patrol: patrol.ok && [patrol.value.permissionId, patrol.value.extraFlags === paradisBotPatrolLaunchFlags('claude', PARADIS_READ_ONLY_MCP_TOOL_NAMES)],
+			patrol: patrol.ok && [patrol.value.permissionId, patrol.value.extraFlags],
 			chat: chat.ok && chat.value.permissionId,
 			unsupported: !unsupported.ok && unsupported.code,
+			unsafe: !unsafe.ok && unsafe.code,
+			unprepared: !unprepared.ok && [unprepared.code, unprepared.message],
 			off: !off.ok && off.code,
-		}, { patrol: [undefined, true], chat: 'skip-permissions', unsupported: 'unsupported', off: 'disabled' });
+			prepared,
+		}, {
+			patrol: [undefined, paradisBotPatrolLaunchArgs(context, PARADIS_READ_ONLY_MCP_TOOL_NAMES)],
+			chat: 'skip-permissions',
+			unsupported: 'unsupported',
+			unsafe: 'unsafe_template',
+			unprepared: ['patrol_unavailable', 'not ready'],
+			off: 'disabled',
+			prepared: ['claude:id1', 'claude:id1'],
+		});
+	});
+
+	test('見回りの用意: Claude Code の設定は 0600 でトークンを含まず、Codex は全部のホームのサーバーを集める', async () => {
+		const data = join(root, '..', 'data');
+		const codexA = join(root, '..', 'codexA.toml');
+		const codexB = join(root, '..', 'codexB.toml');
+		await fs.writeFile(codexA, '[mcp_servers.slack]\nurl = "https://example.invalid/"\n[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1/"\n');
+		await fs.writeFile(codexB, 'mcp_servers.x.command = "a"\n');
+		const environment = (port: number | undefined, codex: string[]) => ({ folder: join(data, 'patrol'), gatewayPort: async () => port, codexConfigFiles: () => codex });
+		const claude = await paradisPrepareBotPatrolLaunch(environment(4321, []), 'claude', 'b/1');
+		const noGateway = await paradisPrepareBotPatrolLaunch(environment(undefined, []), 'claude', 'b1');
+		const codex = await paradisPrepareBotPatrolLaunch(environment(1, [codexA, join(root, '..', 'missing.toml')]), 'codex', 'b1');
+		const unreadable = await paradisPrepareBotPatrolLaunch(environment(1, [codexA, codexB]), 'codex', 'b1');
+		assert.ok(typeof claude !== 'string' && claude.agent === 'claude');
+		assert.deepStrictEqual({
+			files: [claude.settingsFile, claude.mcpConfigFile].map(path => path.slice(data.length)),
+			// Windows の mode は 0600 を表さない
+			modes: process.platform === 'win32' ? ['600', '600'] : await Promise.all([claude.settingsFile, claude.mcpConfigFile].map(async path => ((await fs.stat(path)).mode & 0o777).toString(8))),
+			settings: JSON.parse(await fs.readFile(claude.settingsFile, 'utf8')),
+			mcp: JSON.parse(await fs.readFile(claude.mcpConfigFile, 'utf8')),
+			noGateway: typeof noGateway === 'string',
+			codex,
+			unreadable: typeof unreadable === 'string',
+		}, {
+			files: ['/patrol/b_1.claude-settings.json', '/patrol/b_1.claude-mcp.json'],
+			modes: ['600', '600'],
+			settings: { permissions: { disableBypassPermissionsMode: 'disable' } },
+			mcp: { mcpServers: { 'para-browser': { type: 'http', url: 'http://127.0.0.1:4321/', headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }, timeout: 300000 } } },
+			noGateway: true,
+			codex: { agent: 'codex', disabledServers: [{ name: 'slack', transport: 'url' }] },
+			unreadable: true,
+		});
 	});
 });

@@ -9,6 +9,7 @@
 // shared process で Bot の台帳のサービスを作り、ウィンドウへチャネルを出し、para-browser MCP へ Bot の道具を足す。
 // `paradis.sharedProcess.contribution.ts` から副作用 import される（MCP の説明の段は登録の順に並ぶので、並びの最後に置く）。
 
+import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
@@ -16,10 +17,13 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
+import { PARADIS_MCP_PORT_FILE_NAME } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { paradisCodexHomeCandidates } from '../../agentBrowser/node/paradisAgentHome.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
+import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
@@ -28,9 +32,21 @@ import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
+import { paradisPrepareBotPatrolLaunch } from './paradisBotPatrolLaunch.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
 
 let shared: ParadisBotsService | undefined;
+
+/** para-browser の MCP の口のポート（Para Code が書くポートのファイルから読む。動いていなければ undefined）。 */
+async function readGatewayPort(userDataPath: string): Promise<number | undefined> {
+	try {
+		const record: unknown = JSON.parse(await fs.readFile(join(userDataPath, PARADIS_MCP_PORT_FILE_NAME), 'utf8'));
+		const port = typeof record === 'object' && record !== null ? (record as { port?: unknown }).port : undefined;
+		return typeof port === 'number' && Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /** shared process に 1 つだけの Bot のサービス。登録の前は undefined。後の PR（定期実行の見回り・中継）はここから取る。 */
 export function paradisSharedBotsService(): ParadisBotsService | undefined {
@@ -52,6 +68,13 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		// 記憶の写しは専用フォルダ（Bot が書ける）の外に置く
 		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
 		homes,
+		// 見回りの設定ファイルも専用フォルダ（Bot が書ける）の外に置く
+		preparePatrol: (agent, botId) => paradisPrepareBotPatrolLaunch({
+			folder: join(paradisBotsDataFolder(userDataPath), 'patrol'),
+			gatewayPort: () => readGatewayPort(userDataPath),
+			codexConfigFiles: () => paradisCodexHomeCandidates().map(home => join(home, 'config.toml')),
+		}, agent, botId),
+		agentCommand: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId)?.command,
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;

@@ -107,10 +107,12 @@ export interface IParadisBotLaunch {
 	readonly effortId?: string;
 	readonly permissionId?: string;
 	/**
-	 * 起動のコマンドに足す引数（Codex だけ。Bot の道具の前もっての許可）。利用者の設定ファイルには書かず、この起動に
-	 * だけ渡す。起動する側（paradisBotsLaunch.contribution.ts）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
+	 * 起動のコマンドに足す引数。利用者の設定ファイルには書かず、この起動にだけ渡す。起動する側
+	 * （paradisBotsLaunch.contribution.ts）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
+	 * 会話は引用済みの文字列（Codex だけ。Bot の道具の前もっての許可）。見回りは生の引数の配列で、起動するシェルに
+	 * 合わせて引用する（設定ファイルのパスが空白を含みうるため。paradisBotPatrolLaunchArgs）。
 	 */
-	readonly extraFlags?: string;
+	readonly extraFlags?: string | readonly string[];
 }
 
 /** Bot を止める依頼。トークンの値は出さず、ハッシュで渡す。 */
