@@ -12,6 +12,7 @@ import { TextInputDrawer } from '../../ui/textInputDrawer.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { answerHumanAsk } from './humanAskStore.js';
 import {
+	humanAskActionSheet,
 	humanAskQuestionAnswer,
 	humanAskQuestionMessages,
 	humanAskRefusalText,
@@ -19,6 +20,7 @@ import {
 	newHumanAskOpId,
 	type HumanAsk,
 	type HumanAskAction,
+	type HumanAskActionSheet,
 	type HumanAskAnswer,
 	type HumanAskQuestionAnswer,
 } from './humanAsks.js';
@@ -32,8 +34,7 @@ import {
 export const HumanAskCard = memo(function HumanAskCard({ pcId, ask, now }: { pcId: string; ask: HumanAsk; now: number }) {
 	const [answered, setAnswered] = useState(false);
 	const [sending, setSending] = useState(false);
-	const [confirming, setConfirming] = useState<HumanAskAction | undefined>(undefined);
-	const [writing, setWriting] = useState<HumanAskAction | undefined>(undefined);
+	const [sheet, setSheet] = useState<{ readonly action: HumanAskAction; readonly sheet: Exclude<HumanAskActionSheet, { kind: 'send' }> } | undefined>(undefined);
 	const messages = useMemo(() => humanAskQuestionMessages(ask), [ask]);
 	const locked = answered || sending || ask.busy;
 
@@ -68,14 +69,15 @@ export const HumanAskCard = memo(function HumanAskCard({ pcId, ask, now }: { pcI
 	}, [ask.questions, send]);
 
 	const press = (action: HumanAskAction) => {
-		if (action.allowText === true) {
-			setWriting(action);
-		} else if (action.confirm !== undefined) {
-			setConfirming(action);
-		} else {
+		const next = humanAskActionSheet(ask, action);
+		if (next.kind === 'send') {
 			void send({ type: 'action', actionId: action.id });
+		} else {
+			setSheet({ action, sheet: next });
 		}
 	};
+	const confirming = sheet?.sheet.kind === 'confirm' ? sheet : undefined;
+	const writing = sheet?.sheet.kind === 'text' ? sheet : undefined;
 
 	return (
 		<View style={styles.card} accessible={false}>
@@ -109,34 +111,32 @@ export const HumanAskCard = memo(function HumanAskCard({ pcId, ask, now }: { pcI
 			) : null}
 			<ConfirmDrawer
 				visible={confirming !== undefined}
-				title={confirming?.confirm?.title ?? ''}
-				{...(confirming?.confirm?.body !== undefined ? { message: confirming.confirm.body } : {})}
-				confirmLabel={confirming?.confirm?.ok ?? ''}
+				title={confirming?.sheet.title ?? ''}
+				{...(confirming?.sheet.body !== undefined ? { message: confirming.sheet.body } : {})}
+				confirmLabel={confirming?.sheet.ok ?? ''}
 				destructive={false}
 				onConfirm={() => {
-					const action = confirming;
-					if (action !== undefined) {
-						void send({ type: 'action', actionId: action.id });
+					if (confirming !== undefined) {
+						void send({ type: 'action', actionId: confirming.action.id });
 					}
 				}}
-				onClose={() => setConfirming(undefined)}
+				onClose={() => setSheet(undefined)}
 			/>
 			<TextInputDrawer
 				visible={writing !== undefined}
-				title={writing?.confirm?.title ?? writing?.label ?? ''}
-				{...(writing?.confirm?.body !== undefined ? { message: writing.confirm.body } : {})}
+				title={writing?.sheet.title ?? ''}
+				{...(writing?.sheet.body !== undefined ? { message: writing.sheet.body } : {})}
 				placeholder="ひとこと添える（任意）"
-				submitLabel={writing?.confirm?.ok ?? writing?.label ?? '送る'}
+				submitLabel={writing?.sheet.ok ?? '送る'}
 				allowEmpty
 				maxLength={8000}
 				onSubmit={value => {
-					const action = writing;
-					if (action !== undefined) {
+					if (writing !== undefined) {
 						const note = value.trim();
-						void send({ type: 'action', actionId: action.id, ...(note.length > 0 ? { text: note } : {}) });
+						void send({ type: 'action', actionId: writing.action.id, ...(note.length > 0 ? { text: note } : {}) });
 					}
 				}}
-				onClose={() => setWriting(undefined)}
+				onClose={() => setSheet(undefined)}
 			/>
 		</View>
 	);

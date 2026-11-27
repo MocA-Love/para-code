@@ -69,7 +69,7 @@ export type HumanAskAnswer =
 
 export type HumanAskAnswerOutcome =
 	| { readonly ok: true; readonly duplicate?: true }
-	| { readonly ok: false; readonly reason: 'gone' | 'busy' | 'invalid' | 'unavailable' };
+	| { readonly ok: false; readonly reason: 'gone' | 'busy' | 'invalid' | 'unavailable' | 'unconfirmed' };
 
 const SOURCES = new Set(['pane', 'board', 'bot']);
 const KINDS = new Set(['question', 'permission', 'approval', 'stalled']);
@@ -254,7 +254,43 @@ export function humanAskRefusalText(reason: Exclude<HumanAskAnswerOutcome, { ok:
 		case 'busy': return 'ほかの場所で答えて、届けている最中です';
 		case 'invalid': return 'この答えは送れません。選択肢から選んでください';
 		case 'unavailable': return 'PC に届きませんでした。つながりを確かめてください';
+		case 'unconfirmed': return '答えが届いたか確かめられませんでした。もう一度押してください';
 	}
+}
+
+/**
+ * PC が `duplicate`（同じ opId の 2 回目）と返したあと、取り直した一覧で答えが届いたかを決める。
+ * 一覧から消えた・届けている最中（`busy`）なら届いた、まだ待っていれば届いていない、一覧が取れなければ分からない。
+ * 分からないときも「答えた」にはしない（カードを消さない）。
+ */
+export function humanAskDuplicateOutcome(asks: readonly Pick<HumanAsk, 'key' | 'busy'>[] | undefined, key: string): HumanAskAnswerOutcome {
+	const ask = asks?.find(candidate => candidate.key === key);
+	return asks !== undefined && (ask === undefined || ask.busy) ? { ok: true } : { ok: false, reason: 'unconfirmed' };
+}
+
+/** ボタンを押したときに挟むシート。PC が載せた確認の文（`confirm`）があればそれを出す。 */
+export type HumanAskActionSheet =
+	| { readonly kind: 'text'; readonly title: string; readonly body?: string; readonly ok: string }
+	| { readonly kind: 'confirm'; readonly title: string; readonly body?: string; readonly ok: string }
+	| { readonly kind: 'send' };
+
+/**
+ * ボタンを押したときの扱い。文を添えられるボタンは入力のシート（PC の確認の文を題と本文に出す）、確認のあるボタンは
+ * 確認のシート、どちらも無いボタンはそのまま送る。ただしボードの承認（`approval`）のボタンは、PC が確認を載せて
+ * いなくても確認のシートを挟む（承認・差し戻しを 1 押しで送らない）。
+ */
+export function humanAskActionSheet(ask: Pick<HumanAsk, 'kind' | 'preface'>, action: HumanAskAction): HumanAskActionSheet {
+	const confirm = action.confirm;
+	if (action.allowText === true) {
+		return { kind: 'text', title: confirm?.title ?? action.label, ...(confirm?.body !== undefined ? { body: confirm.body } : {}), ok: confirm?.ok ?? action.label };
+	}
+	if (confirm !== undefined) {
+		return { kind: 'confirm', title: confirm.title, ...(confirm.body !== undefined ? { body: confirm.body } : {}), ok: confirm.ok };
+	}
+	if (ask.kind === 'approval') {
+		return { kind: 'confirm', title: action.label, ...(ask.preface !== undefined ? { body: ask.preface } : {}), ok: action.label };
+	}
+	return { kind: 'send' };
 }
 
 let opSequence = 0;

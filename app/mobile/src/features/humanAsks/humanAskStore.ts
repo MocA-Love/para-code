@@ -12,6 +12,7 @@ import { create } from 'zustand';
 import { sendPcRequest, type PcSummary } from '../../appState.js';
 import {
 	humanAskAnswerRequest,
+	humanAskDuplicateOutcome,
 	humanAsksRequest,
 	newHumanAskOpId,
 	parseHumanAskAnswerReply,
@@ -52,6 +53,19 @@ function setList(pcId: string, list: HumanAskList | undefined): void {
 	});
 }
 
+/** その PC の一覧を印を見ずに取り直して入れる。取れなければ undefined（前の一覧のまま）。 */
+async function fetchHumanAsks(pcId: string): Promise<HumanAskList | undefined> {
+	try {
+		const reply = parseHumanAsksReply(await sendPcRequest(pcId, 'fs', humanAsksRequest(), { timeoutMs: LIST_TIMEOUT_MS }));
+		if (reply !== undefined) {
+			setList(pcId, reply);
+		}
+		return reply;
+	} catch {
+		return undefined;
+	}
+}
+
 /** その PC の一覧を取り直す（印が今のものと同じなら何もしない）。 */
 export async function refreshHumanAsks(pcId: string, signature: string): Promise<void> {
 	if (useHumanAsks.getState().byPc[pcId]?.signature === signature || fetching.get(pcId) === signature) {
@@ -59,12 +73,8 @@ export async function refreshHumanAsks(pcId: string, signature: string): Promise
 	}
 	fetching.set(pcId, signature);
 	try {
-		const reply = parseHumanAsksReply(await sendPcRequest(pcId, 'fs', humanAsksRequest(), { timeoutMs: LIST_TIMEOUT_MS }));
-		if (reply !== undefined) {
-			setList(pcId, reply);
-		}
-	} catch {
 		// 取れなければ前の一覧のまま（次の印の変化か、画面を開き直したときにまた取る）
+		await fetchHumanAsks(pcId);
 	} finally {
 		if (fetching.get(pcId) === signature) {
 			fetching.delete(pcId);
@@ -75,13 +85,21 @@ export async function refreshHumanAsks(pcId: string, signature: string): Promise
 /**
  * 答える。`opId` は押し直しで同じ答えを 2 回届けないための id で、同じ答えを送り直すときは同じ値を渡す。
  * 届かなければ `reason: 'unavailable'`。
+ *
+ * PC が `duplicate`（同じ opId の 2 回目）と返したら、それだけで「答えた」にはせず、一覧を取り直して確かめる
+ * （{@link humanAskDuplicateOutcome}）。まだ待っていれば `reason: 'unconfirmed'`。
  */
 export async function answerHumanAsk(pcId: string, key: string, answer: HumanAskAnswer, opId: string = newHumanAskOpId()): Promise<HumanAskAnswerOutcome> {
+	let outcome: HumanAskAnswerOutcome;
 	try {
-		return parseHumanAskAnswerReply(await sendPcRequest(pcId, 'fs', humanAskAnswerRequest(opId, key, answer), { timeoutMs: ANSWER_TIMEOUT_MS }));
+		outcome = parseHumanAskAnswerReply(await sendPcRequest(pcId, 'fs', humanAskAnswerRequest(opId, key, answer), { timeoutMs: ANSWER_TIMEOUT_MS }));
 	} catch {
 		return { ok: false, reason: 'unavailable' };
 	}
+	if (outcome.ok && outcome.duplicate === true) {
+		return humanAskDuplicateOutcome((await fetchHumanAsks(pcId))?.asks, key);
+	}
+	return outcome;
 }
 
 /** 印の変化に合わせて、つながっている PC の一覧を取り直す。0 件・未対応になった PC の一覧は捨てる。 */
