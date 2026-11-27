@@ -14,7 +14,7 @@
 // 上の 1 行から名指しで送る）で始め、後で部屋のページ（案 A）でも同じ台帳と記録を使う。
 
 import { isRecord } from '../../../common/paradisGuards.js';
-import type { ParadisBotMessageUndeliveredReason } from './paradisBotMessages.js';
+import type { IParadisBotInboxEntry } from './paradisBotMessages.js';
 
 /** 保存の版。今より大きい版のファイルは読み取り専用で開く。 */
 export const PARADIS_BOT_GROUPS_VERSION = 1;
@@ -65,20 +65,12 @@ export interface IParadisBotGroupRecord {
 	/** あなた（{@link PARADIS_BOT_GROUP_OWNER}）か、送った Bot の id。 */
 	readonly from: string;
 	/**
-	 * 宛先の Bot の id。あなたの `sent` は実際に届いた Bot だけを入れる。Bot 同士の伝言（`asked`・`told`）は道具が届ける前に
-	 * 書くので宛先を入れ、届かなかったら {@link undelivered} にその理由が付く。
+	 * 宛先の Bot の id。あなたの `sent` は実際に届いた Bot だけを入れる。Bot 同士の伝言（`asked`・`told`）は宛先の受け箱に
+	 * 入り、宛先が読んだら {@link readAt} が付く。
 	 */
 	readonly to: readonly string[];
 	readonly text: string;
 	readonly at: number;
-	/**
-	 * Bot 同士の伝言が届かなかった理由（伝言の道具が届けに失敗した後に {@link paradisBotGroupMarkUndelivered} で付ける）。
-	 * `refused` は宛先が受け取らなかった（作業中など）、`unreachable` は宛先のウィンドウにつながらず届けられなかった、
-	 * `unknown` は時間切れ・中断で届いたか分からない。
-	 */
-	readonly undelivered?: ParadisBotMessageUndeliveredReason;
-	/** Bot 同士の伝言を、宛先が作業中だったので順番待ちに入れた（次の番に読まれる。{@link paradisBotGroupMarkQueued}）。 */
-	readonly queued?: true;
 	/** 宛先の Bot が受け箱から読んだ時刻（{@link paradisBotGroupMarkRead}）。 */
 	readonly readAt?: number;
 }
@@ -221,34 +213,6 @@ export function paradisBotGroupAppendRecord(state: IParadisBotGroupsState, group
 	return { ok: true, state: { ...state, records: records.slice(Math.max(0, records.length - PARADIS_BOT_GROUP_LIMITS.records)), nextRecordId: state.nextRecordId + 1 }, value: record };
 }
 
-export const PARADIS_BOT_GROUP_UNDELIVERED_REASONS: readonly ParadisBotMessageUndeliveredReason[] = ['refused', 'unreachable', 'unknown'];
-
-/**
- * Bot 同士の伝言の記録に、届かなかった理由の印を付ける（理由が無ければ `unreachable`）。記録の id は伝言の道具の口では文字列なので、整数に戻せない値・
- * 見つからない記録（上限で既に捨てた分を含む）・別のグループの記録・あなたの `sent`・既に印のある記録は、変えずに断る。
- */
-export function paradisBotGroupMarkUndelivered(state: IParadisBotGroupsState, groupId: string, recordId: string, reason: ParadisBotMessageUndeliveredReason = 'unreachable'): ParadisBotGroupsResult<IParadisBotGroupRecord> {
-	return PARADIS_BOT_GROUP_UNDELIVERED_REASONS.includes(reason) ? markBotMessage(state, groupId, recordId, { undelivered: reason }) : refuse('not_found', 'There is no such message.');
-}
-
-/** Bot 同士の伝言の記録に「順番待ちに入れた」の印を付ける（断る場合は {@link paradisBotGroupMarkUndelivered} と同じ）。 */
-export function paradisBotGroupMarkQueued(state: IParadisBotGroupsState, groupId: string, recordId: string): ParadisBotGroupsResult<IParadisBotGroupRecord> {
-	return markBotMessage(state, groupId, recordId, { queued: true });
-}
-
-function markBotMessage(state: IParadisBotGroupsState, groupId: string, recordId: string, mark: Pick<IParadisBotGroupRecord, 'undelivered' | 'queued'>): ParadisBotGroupsResult<IParadisBotGroupRecord> {
-	if (!writable(state)) {
-		return refuse('read_only', READ_ONLY);
-	}
-	const id = /^[1-9]\d{0,15}$/u.test(recordId) ? Number(recordId) : undefined;
-	const record = id !== undefined && Number.isSafeInteger(id) ? state.records.find(existing => existing.id === id && existing.groupId === groupId) : undefined;
-	if (record === undefined || record.kind === 'sent' || record.undelivered !== undefined || record.queued !== undefined) {
-		return refuse('not_found', 'There is no such message.');
-	}
-	const marked: IParadisBotGroupRecord = { ...record, ...mark };
-	return { ok: true, state: { ...state, records: state.records.map(existing => existing === record ? marked : existing) }, value: marked };
-}
-
 /** 台帳に残っている Bot だけのメンバー（消した Bot を並べない）。 */
 export function paradisBotGroupMembers(group: Pick<IParadisBotGroup, 'members'>, botIds: ReadonlySet<string>): string[] {
 	return group.members.filter(id => botIds.has(id));
@@ -317,52 +281,13 @@ export function paradisResolveBotGroupMentions(text: string, members: readonly {
 
 // ---- Bot 同士の伝言（受け箱） ---------------------------------------------------------------------
 
-/** 伝言を断る理由（受け箱に入れない）。 */
-export type ParadisBotGroupDeliverRefusal = 'not_a_member' | 'self';
-
-/**
- * Bot 同士の伝言を受け箱に入れてよいか。送り手と宛先が同じグループのメンバーで、自分宛てでないときだけ。宛先が動いて
- * いない・作業中・一時停止中でも受け箱には入る（宛先のペインへは何も打ち込まない）。
- */
-export function paradisBotGroupDeliverRefusal(input: {
-	readonly group: Pick<IParadisBotGroup, 'members'> | undefined;
-	readonly from: string | undefined;
-	readonly to: string;
-}): ParadisBotGroupDeliverRefusal | undefined {
-	const { group, from, to } = input;
-	if (group === undefined || from === undefined || !group.members.includes(from) || !group.members.includes(to)) {
-		return 'not_a_member';
-	}
-	return from === to ? 'self' : undefined;
-}
-
-/** 伝言の道具へ返す、断った理由の英文（エージェントが読む。`refused` の `reason`）。どちらも送り直しても通らない。 */
-export function paradisBotGroupDeliverRefusalMessage(refusal: ParadisBotGroupDeliverRefusal): string {
-	switch (refusal) {
-		case 'not_a_member': return 'you and that bot are not in the same group, so do not send it again';
-		case 'self': return 'it was addressed to yourself, so do not send it again';
-	}
-}
-
-/** 受け箱の 1 件（宛先の Bot がまだ読んでいない伝言）。 */
-export interface IParadisBotInboxMessage {
-	/** 記録の id（口では文字列）。既読にするときに返す。 */
-	readonly recordId: string;
-	readonly groupId: string;
-	readonly kind: 'asked' | 'told';
-	/** 送った Bot の id。 */
-	readonly from: string;
-	readonly text: string;
-	readonly at: number;
-}
-
-/** その Bot の受け箱にある伝言か（Bot からの伝言で、宛先にその Bot がいて、まだ読まれておらず、届けられなかった印も無い）。 */
+/** その Bot の受け箱にある伝言か（Bot からの伝言で、宛先にその Bot がいて、まだ読まれていない）。 */
 function inInbox(record: IParadisBotGroupRecord, botId: string): boolean {
-	return record.kind !== 'sent' && record.to.includes(botId) && record.readAt === undefined && record.undelivered === undefined;
+	return record.kind !== 'sent' && record.to.includes(botId) && record.readAt === undefined;
 }
 
 /** その Bot の受け箱（古い順）。今もその Bot が入っているグループの伝言だけ。 */
-export function paradisBotGroupInbox(state: IParadisBotGroupsState, botId: string): IParadisBotInboxMessage[] {
+export function paradisBotGroupInbox(state: IParadisBotGroupsState, botId: string): IParadisBotInboxEntry[] {
 	const groups = new Set(state.groups.filter(group => group.members.includes(botId)).map(group => group.id));
 	return state.records
 		.filter(record => groups.has(record.groupId) && inInbox(record, botId))
@@ -417,12 +342,7 @@ function storedRecord(value: unknown, groups: ReadonlySet<string>): IParadisBotG
 		return undefined;
 	}
 	const record: IParadisBotGroupRecord = { id: value.id, groupId: value.groupId, kind, from: value.from, to: value.to, text: value.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: value.at };
-	const undelivered = PARADIS_BOT_GROUP_UNDELIVERED_REASONS.find(candidate => candidate === value.undelivered);
-	if (kind === 'sent') {
-		return record;
-	}
-	const marked: IParadisBotGroupRecord = undelivered !== undefined ? { ...record, undelivered } : value.queued === true ? { ...record, queued: true } : record;
-	return typeof value.readAt === 'number' && Number.isFinite(value.readAt) ? { ...marked, readAt: value.readAt } : marked;
+	return kind !== 'sent' && typeof value.readAt === 'number' && Number.isFinite(value.readAt) ? { ...record, readAt: value.readAt } : record;
 }
 
 /**
