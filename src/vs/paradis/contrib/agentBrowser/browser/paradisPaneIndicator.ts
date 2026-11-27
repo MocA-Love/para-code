@@ -17,7 +17,7 @@ import { $, addDisposableListener } from '../../../../base/browser/dom.js';
 import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 
 /** インジケータの表示状態。 */
 export type ParadisPaneIndicatorState = 'bound' | 'unbound';
@@ -191,22 +191,36 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 	// 登録は起動後の contribution から来ることがあり、そのときには復元済みのタブがもう開いて
 	// いるので、後から来た登録にも今の対象ペインを渡す。
 	const overlays = new DisposableStore();
-	const overlayInstances: IParadisEditorTerminalOverlay[] = [];
 	const onDidChangeTopInset = overlays.add(new Emitter<void>());
+	// 登録ごとに付けた部品（登録を外したら、付けた部品もここで破棄する）
+	const attached = overlays.add(new DisposableMap<ParadisEditorTerminalOverlayFactory>());
+	const overlayInstances = new Map<ParadisEditorTerminalOverlayFactory, IParadisEditorTerminalOverlay>();
 	let currentInstanceId: number | undefined;
 	const attachOverlay = (factory: ParadisEditorTerminalOverlayFactory): void => {
-		const overlay = factory(container);
-		overlays.add(overlay);
-		overlayInstances.push(overlay);
+		const store = new DisposableStore();
+		const overlay = store.add(factory(container));
 		if (overlay.onDidChangeTopInset) {
-			overlays.add(overlay.onDidChangeTopInset(() => onDidChangeTopInset.fire()));
+			store.add(overlay.onDidChangeTopInset(() => onDidChangeTopInset.fire()));
 		}
+		store.add(toDisposable(() => overlayInstances.delete(factory)));
+		overlayInstances.set(factory, overlay);
+		attached.set(factory, store);
 		overlay.setInstance(currentInstanceId);
 	};
 	for (const factory of editorTerminalOverlayFactories) {
 		attachOverlay(factory);
 	}
 	overlays.add(onDidRegisterEditorTerminalOverlay.event(attachOverlay));
+	overlays.add(onDidUnregisterEditorTerminalOverlay.event(factory => {
+		if (!overlayInstances.has(factory)) {
+			return;
+		}
+		const inset = overlayInstances.get(factory)?.topInset?.() ?? 0;
+		attached.deleteAndDispose(factory);
+		if (inset > 0) {
+			onDidChangeTopInset.fire();
+		}
+	}));
 	return {
 		setInstance(instanceId) {
 			currentInstanceId = instanceId;
@@ -214,11 +228,11 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 			if (current.value) {
 				container.appendChild(current.value.element);
 			}
-			for (const overlay of overlayInstances) {
+			for (const overlay of [...overlayInstances.values()]) {
 				overlay.setInstance(instanceId);
 			}
 		},
-		topInset: () => Math.max(0, ...overlayInstances.map(overlay => overlay.topInset?.() ?? 0)),
+		topInset: () => Math.max(0, ...[...overlayInstances.values()].map(overlay => overlay.topInset?.() ?? 0)),
 		onDidChangeTopInset: onDidChangeTopInset.event,
 		dispose: () => {
 			current.dispose();
@@ -242,13 +256,18 @@ export type ParadisEditorTerminalOverlayFactory = (container: HTMLElement) => IP
 
 const editorTerminalOverlayFactories = new Set<ParadisEditorTerminalOverlayFactory>();
 const onDidRegisterEditorTerminalOverlay = new Emitter<ParadisEditorTerminalOverlayFactory>();
+const onDidUnregisterEditorTerminalOverlay = new Emitter<ParadisEditorTerminalOverlayFactory>();
 
 /**
  * エディタタブのターミナルに重ねる部品を登録する。すでに開いているタブにもすぐ付く。
- * 外した後は新しいタブには付かない（付いている分は、そのタブのエディタと一緒に破棄される）。
+ * 外すと、新しいタブには付かず、開いているタブに付けた部品も破棄する（設定をオフ→オンにしても二重に付かない）。
  */
 export function paradisRegisterEditorTerminalOverlay(factory: ParadisEditorTerminalOverlayFactory): IDisposable {
 	editorTerminalOverlayFactories.add(factory);
 	onDidRegisterEditorTerminalOverlay.fire(factory);
-	return toDisposable(() => editorTerminalOverlayFactories.delete(factory));
+	return toDisposable(() => {
+		if (editorTerminalOverlayFactories.delete(factory)) {
+			onDidUnregisterEditorTerminalOverlay.fire(factory);
+		}
+	});
 }
