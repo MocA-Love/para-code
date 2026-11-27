@@ -746,7 +746,8 @@ export class ParadisBotsService extends Disposable {
 			if (task !== undefined && this.panes.taskInUse(botId, this.now())) {
 				return { ok: false, code: 'task_busy', message: 'A scheduled task of this bot is still running.' };
 			}
-			if (task === 'bot' && this.panes.chatInUse(botId, this.now()) !== undefined) {
+			// 応えの無かった会話のペイン（#1270）も、生きているかもしれないので会話が開いているものとして数える
+			if (task === 'bot' && (this.panes.chatInUse(botId, this.now()) !== undefined || this.panes.detachedTokensOf(botId).length > 0)) {
 				return { ok: false, code: 'already_open', message: 'The bot\'s conversation is open, so a scheduled task with its own permissions does not start now.' };
 			}
 			// 見回りは、読むだけに制限できるエージェントのときだけ起動する（機能がオフなら上で断っている）
@@ -982,7 +983,7 @@ export class ParadisBotsService extends Disposable {
 		}
 		// 「会話と同じ権限」の段は Bot の専用フォルダで記憶を書けるので、会話が開いている間は走らせない（同じ記憶を 2 つの
 		// エージェントが書かないように）。ほかの段は空の作業フォルダなので見ない
-		if (tools === 'bot' && this.panes.chatInUse(botId, this.now()) !== undefined) {
+		if (tools === 'bot' && (this.panes.chatInUse(botId, this.now()) !== undefined || this.panes.detachedTokensOf(botId).length > 0)) {
 			return 'busy';
 		}
 		return this.panes.taskInUse(botId, this.now()) ? 'busy' : 'ok';

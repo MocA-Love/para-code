@@ -131,6 +131,62 @@ suite('Paradis bot scheduled tasks: launching', () => {
 		});
 	});
 
+	test('#1270 の二重起動の確かめと両立する: 定期実行のペインは「生きている前の会話」に数えず、回の最中でも会話は起き、定期実行は二重に起きない', async () => {
+		const userData = join(root, '..', 'userData');
+		const alive = new Map<string, boolean>();
+		const asked: string[] = [];
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes, enabled: () => true, preparePatrol: async () => CLAUDE, revealTimeoutMs: 1,
+			paneAlive: async token => {
+				asked.push(token);
+				return alive.get(token);
+			},
+		}));
+		const created = await service.createBot({ name: '天気係', agent: 'claude' });
+		assert.ok(created.ok);
+		const id = created.value.id;
+		// 定期実行の回が動いている（結び付けた直後で、最初の hook はまだ）
+		const task = await service.requestLaunch(id, 'task', { task: 'web' });
+		assert.ok(task.ok && service.reportLaunch(task.value.launchId, 'pane-task'));
+		alive.set('pane-task', true);
+		// (2) 回の最中に利用者が話しかけても、会話の Bot は普通に起きる（定期実行のペインのエージェントを確かめない）
+		const chat = await service.requestLaunch(id, 'chat');
+		// (1) 応えの無いペインの結び付け直しは、定期実行のペインを会話にしない
+		service.reclaimPane('pane-task');
+		const purposeAfterReclaim = service.purposeOfPane('pane-task');
+		// (3) 定期実行は、前の回が動いている間は二重に起きない
+		const secondTask = await service.requestLaunch(id, 'task', { task: 'web' });
+		assert.ok(chat.ok && service.reportLaunch(chat.value.launchId, 'pane-chat'));
+		// 会話のペインが応えず外れた（#1270）。生きていれば会話は起こさないが、定期実行（Web だけ）は会話を使わないので起きる。
+		// 会話と同じ権限の段は、外れた会話が生きているかもしれない間は起こさない
+		assert.strictEqual(await service.requestReveal(id), false);
+		alive.set('pane-chat', true);
+		const chatAgain = await service.requestLaunch(id, 'chat');
+		service.releasePane('pane-task');
+		const webWhileDetached = await service.requestLaunch(id, 'task', { task: 'web' });
+		if (webWhileDetached.ok) {
+			await service.cancelLaunch(webWhileDetached.value.launchId);
+		}
+		const botWhileDetached = await service.requestLaunch(id, 'task', { task: 'bot' });
+		assert.deepStrictEqual({
+			chat: chat.ok,
+			askedBeforeChat: asked.includes('pane-task'),
+			purposeAfterReclaim,
+			secondTask: !secondTask.ok && secondTask.code,
+			chatAgain: !chatAgain.ok && chatAgain.code,
+			webWhileDetached: webWhileDetached.ok,
+			botWhileDetached: !botWhileDetached.ok && botWhileDetached.code,
+		}, {
+			chat: true,
+			askedBeforeChat: false,
+			purposeAfterReclaim: 'task',
+			secondTask: 'task_busy',
+			chatAgain: 'detached_alive',
+			webWhileDetached: true,
+			botWhileDetached: 'already_open',
+		});
+	});
+
 	test('Codex の Bot は「Web だけ」で起動しない（読むコマンドで手元を読めるため）', async () => {
 		const userData = join(root, '..', 'userData');
 		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
