@@ -434,6 +434,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 		this._register(this.workspaceSwitchService.registerSwitchCompletionParticipant(async stateKey => {
 			await this.applyScope(stateKey);
+			// 切り替えの最中に控えられて、別のスペースに退避されたままのどのスペースにも属さないターミナルを今の画面へ戻す
+			this.reopenParkedSpaceFreeInstances(stateKey);
 			// 起動時の孤児復活は切り替えが始まると途中で降りる。降りた分は誰も拾わないので、
 			// 切り替えが終わったここでやり直す。完走済みなら何もしない。この再探索は従来どおり
 			// バックグラウンドで行い、PTY バックエンドの応答を次のスペース切り替えの待機条件にしない
@@ -2746,10 +2748,19 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 		this.persistMapping();
 		this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
+		// 切り替えの最中は、切り替えが済んだところ（完了の participant）で戻す
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
-		if (instance !== undefined && !this.workspaceSwitchService.isSwitching && activeStateKey !== undefined
-			&& this.getParkedEditorStateKey(instanceId) !== undefined && paradisUnparkTerminalEditorInstance(instance)) {
-			void this.reopenReassignedEditorTerminal(instance, activeStateKey);
+		if (!this.workspaceSwitchService.isSwitching && activeStateKey !== undefined) {
+			this.reopenParkedSpaceFreeInstances(activeStateKey);
+		}
+	}
+
+	/** 別のスペースに退避されている、どのスペースにも属さないターミナルを、今のスペースの裏のタブとして開き直す。 */
+	private reopenParkedSpaceFreeInstances(stateKey: string): void {
+		for (const instance of paradisListParkedTerminalEditorInstances()) {
+			if (!instance.isDisposed && paradisIsTerminalSpaceFree(instance.instanceId) && paradisUnparkTerminalEditorInstance(instance)) {
+				void this.reopenReassignedEditorTerminal(instance, stateKey);
+			}
 		}
 	}
 
