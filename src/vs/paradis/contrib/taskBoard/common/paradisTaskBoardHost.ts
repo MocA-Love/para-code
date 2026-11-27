@@ -26,7 +26,9 @@ export type ParadisTaskBoardOpenFailure =
 	/** サーバーが起動しなかった。 */
 	| 'start-failed'
 	/** 別の対象（手元のリポジトリか、SSH の接続先）のボードが動いている。ボードは 1 つしか動かせない。 */
-	| 'other-board';
+	| 'other-board'
+	/** 起動を待っている間に「タスクボードを止める」で止めた（失敗ではないので、知らせを出さない）。 */
+	| 'stopped';
 
 export type ParadisTaskBoardOpenResult =
 	/**
@@ -107,7 +109,9 @@ export type ParadisTaskBoardServerMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
 	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
 	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult }
-	| { readonly type: 'add-task-result'; readonly requestId: string; readonly result: TaskBoardAddTaskResult };
+	| { readonly type: 'add-task-result'; readonly requestId: string; readonly result: TaskBoardAddTaskResult }
+	/** フォルダを選んでほしい（クローンの作業場所を足す）。返事は `pick-folder-result`（選ばなければ `path` なし）。 */
+	| { readonly type: 'pick-folder'; readonly requestId: string };
 
 /** 同梱のボードが優先して使うポート（手で起動するボードの既定 4870 と分ける。画面の設定はポートごとに残る）。 */
 export const PARADIS_TASK_BOARD_EMBEDDED_PORT = 4871;

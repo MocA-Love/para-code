@@ -236,6 +236,33 @@ export function Board() {
 
 /* ---------------- フロー外のエージェント ---------------- */
 
+/**
+ * フロー外の 1 件の答えるボタン。見本のセッションは許可・拒否、Para Code の台帳から来た 1 件は質問の選択肢だけ
+ * （Para Code が流してきたもの）。許可とそれ以外の質問は Para Code の受信箱で答える。
+ */
+export function ManualAnswers({ session, size }: { session: ITaskBoardManualSession; size: 'xs' | 'sm' }) {
+	const app = useApp();
+	const ask = session.ask;
+	const answered = { title: '答えました', body: session.name, tone: 'blue' as const };
+	if (!ask) {
+		return session.status === 'permission' ? <>
+			<button className={`btn ${size} primary`} onClick={() => void app.call('answerManual', { sessionId: session.id, allow: true }, { title: '許可しました', body: session.name, tone: 'blue' })}>許可</button>
+			<button className={`btn ${size}`} onClick={() => void app.call('answerManual', { sessionId: session.id, allow: false })}>拒否</button>
+		</> : null;
+	}
+	if (ask.busy) {
+		return <span className="faint">ほかの場所で答えて、届けています</span>;
+	}
+	const failed = ask.failed ? <span className="faint">前の答えを届けられませんでした</span> : null;
+	if (ask.options?.length) {
+		return <>{failed}{ask.options.map(option => (
+			<button key={option.id} className={`btn ${size}${option.recommended ? ' primary' : ''}`} title={option.recommended ? 'おすすめ' : undefined}
+				onClick={() => void app.call('answerManual', { sessionId: session.id, optionId: option.id }, answered)}>{option.label}</button>
+		))}</>;
+	}
+	return <span className="faint">Para Code の受信箱で答えてください</span>;
+}
+
 function ManualCard({ session }: { session: ITaskBoardManualSession }) {
 	const app = useApp();
 	const s = session.status === 'permission' ? STATUS.permission : session.status === 'question' ? STATUS.question : session.status === 'idle' ? STATUS.todo : STATUS.working;
@@ -249,13 +276,10 @@ function ManualCard({ session }: { session: ITaskBoardManualSession }) {
 			</div>
 			<div className="mini-text ellipsis" title={session.text}>{session.branch ? `${session.branch}　` : ''}{session.text}</div>
 			<div className="mini-acts">
-				{session.status === 'permission' && <>
-					<button className="btn xs primary" onClick={() => void app.call('answerManual', { sessionId: session.id, allow: true }, { title: '許可しました', body: session.name, tone: 'blue' })}>許可</button>
-					<button className="btn xs" onClick={() => void app.call('answerManual', { sessionId: session.id, allow: false })}>拒否</button>
-				</>}
+				<ManualAnswers session={session} size="xs" />
 				<span className="grow" />
 				<span className="faint" style={{ fontSize: 'var(--fs-xs)' }}><Elapsed since={session.since} /></span>
-				<button className="btn xs ghost" onClick={() => app.showDialog(<AdoptDialog sessionId={session.id} name={session.name} />)}>タスクに取り込む</button>
+				{!session.ask && <button className="btn xs ghost" onClick={() => app.showDialog(<AdoptDialog sessionId={session.id} name={session.name} />)}>タスクに取り込む</button>}
 			</div>
 		</div>
 	);

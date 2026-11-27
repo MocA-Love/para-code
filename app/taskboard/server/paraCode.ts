@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ITaskBoardQuestion, ITaskBoardStep, ITaskBoardTask, TaskBoardAgentKind } from '@engine/paradisTaskBoard.js';
 import type { ITaskBoardAgentPort, ITaskBoardArtifactInput, TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
-import { TASK_BOARD_ASK_ANSWER_EVENT, type ITaskBoardAskAnswerEvent } from '@engine/paradisTaskBoardAsks.js';
+import { TASK_BOARD_ASK_ANSWER_EVENT, TASK_BOARD_PANE_ASKS_EVENT, type ITaskBoardAskAnswerEvent, type ITaskBoardPaneAsksEvent } from '@engine/paradisTaskBoardAsks.js';
 import type { TaskBoardArtifactKind } from '@engine/paradisTaskBoard.js';
 import type { IWorktreeIncludePort } from './workspaces.js';
 
@@ -364,6 +364,8 @@ export interface IParaCodeAgentsOptions {
 	readonly onRelayEvent?: (event: ParaCodeRelayEvent) => void;
 	/** Para Code の台帳の側（受信箱など）で答えられたので、届けてほしいという依頼（asks.ts の AskPublisher へ渡す）。 */
 	readonly onAskAnswer?: (event: ITaskBoardAskAnswerEvent) => void;
+	/** ボードの外のペインの、人の答えを待っている今の一覧（丸ごと。手元のボードにだけ届く）。 */
+	readonly onPaneAsks?: (asks: ITaskBoardPaneAsksEvent['asks']) => void;
 	readonly onConnection?: (connected: boolean, detail?: string) => void;
 	readonly fetchImpl?: typeof fetch;
 	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number; readonly stall?: number };
@@ -409,6 +411,11 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 				const askEvent = event as unknown as ITaskBoardAskAnswerEvent;
 				if (askEvent.type === TASK_BOARD_ASK_ANSWER_EVENT) {
 					options.onAskAnswer?.(askEvent);
+					return;
+				}
+				const paneAsksEvent = event as unknown as ITaskBoardPaneAsksEvent;
+				if (paneAsksEvent.type === TASK_BOARD_PANE_ASKS_EVENT) {
+					options.onPaneAsks?.(Array.isArray(paneAsksEvent.asks) ? paneAsksEvent.asks : []);
 					return;
 				}
 				this.onEvent(event);
