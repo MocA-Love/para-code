@@ -44,7 +44,7 @@ suite('Paradis bot change detail', () => {
 		assert.strictEqual(paradisBotChangeDetail({ changes: [{ field: 'watch_github', from: 'false', to: 'true' }] }), [
 			'GitHub の見張り: false → true',
 			'',
-			'5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。',
+			'5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。gh でログインしているアカウントのすべてのリポジトリ（非公開・組織のものを含む）が対象で、その題とリポジトリ名をこの Bot に渡します。',
 		].join('\n'));
 	});
 

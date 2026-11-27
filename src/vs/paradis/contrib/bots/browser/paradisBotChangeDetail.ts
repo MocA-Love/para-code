@@ -62,7 +62,7 @@ export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, '
 	}
 	if (request.changes.some(change => change.field === 'watch_github' && change.to === 'true')) {
 		// allow-any-unicode-next-line
-		lines.push('', localize('paradisBots.watchGithubOn', "5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。"));
+		lines.push('', localize('paradisBots.watchGithubOn', "5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。gh でログインしているアカウントのすべてのリポジトリ（非公開・組織のものを含む）が対象で、その題とリポジトリ名をこの Bot に渡します。"));
 	}
 	for (const change of request.changes) {
 		if (change.field === 'role') {
