@@ -82,7 +82,7 @@ export function paradisBotPatrolScheduleCheck(fields: IParadisBotPatrolScheduleF
 	if (cron === undefined) {
 		return { problem: localize('paradis.botPatrol.badRange', "時間帯の終わりは始め以降にしてください"), summary: '' };
 	}
-	const parsed = paradisParseCron(cron);
+	const parsed = paradisParseCron(cron, { strict: true });
 	if (parsed.error !== undefined) {
 		return { cron, problem: parsed.error, summary: '' };
 	}

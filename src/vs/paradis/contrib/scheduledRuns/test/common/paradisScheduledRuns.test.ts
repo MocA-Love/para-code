@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	paradisCronLegacyWarning,
 	paradisCronMinimumGapMinutes,
 	paradisCronOccurrencesBetween,
 	paradisCronToSchedulePreset,
@@ -24,6 +25,7 @@ import {
 	paradisCheckRunGuards,
 	paradisCleanupCandidateSpaces,
 	paradisDecideDue,
+	paradisRevalidateStoredDefinition,
 	paradisSanitizeScheduledRunPrompt,
 	paradisScheduledRunLaunchPrompt,
 	paradisValidateScheduledRunDraft,
@@ -63,9 +65,33 @@ suite('paradisScheduleCron', () => {
 		const schedule = cron('0,30 9-10 * * 1-5');
 		assert.deepStrictEqual({ minutes: schedule.minutes, hours: schedule.hours, dow: [...schedule.daysOfWeek] }, { minutes: [0, 30], hours: [9, 10], dow: [1, 2, 3, 4, 5] });
 		assert.strictEqual(cron('0 0 * * 7').daysOfWeek.has(0), true);
-		for (const bad of ['', '* * * *', '60 * * * *', '* 24 * * *', 'a * * * *', '5-1 * * * *', '*/0 * * * *', '*/90 * * * *', '0 */24 * * *']) {
+		for (const bad of ['', '* * * *', '60 * * * *', '* 24 * * *', 'a * * * *', '5-1 * * * *', '*/0 * * * *']) {
 			assert.ok(paradisParseCron(bad).error, bad);
 		}
+	});
+
+	test('間隔が欄の幅を超える式: 新しく保存するときは断り、保存済みの定義は前と同じ時刻で走らせ続けて注意を出す', () => {
+		const stored = definition({ schedule: '*/90 * * * *' });
+		const { id: _id, enabled: _enabled, createdAt: _c, updatedAt: _u, ...draft } = stored;
+		const revalidated = paradisRevalidateStoredDefinition(stored);
+		assert.deepStrictEqual({
+			lenient: paradisParseCron('*/90 * * * *').schedule?.minutes,
+			strict: [paradisParseCron('*/90 * * * *', { strict: true }).error, paradisParseCron('0 */24 * * *', { strict: true }).error !== undefined, paradisParseCron('*/59 * * * *', { strict: true }).error],
+			newSave: paradisValidateScheduledRunDraft(draft),
+			storedStillRuns: [revalidated.problem, revalidated.definition.enabled, revalidated.definition.disabledReason],
+			warning: [paradisCronLegacyWarning('*/90 * * * *'), paradisCronLegacyWarning('15 */30 * * 1-5'), paradisCronLegacyWarning('0 * * * *'), paradisCronLegacyWarning('bad')],
+		}, {
+			lenient: [0],
+			strict: ['分の間隔「*/90」は 59 以下にしてください（cron 式の間隔は分の中でだけ繰り返します）。', true, undefined],
+			newSave: '分の間隔「*/90」は 59 以下にしてください（cron 式の間隔は分の中でだけ繰り返します）。',
+			storedStillRuns: [undefined, true, undefined],
+			warning: [
+				'この式は意図どおりに動いていません（毎時 0 分 に走っています）。直してください。',
+				'この式は意図どおりに動いていません（平日 0:15 に走っています）。直してください。',
+				undefined,
+				undefined,
+			],
+		});
 	});
 
 	test('finds the next occurrence, including weekdays and month ends', () => {

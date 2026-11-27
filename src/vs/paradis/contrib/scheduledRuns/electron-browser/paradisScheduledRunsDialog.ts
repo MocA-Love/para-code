@@ -39,6 +39,7 @@ import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeServi
 import { IParadisAgentCommandTemplate } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { PARADIS_REMOVE_WORKTREE_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
 import {
+	paradisCronLegacyWarning,
 	paradisCronToSchedulePreset,
 	paradisDayOfWeekLabel,
 	paradisDescribeCron,
@@ -472,6 +473,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				: next !== undefined
 					? localize('paradis.scheduledRuns.navNext', "次回 {0}", paradisFormatScheduledTime(next))
 					: paradisDescribeCron(definition.schedule);
+			if (paradisCronLegacyWarning(definition.schedule) !== undefined) {
+				createParadisChip(title, localize('paradis.scheduledRuns.legacyChip', "式を確認"), 'warning');
+			}
 			this.navDisposables.add(dom.addDisposableListener(item, 'click', () => {
 				if (this.editing) {
 					this.leaveEdit();
@@ -548,6 +552,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			warning.textContent = definition.disabledReason === 'modifiedOutside'
 				? localize('paradis.scheduledRuns.disabledModified', "保存ファイルの中身が Para Code の外で書き換えられていたため、無効に戻しました。指示と設定を確かめてから有効にしてください。")
 				: localize('paradis.scheduledRuns.disabledInvalid', "保存ファイルの中身が規則（間隔・回数など）を満たしていなかったため、無効に戻しました。編集して保存し直してください。");
+		}
+		const legacyWarning = paradisCronLegacyWarning(definition.schedule);
+		if (legacyWarning !== undefined) {
+			dom.append(this.content, $('.psr-message.visible.error')).textContent = legacyWarning;
 		}
 		const summary = dom.append(this.content, $('.psr-summary'));
 		const next = this.state?.nextRuns[definition.id];
@@ -929,6 +937,12 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		cron.classList.add('psr-mono');
 		cron.placeholder = '0 9 * * 1-5';
 		const schedulePreview = dom.append(scheduleCell, $('.psr-muted'));
+		// 保存済みの式が意図どおりに動いていない（`*\/90` など）ときは、編集を始めた時点の式で注意を出す
+		const storedSchedule = values.id !== undefined ? this.state?.definitions.find(candidate => candidate.id === values.id)?.schedule : undefined;
+		const legacyWarning = storedSchedule !== undefined ? paradisCronLegacyWarning(storedSchedule) : undefined;
+		if (legacyWarning !== undefined) {
+			dom.append(scheduleCell, $('.psr-danger-text')).textContent = legacyWarning;
+		}
 
 		// 実行先
 		const targetCell = this.formRow(form, localize('paradis.scheduledRuns.field.target', "実行先"));

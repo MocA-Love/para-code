@@ -56,7 +56,7 @@ const FIELD_SPECS: readonly IFieldSpec[] = [
 ];
 
 /** `*`、`5`、`1-5`、`*\/15`、`0-30/10` をカンマでつないだ1項目を解釈する。 */
-function parseField(text: string, spec: IFieldSpec): { values: Set<number>; restricted: boolean } | string {
+function parseField(text: string, spec: IFieldSpec, strict: boolean): { values: Set<number>; restricted: boolean } | string {
 	const values = new Set<number>();
 	let restricted = true;
 	for (const part of text.split(',')) {
@@ -81,7 +81,7 @@ function parseField(text: string, spec: IFieldSpec): { values: Set<number>; rest
 			return localize('paradis.scheduledRuns.cron.outOfRange', "{0}の指定「{1}」が範囲（{2}〜{3}）を外れています。", spec.label, part, spec.min, spec.max);
 		}
 		// 間隔が欄の幅を超えると 1 つの値にしかならない（`*/90` は毎時 0 分）。書いた意図と違うので断る
-		if (stepText !== undefined && step > spec.max - spec.min) {
+		if (strict && stepText !== undefined && step > spec.max - spec.min) {
 			return localize('paradis.scheduledRuns.cron.stepTooLarge', "{0}の間隔「{1}」は {2} 以下にしてください（cron 式の間隔は{0}の中でだけ繰り返します）。", spec.label, part, spec.max - spec.min);
 		}
 		for (let value = from; value <= to; value += step) {
@@ -91,8 +91,17 @@ function parseField(text: string, spec: IFieldSpec): { values: Set<number>; rest
 	return { values, restricted };
 }
 
+/** {@link paradisParseCron} の決め。 */
+export interface IParadisCronParseOptions {
+	/**
+	 * 間隔が欄の幅を超える指定（分の `*\/90` など。1 つの値にしかならない）を断る。新しく保存するときの検証だけが
+	 * true を渡す。保存済みの定義を走らせるときは前と同じく読む（`*\/90` は毎時 0 分）ので、黙って止まらない。
+	 */
+	readonly strict?: boolean;
+}
+
 /** 5 項目の cron 式（分 時 日 月 曜日）を解釈する。 */
-export function paradisParseCron(expression: string): ParadisCronParseResult {
+export function paradisParseCron(expression: string, options?: IParadisCronParseOptions): ParadisCronParseResult {
 	const source = expression.trim().replace(/\s+/g, ' ');
 	const fields = source.length > 0 ? source.split(' ') : [];
 	if (fields.length !== 5) {
@@ -100,7 +109,7 @@ export function paradisParseCron(expression: string): ParadisCronParseResult {
 	}
 	const parsed: { values: Set<number>; restricted: boolean }[] = [];
 	for (let index = 0; index < fields.length; index++) {
-		const result = parseField(fields[index], FIELD_SPECS[index]);
+		const result = parseField(fields[index], FIELD_SPECS[index], options?.strict === true);
 		if (typeof result === 'string') {
 			return { error: result };
 		}
@@ -164,6 +173,22 @@ export function paradisNextCronOccurrence(schedule: IParadisCronSchedule, after:
 		}
 	}
 	return undefined;
+}
+
+/**
+ * 保存済みの式が、書いた意図と違う意味で走っているときの注意（間隔が欄の幅を超える `*\/90` など）。前と同じ動きで
+ * 走らせ続け、一覧と編集の画面にこの文を出す。問題が無ければ undefined。
+ */
+export function paradisCronLegacyWarning(expression: string): string | undefined {
+	const lenient = paradisParseCron(expression);
+	if (lenient.error !== undefined || paradisParseCron(expression, { strict: true }).error === undefined) {
+		return undefined;
+	}
+	// 実際に走っている時刻を、分と時を値の並びに直した式で言い表す（`*\/90 * * * *` → `0 * * * *` →「毎時 0 分」）
+	const fields = lenient.schedule.source.split(' ');
+	const hours = lenient.schedule.hours.length === 24 ? '*' : lenient.schedule.hours.join(',');
+	const actual = [lenient.schedule.minutes.join(','), hours, ...fields.slice(2)].join(' ');
+	return localize('paradis.scheduledRuns.cron.legacyWarning', "この式は意図どおりに動いていません（{0} に走っています）。直してください。", paradisDescribeCron(actual));
 }
 
 /** 走る日の 1 日あたりの回数（どの日も時と分の組み合わせの数だけ走る）。 */

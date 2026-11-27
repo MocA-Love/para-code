@@ -425,7 +425,7 @@ export function paradisIsFinishedRunStatus(status: ParadisScheduledRunStatus): b
  *
  * 画面と shared process の両方で呼ぶ（shared process の検証が正本。画面は先に知らせるだけ）。
  */
-export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraft): string | undefined {
+export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraft, options?: { readonly storedSchedule?: boolean }): string | undefined {
 	const name = draft.name.trim();
 	if (name.length === 0) {
 		return localize('paradis.scheduledRuns.validate.name', "名前を入れてください。");
@@ -433,7 +433,9 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 	if (name.length > PARADIS_SCHEDULED_RUN_MAX_NAME_LENGTH) {
 		return localize('paradis.scheduledRuns.validate.nameLong', "名前は {0} 文字以内にしてください。", PARADIS_SCHEDULED_RUN_MAX_NAME_LENGTH);
 	}
-	const parsed = paradisParseCron(draft.schedule);
+	// 新しく保存する式は厳しく見る。ファイルから読んだ保存済みの式（`storedSchedule`）は前と同じく読み、間隔が欄の幅を
+	// 超える `*\/90` のような式も無効にしない（画面に注意を出す。paradisCronLegacyWarning）
+	const parsed = paradisParseCron(draft.schedule, { strict: options?.storedSchedule !== true });
 	if (parsed.error !== undefined) {
 		return parsed.error;
 	}
@@ -547,7 +549,7 @@ export function paradisRevalidateStoredDefinition(definition: IParadisScheduledR
 		prompt: paradisSanitizeScheduledRunPrompt(definition.prompt),
 		...(definition.precheck ? { precheck: paradisSanitizeScheduledRunPrecheck(definition.precheck) } : {}),
 	};
-	const problem = paradisValidateScheduledRunDraft(cleaned);
+	const problem = paradisValidateScheduledRunDraft(cleaned, { storedSchedule: true });
 	if (problem === undefined) {
 		return { definition: cleaned };
 	}
