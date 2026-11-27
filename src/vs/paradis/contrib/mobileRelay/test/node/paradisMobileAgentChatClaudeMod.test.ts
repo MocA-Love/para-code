@@ -822,6 +822,21 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.deepStrictEqual(handed, [['', 'replace'], ['戻したい書きかけ', 'append'], ['戻したい書きかけ', 'append']]);
 	}));
 
+	test('reads the input box for bot messages only after the draft mod has sent it in this session, not from the main mod\'s draft.fill', () => withHarness(async harness => {
+		harness.hook('Stop');
+		const before = harness.chat.desktopDraft(harness.token);
+		const poll = harness.mod('commands', { busy: true, features: ['commands.list', 'command.run', 'draft.fill'] });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		// 本体の mod だけ（draft.fill を名乗るが、入力欄の文はまだ一度も届いていない）
+		const mainModOnly = harness.chat.desktopDraft(harness.token);
+		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
+		const emptyFromDraftMod = harness.chat.desktopDraft(harness.token);
+		await harness.mod('event', { events: [{ type: 'draft', text: '書きかけ' }] });
+		const typing = harness.chat.desktopDraft(harness.token);
+		void poll;
+		assert.deepStrictEqual({ before, mainModOnly, emptyFromDraftMod, typing }, { before: undefined, mainModOnly: undefined, emptyFromDraftMod: '', typing: '書きかけ' });
+	}));
+
 	test('waits for the text Para Code just pasted by keys to leave the box before typing the next one, folded pastes included', () => withHarness(async harness => {
 		harness.hook('Stop');
 		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });

@@ -274,10 +274,9 @@ export class ParadisBotGroupEditor extends EditorPane {
 		const cannotReceive = members.filter(bot => !paradisBotCanReceiveBotMessages(bot.agent)).map(bot => bot.name).join('・');
 		if (cannotReceive) {
 			// allow-any-unicode-next-line
-			notes.push(localize('paradis.botGroups.cannotReceiveNote', "{0}: {1}（Bot 同士の伝言は Claude Code の Bot だけが受け取れます）", paradisBotCannotReceiveLabel(), cannotReceive));
+			notes.push(localize('paradis.botGroups.cannotReceiveNote', "{0}: {1}（Bot 同士の伝言を受け取れるのは、入力欄を読む Para Code の mod が動いている Claude Code の Bot だけです）", paradisBotCannotReceiveLabel(), cannotReceive));
 		}
 		this.where.textContent = notes.filter(note => !!note).join('　');
-		this.where.textContent = notes.join('　');
 	}
 
 	override focus(): void {

@@ -9,7 +9,7 @@
 // Bot 同士の伝言を、宛先の会話のペインを持つウィンドウで届ける手順（窓口 `paradisBotGroupsWindow` の `deliver` が呼ぶ）。
 // サービスに触れない形にして、断りの順・順番待ち・読み込み待ちを単体テストで固定する。
 
-import { SequencerByKey } from '../../../../base/common/async.js';
+import { SequencerByKey, timeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import type { IParadisAgentChatDeliverOptions, ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
@@ -67,8 +67,11 @@ export interface IParadisBotGroupDeliverDependencies {
 	now(): number;
 }
 
-/** 打ち込みで安全に届けられない宛先への断り（送り直しても通らない）。 */
-export const PARADIS_BOT_GROUP_UNSAFE_REASON = 'Para Code cannot deliver bot messages safely to that bot\'s agent (it needs Claude Code with Para Code\'s input mod), so do not send it again';
+/**
+ * 打ち込みで安全に届けられない宛先への断り。道具はこれを「今は受け取らなかった（理由）。後で送り直す」の枠に入れるので、
+ * 送り直して通るのは持ち主が入力欄を一度使った後だけだと書く。
+ */
+export const PARADIS_BOT_GROUP_UNSAFE_REASON = 'Para Code cannot see that bot\'s input box, so it does not type bot messages into it. Only Claude Code bots with Para Code\'s input mod running can take them; sending it again only helps after that bot\'s owner has used its input once';
 
 /**
  * 伝言を届ける。順は「台帳の読み込み → 送り手と宛先が同じグループ → 宛先がこのウィンドウで動いている → 回数の上限 →
@@ -117,14 +120,41 @@ export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDepend
 	}
 }
 
-/** 同じ宛先への伝言を 1 つずつ届ける（並んだ 2 通が入力欄で 1 つの発言にまとまらないように）。 */
+/**
+ * 打ち込んだ後、次の伝言を同じ宛先へ打つまで空ける時間（ミリ秒）。入力欄が空になった知らせ（入力欄の mod の束ねと HTTP）が
+ * 届く前に次を始めると、前の伝言の文を利用者の書きかけと読んで断るため。
+ */
+export const PARADIS_BOT_GROUP_DELIVER_SETTLE = 1000;
+
+/**
+ * 同じ宛先への伝言を 1 つずつ届ける（並んだ 2 通が入力欄で 1 つの発言にまとまらないように）。打ち込んだ宛先へは
+ * {@link PARADIS_BOT_GROUP_DELIVER_SETTLE} 空けてから次を始める。
+ */
 export class ParadisBotGroupDeliverQueue {
 
 	private readonly sequencer = new SequencerByKey<string>();
+	private readonly typedAt = new Map<string, number>();
 
-	constructor(private readonly deps: IParadisBotGroupDeliverDependencies) { }
+	constructor(
+		private readonly deps: IParadisBotGroupDeliverDependencies,
+		private readonly settle = PARADIS_BOT_GROUP_DELIVER_SETTLE,
+		private readonly wait: (ms: number) => Promise<void> = timeout,
+	) { }
 
 	deliver(callerHash: string, to: string, text: string): Promise<ParadisBotGroupDeliverResult> {
-		return this.sequencer.queue(to, () => paradisBotGroupDeliver(this.deps, callerHash, to, text));
+		return this.sequencer.queue(to, async () => {
+			const last = this.typedAt.get(to);
+			const left = last === undefined ? 0 : last + this.settle - this.deps.now();
+			if (left > 0) {
+				await this.wait(left);
+			}
+			const result = await paradisBotGroupDeliver(this.deps, callerHash, to, text);
+			if (result.kind === 'delivered' || result.kind === 'queued' || result.kind === 'unknown') {
+				this.typedAt.set(to, this.deps.now());
+			} else {
+				this.typedAt.delete(to);
+			}
+			return result;
+		});
 	}
 }

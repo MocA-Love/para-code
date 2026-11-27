@@ -56,7 +56,7 @@ suite('Paradis bot group deliver', () => {
 			delivered: { kind: 'delivered' },
 			patrolling: { kind: 'delivered' },
 			queued: { kind: 'queued' },
-			unsafe: { kind: 'refused', reason: 'Para Code cannot deliver bot messages safely to that bot\'s agent (it needs Claude Code with Para Code\'s input mod), so do not send it again' },
+			unsafe: { kind: 'refused', reason: 'Para Code cannot see that bot\'s input box, so it does not type bot messages into it. Only Claude Code bots with Para Code\'s input mod running can take them; sending it again only helps after that bot\'s owner has used its input once' },
 			drafting: { kind: 'refused', reason: 'its owner is typing in that bot\'s input' },
 			prompt: { kind: 'refused', reason: 'that bot cannot take a message now, for example while a question or permission prompt is open' },
 			pastedNotSent: { kind: 'unknown', reason: 'Para Code may have typed the message into that bot\'s input without sending it' },
@@ -83,7 +83,10 @@ suite('Paradis bot group deliver', () => {
 		const log: string[] = [];
 		let release: () => void = () => { };
 		const first = new Promise<void>(resolve => { release = resolve; });
+		const waits: number[] = [];
+		let clock = 0;
 		const queue = new ParadisBotGroupDeliverQueue(deps({
+			now: () => clock,
 			groups: () => [{ members: ['a', 'b', 'c'] }],
 			bot: () => ({ paused: false, activity: 'idle' }),
 			send: async (botId, text) => {
@@ -92,16 +95,18 @@ suite('Paradis bot group deliver', () => {
 					await first;
 				}
 				log.push(`end ${botId}:${text}`);
+				clock += 100;
 				return { kind: 'sent' };
 			},
-		}));
+		}), 1000, async ms => { waits.push(ms); clock += ms; });
 		const one = queue.deliver(HASH_A, 'b', '1');
 		const two = queue.deliver(HASH_A, 'b', '2');
 		const other = queue.deliver(HASH_A, 'c', '3');
 		await other;
 		release();
 		await Promise.all([one, two]);
-		assert.deepStrictEqual(log, ['start b:1', 'start c:3', 'end c:3', 'end b:1', 'start b:2', 'end b:2']);
+		// 打ち込んだ宛先へは、入力欄が空になった知らせを待つ間（1 秒）を空けてから次を打つ
+		assert.deepStrictEqual({ log, waits }, { log: ['start b:1', 'start c:3', 'end c:3', 'end b:1', 'start b:2', 'end b:2'], waits: [1000] });
 	});
 
 	test('台帳を読み込む前に来た最初の伝言は、読み込みを待ってから照らす。読めなければ「同じグループでない」にしない', async () => {
