@@ -8493,11 +8493,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		));
 	}
 
-	/**
-	 * 呼び出し元ペインを所有するウィンドウの IPC チャネルを1回だけ呼ぶ。ウィンドウ特定は
-	 * `_paneShells`（トークン → ウィンドウctx）で行い、取り違えを防ぐ。
-	 * 失敗理由は LLM がそのまま読める英語メッセージで返し、内部例外は外へ出さない。
-	 */
 	/** そのペインを所有するウィンドウ（分からなければ undefined）。 */
 	private _paneOwner(token: string): { readonly windowCtx: string } | undefined {
 		// 接続先のペインはシェルの PID が分からず `_paneShells` に載らないことがある（SSH の再読み込み直後など）
@@ -8511,6 +8506,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		return pane !== undefined && this.ipcServer.connections.some(connection => connection.ctx === pane.windowCtx) ? pane.windowCtx : undefined;
 	}
 
+	/**
+	 * 呼び出し元ペイン（`targetPaneToken` を渡したらそのペイン）を所有するウィンドウの IPC チャネルを1回だけ呼ぶ。ウィンドウ特定は
+	 * `_paneShells`（トークン → ウィンドウctx）で行い、取り違えを防ぐ。
+	 * 失敗理由は LLM がそのまま読める英語メッセージで返し、内部例外は外へ出さない。
+	 */
 	private async _callOwningWindow<T>(
 		ingressLease: IParadisAgentBrowserIngressLease,
 		request: IParadisMcpOwningWindowRequest,
