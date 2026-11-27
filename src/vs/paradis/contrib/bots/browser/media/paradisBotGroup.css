@@ -182,20 +182,19 @@
 	color: var(--vscode-textLink-foreground);
 }
 
-.paradis-bot-group-room .pbgr-undelivered {
+.paradis-bot-group-room .pbgr-mark {
 	flex: none;
 	padding: 0 var(--vscode-spacing-size40);
-	border: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground) 40%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-descriptionForeground) 40%, transparent);
 	border-radius: var(--vscode-cornerRadius-small);
-	color: var(--vscode-editorWarning-foreground);
+	color: var(--vscode-descriptionForeground);
 	line-height: 14px;
 	white-space: nowrap;
 }
 
-.paradis-bot-group-room .pbgr-undelivered.unread,
-.paradis-bot-group-room .pbgr-undelivered.read {
-	border-color: color-mix(in srgb, var(--vscode-descriptionForeground) 40%, transparent);
-	color: var(--vscode-descriptionForeground);
+.paradis-bot-group-room .pbgr-mark.unread {
+	border-color: color-mix(in srgb, var(--vscode-textLink-foreground) 40%, transparent);
+	color: var(--vscode-textLink-foreground);
 }
 
 .paradis-bot-group-room .pbgr-text {
