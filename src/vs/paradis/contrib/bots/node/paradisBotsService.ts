@@ -350,9 +350,13 @@ export class ParadisBotsService extends Disposable {
 		return paneToken.length > 0 ? this.boardOrigins.paneOrigin(paradisTaskBoardTerminalId(paneToken))?.botId : undefined;
 	}
 
-	/** Bot の機能がオンで、そのペインが Bot のペインか（ほかの道具が Bot のペインを見分けるため）。 */
+	/**
+	 * そのペインが Bot のペインか（ほかの道具が Bot のペインを見分けるため）。Bot の機能の設定は見ない。設定は利用者の
+	 * `settings.json` にあり、Bot のエージェントが書き換えられることがあるので、オフにしても結び付いたペインの間は Bot の
+	 * ペインとして断り続ける（オフにしたら、ウィンドウが Bot のペインを閉じる。{@link allPaneHashes}）。
+	 */
 	isBotPane(paneToken: string): boolean {
-		return this.enabled() && paneToken.length > 0 && this.botOfPane(paneToken) !== undefined;
+		return paneToken.length > 0 && this.botOfPane(paneToken) !== undefined;
 	}
 
 	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
@@ -735,6 +739,11 @@ export class ParadisBotsService extends Disposable {
 			...this.panes.tokensOf(botId, { purpose }).map(paradisBotPaneTokenHash),
 			...this.panes.rememberedPanes().filter(record => record.botId === botId && (purpose === undefined || record.purpose === purpose)).map(record => record.hash),
 		])];
+	}
+
+	/** すべての Bot のペインのトークンの SHA-256（Bot の機能をオフにしたとき、ウィンドウが Bot のペインを閉じるのに使う）。 */
+	allPaneHashes(): string[] {
+		return [...new Set(this.bots.bots.flatMap(bot => this.paneHashesOf(bot.id)))];
 	}
 
 	// ---- 定期実行の見回りの門（定期実行のサービスが呼ぶ） -------------------------------------------

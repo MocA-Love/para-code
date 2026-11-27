@@ -128,14 +128,26 @@ suite('Paradis bots service', () => {
 		});
 	});
 
-	test('isBotPane: Bot として起動したペインだけ true、Bot の機能がオフなら false', async () => {
+	test('isBotPane と Bot の制限: Bot として起動したペインだけ。Bot の機能をオフにしても、結び付いたペインの間は外れない', async () => {
 		const h = harness(store);
 		await h.service.ready;
-		await h.bot('見張り係');
-		const check = () => ({ bot: h.service.isBotPane('pane-見張り係'), other: h.service.isBotPane('pane-other'), empty: h.service.isBotPane('') });
-		const on = check();
+		const botId = await h.bot('見張り係');
+		assert.ok(h.service.reportLaunch(h.service.issueLaunch(botId, 'patrol')!, 'pane-patrol'));
+		const ideRefusal = paradisBotIdeActionRefusal(h.service);
+		const patrolRefusal = paradisBotPatrolToolRefusal(h.service);
+		const check = async () => ({
+			bot: h.service.isBotPane('pane-見張り係'), other: h.service.isBotPane('pane-other'), empty: h.service.isBotPane(''),
+			refused: [(await ideRefusal('pane-見張り係', 'launch_agent')) !== undefined, (await ideRefusal('pane-patrol', 'create_terminal')) !== undefined, (await patrolRefusal('pane-patrol', 'click')) !== undefined, (await ideRefusal('pane-other', 'launch_agent')) !== undefined],
+		});
+		const on = await check();
+		// Bot のエージェントが settings.json で機能をオフにしても、制限は外れない。ウィンドウはこのハッシュで Bot のペインを閉じる
 		h.settings.enabled = false;
-		assert.deepStrictEqual({ on, off: check() }, { on: { bot: true, other: false, empty: false }, off: { bot: false, other: false, empty: false } });
+		const off = await check();
+		assert.deepStrictEqual({ on, off, allPaneHashes: h.service.allPaneHashes().length }, {
+			on: { bot: true, other: false, empty: false, refused: [true, true, true, false] },
+			off: { bot: true, other: false, empty: false, refused: [true, true, true, false] },
+			allPaneHashes: 2,
+		});
 	});
 
 	test('偽の TerminalExit（agent-hook の HTTP から届く、observedExit の無いもの）では結び付けも制限も外れず、Para Code が見た終了では外れる', async () => {
