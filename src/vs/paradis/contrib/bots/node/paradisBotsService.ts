@@ -108,6 +108,8 @@ export interface IParadisBotsServiceOptions {
 	readonly itemsByteLimit?: number;
 	/** 前に出す依頼にウィンドウが応えるのを待つ時間。既定は {@link PARADIS_BOT_REVEAL_TIMEOUT_MS}。 */
 	readonly revealTimeoutMs?: number;
+	/** 眠った会話の記録の置き場（テストで差し替える。既定は Claude Code の設定と Codex のホーム）。 */
+	readonly transcriptRoots?: IParadisBotTranscriptRoots;
 	/**
 	 * 見回りの起動のたびに、読むだけに制限するのに要るもの（Claude Code の設定ファイル・Codex の止める MCP サーバー）を
 	 * 用意する（paradisBotPatrolLaunch.ts）。用意できなければ断る理由（英文）。渡さなければ見回りは `unavailable` で断る。
@@ -157,6 +159,7 @@ export class ParadisBotsService extends Disposable {
 	private suggestions: IParadisBotSuggestionsState = EMPTY_PARADIS_BOT_SUGGESTIONS_STATE;
 	private readonly itemsByteLimit: number;
 	private readonly revealTimeoutMs: number;
+	private readonly givenTranscriptRoots: IParadisBotTranscriptRoots | undefined;
 	/** 前に出す依頼の番号 → ウィンドウが応えたときに呼ぶもの。 */
 	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
@@ -210,6 +213,7 @@ export class ParadisBotsService extends Disposable {
 		this.memorySnapshots = options.memorySnapshots;
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
 		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
+		this.givenTranscriptRoots = options.transcriptRoots;
 		this.enabled = options.enabled ?? (() => true);
 		this.preparePatrol = options.preparePatrol;
 		this.agentTemplate = options.agentTemplate;
@@ -818,11 +822,16 @@ export class ParadisBotsService extends Disposable {
 		return true;
 	}
 
-	/** 眠っている Bot の前の会話を、会話の記録のファイルから読む（エージェントは起こさない）。ペインがある・続けられる会話が無ければ undefined。 */
+	/**
+	 * 眠っている Bot の前の会話を、会話の記録のファイルから読む（エージェントは起こさない）。結び付いた会話のペインがある・
+	 * 続けられる会話が無ければ undefined。前に出す依頼に応えが無かった（detach した）ペインと、保存したがまだ現れていない
+	 * ペインは数えない（生きているかが分からないだけで、Bot は眠っていると出し、話しかければ起動へ進む。読むだけなので、
+	 * そのペインが実は生きていても害は無い。数えると、そのペインが応えないまま終わったときに前の会話が読めなくなる）。
+	 */
 	async sleepingChat(botId: string): Promise<IParadisBotSleepingChat | undefined> {
 		const bot = this.getBot(botId);
 		const record = this.panes.chatSessionOf(botId);
-		if (bot === undefined || record === undefined || record.agent !== bot.agent || this.paneHashesOf(botId, 'chat').length > 0) {
+		if (bot === undefined || record === undefined || record.agent !== bot.agent || this.panes.tokensOf(botId, { purpose: 'chat' }).length > 0) {
 			return undefined;
 		}
 		return paradisReadBotSleepingChat(record, this.transcriptRoots());
@@ -830,7 +839,7 @@ export class ParadisBotsService extends Disposable {
 
 	/** 会話の記録の置き場（テストで差し替える）。 */
 	protected transcriptRoots(): IParadisBotTranscriptRoots {
-		return { claudeConfigDir: paradisClaudeConfigDir(), codexHomes: paradisCodexHomes() };
+		return this.givenTranscriptRoots ?? { claudeConfigDir: paradisClaudeConfigDir(), codexHomes: paradisCodexHomes() };
 	}
 
 	/** その Bot のペインのトークンの SHA-256（結び付いているものと、保存してまだ現れていないもの）。`purpose` を渡せばその用途だけ。 */
