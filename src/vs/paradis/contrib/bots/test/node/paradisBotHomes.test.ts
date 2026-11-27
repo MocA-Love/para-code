@@ -10,7 +10,7 @@ import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { Emitter } from '../../../../../base/common/event.js';
-import { join } from '../../../../../base/common/path.js';
+import { dirname, join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
@@ -227,6 +227,19 @@ suite('Paradis bot homes', () => {
 			outsideEmpty: [],
 			otherSoul: false,
 		});
+	});
+
+	test('テンプレートのスキルと同じ名前のスキルが既にあれば、どちらの置き場にも書かずに断り、人格メモに節を足さない', async () => {
+		const home = await homes.ensure(BOT, '# リリース係\n');
+		const mine = join(home, '.agents', 'skills', 'pr-review-checklist', 'SKILL.md');
+		await fs.mkdir(dirname(mine), { recursive: true });
+		await fs.writeFile(mine, '自分で書いた手順\n');
+		assert.deepStrictEqual({
+			result: await code(() => homes.writeTemplateSkill(BOT, 'review')),
+			mine: await fs.readFile(mine, 'utf8'),
+			claude: await fs.readFile(join(home, '.claude', 'skills', 'pr-review-checklist', 'SKILL.md'), 'utf8').then(() => 'written', () => 'none'),
+			soul: (await fs.readFile(join(home, 'SOUL.md'), 'utf8')).includes('## スキル'),
+		}, { result: 'exists', mine: '自分で書いた手順\n', claude: 'none', soul: false });
 	});
 
 	test('MEMORY.md が symlink なら書かず、断りの文には絶対パスを入れずファイル名だけを書く', async () => {

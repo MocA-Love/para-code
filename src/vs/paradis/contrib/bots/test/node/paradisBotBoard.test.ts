@@ -241,4 +241,55 @@ suite('Paradis bot board', () => {
 			tasks: 21,
 		});
 	});
+
+	test('1 時間の数は控えから数えるので作り直しても消えない。ボードが開いていない・SSH で断られた分は数えず、時間切れは数える', async () => {
+		let ids = 0;
+		const clock = 1_000_000;
+		const service = store.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { uuid: () => `id${++ids}`, now: () => clock }));
+		let tasks = 0;
+		let answer: 'ok' | 'not-running' | 'remote' | 'failed' = 'not-running';
+		const addTask = async (): Promise<TaskBoardAddTaskResult> => answer === 'ok' ? { ok: true, taskId: `t-${++tasks}` } : { ok: false, reason: answer };
+		const context: IParadisMcpToolCallContext = {
+			callOwningWindow: async () => ({ ok: false, error: 'unused' }),
+			getPaneAgentStatus: () => undefined,
+			getUnconfirmedRelease: () => undefined,
+			hasAgentHookHistory: () => false,
+			classifyCaller: async () => 'pane',
+		};
+		let tools = new ParadisBotBoardToolProvider(service, () => true, addTask, () => clock);
+		const call = async (number: number) => {
+			const result = await tools.callTool('pane-1', 'bot_board_add_task', { number }, undefined, context) as { content: { text: string }[]; isError?: boolean };
+			return result.isError ? result.content[0].text.slice(0, 30) : 'ok';
+		};
+		assert.ok((await service.createBot({ name: 'リリース係', agent: 'claude' })).ok);
+		const launchId = service.issueLaunch('id1', 'chat');
+		assert.ok(launchId !== undefined && service.reportLaunch(launchId, 'pane-1'));
+		const numbers: number[] = [];
+		for (let index = 0; index < 4; index++) {
+			const item = await service.botAddItem('id1', { title: `項目 ${index}` });
+			assert.ok(item.ok);
+			numbers.push(item.value.number);
+		}
+		const results: string[] = [];
+		// ボードが開いていない・SSH のボードで 12 回断られても、数に入らない
+		for (let index = 0; index < 12; index++) {
+			answer = index % 2 === 0 ? 'not-running' : 'remote';
+			await call(numbers[0]);
+		}
+		// 載せた 8 件と、時間切れの 1 件を数える
+		answer = 'ok';
+		for (let index = 0; index < 8; index++) {
+			results.push(await call(numbers[Math.floor(index / 4)]));
+		}
+		answer = 'failed';
+		results.push(await call(numbers[2]));
+		// 道具を作り直しても（Para Code を起動し直したのと同じく、待ちの分は消える）、載せた 8 件は控えから数える
+		tools = new ParadisBotBoardToolProvider(service, () => true, addTask, () => clock);
+		answer = 'ok';
+		results.push(await call(numbers[2]), await call(numbers[2]), await call(numbers[3]));
+		assert.deepStrictEqual({ results, tasks }, {
+			results: [...Array.from({ length: 8 }, () => 'ok'), 'The task board did not confirm', 'ok', 'ok', 'You put 10 tasks on the board '],
+			tasks: 10,
+		});
+	});
 });

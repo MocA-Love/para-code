@@ -271,9 +271,9 @@ suite('Paradis bot manage tools', () => {
 		assert.deepStrictEqual({ ...result, afterReload: [reloaded.service.boardOriginOfPane('pane-task'), reloaded.service.boardOriginOfPane('pane-board-user')] }, {
 			ideFromLateTask: true,
 			scheduleFromBot: 'This terminal is a Para Code bot. A bot cannot create scheduled runs: the run would start later in a terminal that is not a bot and could change bots. Tell your owner what you would schedule.',
-			scheduleFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
-			ideFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
-			updateFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot create, change, start, stop or remove bots. Tell the user what you would change.',
+			scheduleFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do. The mark stays on this terminal; work the user wants to do without it belongs in a new terminal.',
+			ideFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do. The mark stays on this terminal; work the user wants to do without it belongs in a new terminal.',
+			updateFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot create, change, start, stop or remove bots. Tell the user what you would change. The mark stays on this terminal; work the user wants to do without it belongs in a new terminal.',
 			listFromTask: true,
 			toolsForTask: 0,
 			ideFromUserTask: undefined,

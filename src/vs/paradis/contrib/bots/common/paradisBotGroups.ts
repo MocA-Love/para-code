@@ -164,7 +164,30 @@ export function paradisBotGroupUpdate(state: IParadisBotGroupsState, id: string,
 		return refuse('invalid_argument', 'The change to the group is not valid.');
 	}
 	const group: IParadisBotGroup = { ...current, name, members, replyMode: mode, updatedAt: now };
-	return { ok: true, state: { ...state, groups: state.groups.map(existing => existing.id === id ? group : existing) }, value: group };
+	// 外した Bot 宛てのまだ読まれていない伝言は捨てる（入れ直したときに古い未読が受け箱へ戻らないように）
+	const removed = new Set(current.members.filter(member => !members.includes(member)));
+	const records = removed.size === 0 ? state.records : state.records.filter(record => !(record.groupId === id && isUnreadOnlyFor(record, removed)));
+	return { ok: true, state: { ...state, groups: state.groups.map(existing => existing.id === id ? group : existing), records }, value: group };
+}
+
+/**
+ * 消した Bot 宛てのまだ読まれていない伝言を、すべてのグループから捨てる（消した Bot は読めず、メンバーの並びには id が
+ * 残るので、上限で刈る対象にも入らない）。捨てた数を返す。捨てる物が無ければ書かない（`not_found`）。メンバーの並びは
+ * 変えない（2 人のグループが 1 人になると読み込みで捨てられるため。画面は {@link paradisBotGroupMembers} で除いて見せる）。
+ */
+export function paradisBotGroupForgetBot(state: IParadisBotGroupsState, botId: string): ParadisBotGroupsResult<number> {
+	if (!writable(state)) {
+		return refuse('read_only', READ_ONLY);
+	}
+	const removed = new Set([botId]);
+	const records = state.records.filter(record => !isUnreadOnlyFor(record, removed));
+	const count = state.records.length - records.length;
+	return count === 0 ? refuse('not_found', 'There is no unread message for the bot.') : { ok: true, state: { ...state, records }, value: count };
+}
+
+/** まだ読まれていない Bot 同士の伝言で、宛先がすべて `botIds` の中か。 */
+function isUnreadOnlyFor(record: IParadisBotGroupRecord, botIds: ReadonlySet<string>): boolean {
+	return record.kind !== 'sent' && record.readAt === undefined && record.to.every(id => botIds.has(id));
 }
 
 /** グループと、その記録を消す（Bot と Bot の専用フォルダには触れない）。 */

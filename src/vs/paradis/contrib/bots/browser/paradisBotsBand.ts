@@ -338,16 +338,28 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		const unread = paradisBotGroupUnreadCount(this.groupsService.snapshot, bot.id);
 		if (unread > 0) {
 			const unreadLabel = localize('paradis.bots.row.unread', "受け箱にまだ読まれていない伝言が {0} 通あります", unread);
-			const chip = DOM.append(row, $('span.paradis-bots-row-unread'));
+			const chip = DOM.append(row, $('span.paradis-bots-row-unread.paradis-focus-ring-inset'));
 			chip.setAttribute('role', 'button');
 			chip.setAttribute('aria-label', unreadLabel);
+			// キーボードでも押せるようにする（Enter・Space は行の「開く」ではなく、この印の「会話のタブで開く」に使う）
+			chip.tabIndex = 0;
 			DOM.append(chip, $(ThemeIcon.asCSSSelector(Codicon.mail)));
 			DOM.append(chip, $('span')).textContent = unread > 99 ? '99+' : String(unread);
 			this.rowDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), chip, unreadLabel));
-			this.rowDisposables.add(DOM.addDisposableListener(chip, DOM.EventType.CLICK, e => {
-				DOM.EventHelper.stop(e, true);
+			const openChat = () => {
 				paradisRequestBotPageTab(bot.id, 'chat');
 				this.open(bot);
+			};
+			this.rowDisposables.add(DOM.addDisposableListener(chip, DOM.EventType.CLICK, e => {
+				DOM.EventHelper.stop(e, true);
+				openChat();
+			}));
+			this.rowDisposables.add(DOM.addDisposableListener(chip, DOM.EventType.KEY_DOWN, e => {
+				const event = new StandardKeyboardEvent(e);
+				if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
+					DOM.EventHelper.stop(e, true);
+					openChat();
+				}
 			}));
 		}
 

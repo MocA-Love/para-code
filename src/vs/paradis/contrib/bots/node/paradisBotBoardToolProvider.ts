@@ -45,8 +45,11 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 		private readonly now: () => number = Date.now,
 	) { }
 
-	/** Bot ごとに、ボードへ載せた時刻（1 時間あたりの上限を数える。shared process のメモリだけ）。 */
-	private readonly addedAt = new Map<string, number[]>();
+	/**
+	 * Bot ごとに、ボードへ載せようとして、まだ控え（台帳の `boardTasks`）に入っていない時刻。返事を待っている間と、
+	 * 載ったか分からない時間切れの分。載ったものは控えから数えるので、Para Code を起動し直しても 1 時間の数は消えない。
+	 */
+	private readonly pendingAt = new Map<string, number[]>();
 
 	/** 会話の Bot のペインにだけ出す。 */
 	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[] {
@@ -102,8 +105,9 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 			return toolError(`Your open items already have ${PARADIS_BOT_BOARD_LIMITS.openTasks} task board tasks, so Para Code did not add another. Close the items whose tasks are done, or ask your owner.`);
 		}
 		const now = this.now();
-		const recent = (this.addedAt.get(bot.id) ?? []).filter(at => now - at < 60 * 60_000);
-		if (recent.length >= PARADIS_BOT_BOARD_LIMITS.perHour) {
+		const hourAgo = now - 60 * 60_000;
+		const pending = (this.pendingAt.get(bot.id) ?? []).filter(at => at > hourAgo);
+		if (pending.length + this.service.boardTasksAddedAfter(bot.id, hourAgo) >= PARADIS_BOT_BOARD_LIMITS.perHour) {
 			return toolError(`You put ${PARADIS_BOT_BOARD_LIMITS.perHour} tasks on the board in the last hour, so Para Code did not add another now. Try again later, or tell your owner.`);
 		}
 		if (this.adding.has(item.uid)) {
@@ -113,14 +117,28 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 		try {
 			const title = parsed.value.title ?? item.title;
 			const body = parsed.value.body ?? item.description;
-			// 回数は呼ぶ前に数える（載ったか分からない時間切れも数える）
-			this.addedAt.set(bot.id, [...recent, now]);
+			// 回数は呼ぶ前に数える（同時に呼ばれても超えないように。載ったか分からない時間切れもそのまま数える）
+			this.pendingAt.set(bot.id, [...pending, now]);
+			const settle = () => {
+				const list = [...this.pendingAt.get(bot.id) ?? []];
+				const index = list.lastIndexOf(now);
+				if (index >= 0) {
+					list.splice(index, 1);
+					this.pendingAt.set(bot.id, list);
+				}
+			};
 			const result = await this.addTask({ title, ...(body !== undefined ? { body } : {}), origin: { kind: 'bot', botId: bot.id, botName: bot.name, itemNumber: item.number } });
 			if (!result.ok) {
+				// ボードが開いていない・SSH のボードで断られた分は載っていないので数えない（時間切れの `failed` は数えたまま）
+				if (result.reason === 'not-running' || result.reason === 'remote') {
+					settle();
+				}
 				return toolError(paradisBotBoardRefusalMessage(result));
 			}
-			// ボードがこのタスクを動かすペインに「Bot が起こした」印を付けるため、項目へ結ぶ前に控える（結べなくても残す）
+			// ボードがこのタスクを動かすペインに「Bot が起こした」印を付けるため、項目へ結ぶ前に控える（結べなくても残す）。
+			// 控えた後は控えから数えるので、待ちの分を外す
 			await this.service.noteBotBoardTask(bot.id, result.taskId);
+			settle();
 			const linked = await this.service.linkBoardTask(bot.id, item.uid, result.taskId);
 			if (!linked.ok) {
 				return toolError(`The task board added the task (${result.taskId}), but Para Code could not link it to item #${item.number}: ${linked.message} Do not add it again; tell your owner.`);

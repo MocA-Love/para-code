@@ -22,6 +22,7 @@ import {
 	PARADIS_BOT_ASK_TOOL,
 	PARADIS_BOT_INBOX_NOTE,
 	PARADIS_BOT_INBOX_PATROL_NOTE,
+	PARADIS_BOT_INBOX_UNMARKED_NOTE,
 	PARADIS_BOT_INBOX_TOOL,
 	PARADIS_BOT_INBOX_TOOL_DEFINITION,
 	PARADIS_BOT_MESSAGE_LIMITS,
@@ -135,7 +136,7 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (!parsed.ok) {
 			return toolError(parsed.message);
 		}
-		const memberOf = groups.groupsOf(bot.id);
+		const memberOf = await groups.groupsOf(bot.id);
 		if (!memberOf.some(group => group.memberIds.some(memberId => memberId !== bot.id))) {
 			return toolError(NOT_IN_GROUP_MESSAGE);
 		}
@@ -179,12 +180,10 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (entries.length === 0) {
 			return toolJson({ messages: [], note: 'Your inbox is empty.' });
 		}
-		if (markRead) {
-			await groups.markRead(botId, entries.map(entry => entry.recordId));
-		}
+		const marked = markRead ? await groups.markRead(botId, entries.map(entry => entry.recordId)) : false;
 		const left = unread.length - entries.length;
 		return toolJson({
-			note: markRead ? PARADIS_BOT_INBOX_NOTE : PARADIS_BOT_INBOX_PATROL_NOTE,
+			note: !markRead ? PARADIS_BOT_INBOX_PATROL_NOTE : marked ? PARADIS_BOT_INBOX_NOTE : PARADIS_BOT_INBOX_UNMARKED_NOTE,
 			messages: paradisBotInboxView(entries, id => this.service.getBot(id)?.name),
 			...(left > 0 ? { more: markRead ? `${left} more unread; call bot_inbox again.` : `${left} more unread.` } : {}),
 		});

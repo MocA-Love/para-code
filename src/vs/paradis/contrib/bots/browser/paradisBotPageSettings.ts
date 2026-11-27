@@ -245,7 +245,6 @@ export class ParadisBotSettingsPanel {
 		this.rerender();
 	}
 
-	/** 動かす・ピン留め・顔。確かめずに当てる（update_bot でも確かめないもの）。 */
 	/** GitHub の見張りを入り切りする。オンにするときは確かめ、やめたらスイッチを戻す（描き直す）。 */
 	private async setWatchGithub(bot: IParadisBotSummary, on: boolean): Promise<void> {
 		if (on) {
@@ -262,10 +261,13 @@ export class ParadisBotSettingsPanel {
 		await this.quick({ watchGithub: on }, false);
 	}
 
+	/** 動かす・ピン留め・顔。確かめずに当てる（update_bot でも確かめないもの）。 */
+	// 変えられなかったときは描き直して、スイッチ・顔の選択を台帳の値へ戻す（台帳が変わらないので印も変わらず、ページは描き直さない）
 	private async quick(patch: IParadisBotPatch, stop: boolean): Promise<void> {
 		const result = await this.services.botsService.updateBot(this.botId, patch);
 		if (!result.ok) {
 			this.services.notificationService.warn(localize('paradis.botPage.settings.failed', "Bot を変えられませんでした: {0}", result.message));
+			this.rerender();
 		} else if (stop) {
 			await this.services.botsService.requestStop(this.botId);
 		}

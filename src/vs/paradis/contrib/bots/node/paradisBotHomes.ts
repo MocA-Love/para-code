@@ -44,7 +44,7 @@ export const PARADIS_BOT_MEMORY_FILES_LIMIT = 200;
 
 /** 専用フォルダの読み書きを断った理由。 */
 export class ParadisBotHomeError extends Error {
-	constructor(readonly code: 'outside' | 'not_owner' | 'too_large' | 'reserved', message: string) {
+	constructor(readonly code: 'outside' | 'not_owner' | 'too_large' | 'reserved' | 'exists', message: string) {
 		super(message);
 	}
 }
@@ -174,6 +174,7 @@ export class ParadisBotHomes {
 		}
 		const home = this.folder(bot);
 		const text = paradisBotTemplateSkillFile(skill);
+		const targets: string[] = [];
 		for (const relative of paradisBotTemplateSkillPaths(skill)) {
 			const clean = paradisBotHomeRelativePath(relative);
 			if (clean === undefined) {
@@ -181,6 +182,26 @@ export class ParadisBotHomes {
 			}
 			// 置き場の外へ出ないこと（symlink を解いた先）は {@link write} と同じに確かめる。予約の検査だけを飛ばす
 			const path = await this.resolveInside(home, clean, true);
+			// 同じ名前のスキルが既にあれば上書きしない（利用者や Bot が書いた手順を消さない）。同梱の文と同じなら書かずに済ます。
+			// 2 本とも確かめてから書く（片方だけ置き換わらないように）
+			const stat = await fs.lstat(path).catch(error => {
+				if (missing(error)) {
+					return undefined;
+				}
+				throw error;
+			});
+			if (stat?.isSymbolicLink()) {
+				throw new ParadisBotHomeError('outside', `${basename(path)} is a symbolic link; Para Code does not write through it.`);
+			}
+			const current = stat !== undefined ? await readText(path) : undefined;
+			if (current !== undefined && current !== text) {
+				throw new ParadisBotHomeError('exists', `A skill named ${skill.name} is already in the bot's home folder (${clean}), so Para Code did not replace it.`);
+			}
+			if (current === undefined) {
+				targets.push(path);
+			}
+		}
+		for (const path of targets) {
 			await paradisWriteFileAtomic(path, text, { rejectSymlink: true });
 		}
 		const soulPath = join(home, PARADIS_BOT_SOUL_FILE);
@@ -267,6 +288,12 @@ export class ParadisBotHomes {
 		// 親のフォルダを作るのは、今ある一番近い親が中にあると確かめた後（先に作ると、symlink の先に作ってしまう）
 		if (forWrite) {
 			await fs.mkdir(dirname(path), { recursive: true });
+			// 確かめてから作るまでの間に、途中のフォルダを外を指す symlink に差し替えられていないかを、作った後にもう一度確かめる
+			// （書く直前までの間は残る。Node にはパスの途中の symlink を拒んで開く口が無いため）
+			const parent = await fs.realpath(dirname(path));
+			if (parent !== realHome && !parent.startsWith(realHome + sep)) {
+				throw new ParadisBotHomeError('outside', 'The path leaves the bot\'s home folder.');
+			}
 		}
 		return path;
 	}

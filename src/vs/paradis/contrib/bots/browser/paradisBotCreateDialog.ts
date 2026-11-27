@@ -272,7 +272,10 @@ export class ParadisBotCreateDialog extends Disposable {
 	 */
 	private async writeSkill(botId: string, botName: string, template: IParadisBotTemplate): Promise<void> {
 		const installed = await this.botsService.installTemplateSkill(botId, template.id);
-		if (!installed.ok) {
+		if (!installed.ok && installed.code === 'exists') {
+			// 同じ名前のスキルが既にある（上書きしない）
+			this.notificationService.info(localize('paradis.bots.create.skillExists', "Bot「{0}」には同じ名前のスキル {1} が既にあるので、置き換えずにそのままにしました", botName, template.skill?.name ?? ''));
+		} else if (!installed.ok) {
 			this.notificationService.warn(localize('paradis.bots.create.skillFailed', "Bot「{0}」のスキル {1} を置けませんでした: {2}", botName, template.skill?.name ?? '', installed.message));
 		}
 	}

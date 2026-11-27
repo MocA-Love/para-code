@@ -13,6 +13,7 @@ import {
 	IParadisBotGroupsState,
 	paradisBotGroupAppendRecord,
 	paradisBotGroupCreate,
+	paradisBotGroupForgetBot,
 	paradisBotGroupInbox,
 	paradisBotGroupMarkRead,
 	paradisBotGroupMembers,
@@ -242,6 +243,46 @@ suite('Paradis bot groups', () => {
 			after: ['3'],
 			readAtKept: 3000,
 			afterGroupRemoved: 0,
+		});
+	});
+
+	test('消した Bot・グループから外した Bot 宛ての未読は捨て、既読・ほかの宛先・あなたの sent は残す（入れ直しても古い未読は戻らない）', () => {
+		const created = paradisBotGroupCreate(EMPTY_PARADIS_BOT_GROUPS_STATE, 'g1', { name: '班', members: ['a', 'b', 'c'] }, 1000);
+		assert.ok(created.ok);
+		let state = created.state;
+		const append = (input: Parameters<typeof paradisBotGroupAppendRecord>[2]) => {
+			const result = paradisBotGroupAppendRecord(state, 'g1', input, 2000);
+			assert.ok(result.ok);
+			state = result.state;
+		};
+		append({ kind: 'told', from: 'a', to: ['b'], text: 'b へ 1' });
+		append({ kind: 'asked', from: 'a', to: ['b'], text: 'b へ 2' });
+		append({ kind: 'told', from: 'a', to: ['c'], text: 'c へ' });
+		append({ kind: 'sent', from: 'owner', to: ['b'], text: 'あなたから' });
+		const read = paradisBotGroupMarkRead(state, 'b', ['1'], 3000);
+		assert.ok(read.ok);
+		const forgot = paradisBotGroupForgetBot(read.state, 'b');
+		assert.ok(forgot.ok);
+		const again = paradisBotGroupForgetBot(forgot.state, 'b');
+		// c をグループから外して入れ直す
+		const left = paradisBotGroupUpdate(read.state, 'g1', { members: ['a', 'b'] }, 4000);
+		assert.ok(left.ok);
+		const back = paradisBotGroupUpdate(left.state, 'g1', { members: ['a', 'b', 'c'] }, 5000);
+		assert.ok(back.ok);
+		assert.deepStrictEqual({
+			forgot: forgot.value,
+			kept: forgot.state.records.map(record => record.text),
+			members: forgot.state.groups[0].members,
+			again: again.ok ? 'ok' : again.code,
+			afterRejoin: paradisBotGroupInbox(back.state, 'c').length,
+			keptForB: back.state.records.map(record => record.text),
+		}, {
+			forgot: 1,
+			kept: ['b へ 1', 'c へ', 'あなたから'],
+			members: ['a', 'b', 'c'],
+			again: 'not_found',
+			afterRejoin: 0,
+			keptForB: ['b へ 1', 'b へ 2', 'あなたから'],
 		});
 	});
 });
