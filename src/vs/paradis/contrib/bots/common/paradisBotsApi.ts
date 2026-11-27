@@ -86,6 +86,15 @@ export interface IParadisBotsSnapshot {
 	readonly github?: IParadisBotGithubView;
 }
 
+/**
+ * 復元・つなぎ直しで戻ったターミナルが、捨てるべき Bot のペインの残りか。Bot のペインを起動するフォルダ（`roots` の下）で
+ * 起動したもので、今の Bot の台帳に結び付いていない（窓の再読み込みでつなぎ直したペインは結び付いたまま）もの。
+ * Bot のペインは終了時に閉じるが、閉じる前に保存された待避のスペースの一覧や pty の常駐から戻ることがあるので、戻った側でも捨てる。
+ */
+export function paradisIsLeftoverBotTerminal(cwd: string | undefined, roots: readonly string[], bound: boolean, isEqualOrParent: (path: string, parent: string) => boolean): boolean {
+	return !bound && cwd !== undefined && cwd.length > 0 && roots.some(root => root.length > 0 && isEqualOrParent(cwd, root));
+}
+
 export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: readonly IParadisBotPaneState[]): ParadisBotActivity {
 	if (bot.paused || panes.length === 0) {
 		return 'stopped';
@@ -208,6 +217,10 @@ export interface IParadisBotsService {
 	reportLaunch(launchId: string, paneToken: string): Promise<boolean>;
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
+	/** Bot のペインを起動するフォルダの親（会話の専用フォルダの親と、見回りのフォルダの親）。 */
+	paneFolderRoots(): Promise<readonly string[]>;
+	/** 今 Bot に結び付いているペインのトークンの SHA-256（全部の Bot。保存しただけでまだ現れていないものは含めない）。 */
+	boundPaneHashes(): Promise<readonly string[]>;
 	/**
 	 * Bot のペインのシェルでコマンドが始まった（`exitCode` が無い）か終わった（終了コード）。エージェントが見つからない・
 	 * 終わったことは hook では分からないので、ウィンドウがシェル統合から知らせる。Bot のペインでなければ何もしない。

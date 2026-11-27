@@ -143,6 +143,14 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		await this.value('cancelLaunch', [launchId], undefined);
 	}
 
+	paneFolderRoots(): Promise<readonly string[]> {
+		return this.value<readonly string[]>('paneFolderRoots', [], []);
+	}
+
+	boundPaneHashes(): Promise<readonly string[]> {
+		return this.value<readonly string[]>('boundPaneHashes', [], []);
+	}
+
 	async notePaneCommand(paneToken: string, exitCode: number | undefined, finished: boolean): Promise<void> {
 		await this.value('notePaneCommand', [paneToken, exitCode ?? null, finished], undefined);
 	}

@@ -274,6 +274,11 @@ export class ParadisBotPanes {
 		return changed;
 	}
 
+	/** 結び付いているペインのトークン（全部の Bot）。 */
+	boundTokens(): string[] {
+		return [...this.panes.keys()];
+	}
+
 	botOf(paneToken: string): string | undefined {
 		return this.panes.get(paneToken)?.botId;
 	}

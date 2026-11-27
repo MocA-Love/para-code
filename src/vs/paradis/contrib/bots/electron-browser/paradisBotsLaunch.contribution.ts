@@ -41,10 +41,13 @@ import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '..
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
 import { PARADIS_BOTS_OPEN_COMMAND } from '../common/paradisBotsBandModel.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
-import { paradisBotInstancesInWindow, paradisBotShutdownInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotShutdownInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { isEqualOrParent } from '../../../../base/common/extpath.js';
+import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
-import { IParadisBotRevealRequest, IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { IParadisBotRevealRequest, IParadisBotsService, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
 
@@ -310,8 +313,12 @@ class ParadisBotsWindowWorker extends Disposable {
 		// いるが、Bot は帯から開けば起動し直す）。窓の再読み込みは、ペインがそのままつなぎ直されるので閉じない。
 		// どれが Bot のペインかは、閉じるときに待てないので先に調べておく
 		this._register(botsService.onDidChange(() => this.instancesScheduler.schedule()));
-		this._register(terminalService.onDidCreateInstance(() => this.instancesScheduler.schedule()));
+		this._register(terminalService.onDidCreateInstance(() => {
+			this.instancesScheduler.schedule();
+			this.leftoverScheduler.schedule();
+		}));
 		this.instancesScheduler.schedule();
+		this.leftoverScheduler.schedule();
 		this._register(lifecycleService.onBeforeShutdown(event => {
 			if (paradisBotClosesPanesOnShutdown(event.reason)) {
 				this.closeBotPanes();
@@ -326,6 +333,40 @@ class ParadisBotsWindowWorker extends Disposable {
 		// 起動し直した後に戻ったペインと、Bot の名前を変えたときも、タブ名を Bot の名前に合わせる
 		this._register(botsService.onDidChange(() => this.nameScheduler.schedule()));
 		this.nameScheduler.schedule();
+	}
+
+	/** 復元・つなぎ直しで戻ったターミナルのうち、Bot のペインの残りを捨てる（{@link discardLeftovers}）。 */
+	private readonly leftoverScheduler = this._register(new RunOnceScheduler(() => {
+		this.discardLeftovers().catch(error => this.logService.warn('[paradisBots] discarding restored bot terminals failed', error));
+	}, 1000));
+	/** 残りかを確かめ終えたターミナル。 */
+	private readonly checkedRestored = new Set<number>();
+
+	/**
+	 * 復元・つなぎ直しで戻ったターミナル（`attachPersistentProcess` で作られたもの）のうち、Bot のペインを起動するフォルダで
+	 * 起動していて、今の Bot に結び付いていないものを閉じる。終了時に閉じても、閉じる前に保存された待避のスペースの一覧
+	 * （別のスペースへ切り替えたときに保存される）や pty の常駐からは戻りうるので、戻った側でも捨てる。復元したタブは
+	 * ペイントークンで Bot のペインと分からないので、起動したフォルダで見分ける。窓の再読み込みでつなぎ直したペインは
+	 * 結び付いたままなので閉じない。会話の続きは Bot のページから起動し直して戻す。
+	 */
+	private async discardLeftovers(): Promise<void> {
+		const candidates = paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService)
+			.filter(instance => !instance.isDisposed && !this.checkedRestored.has(instance.instanceId) && instance.shellLaunchConfig.attachPersistentProcess !== undefined);
+		if (candidates.length === 0) {
+			return;
+		}
+		const [roots, bound] = await Promise.all([this.botsService.paneFolderRoots(), this.botsService.boundPaneHashes()]);
+		const boundHashes = new Set(bound);
+		for (const instance of candidates) {
+			this.checkedRestored.add(instance.instanceId);
+			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+			const isBound = token !== undefined && boundHashes.has(await paradisBotPaneTokenHashInWindow(token));
+			const configCwd = instance.shellLaunchConfig.cwd;
+			const cwd = instance.shellLaunchConfig.attachPersistentProcess?.cwd || (typeof configCwd === 'string' ? configCwd : configCwd?.fsPath);
+			if (!instance.isDisposed && paradisIsLeftoverBotTerminal(cwd, roots, isBound, (path, parent) => isEqualOrParent(path, parent, !isLinux))) {
+				instance.dispose(TerminalExitReason.User);
+			}
+		}
 	}
 
 	/** Bot のペインごとの、シェルのコマンドの始まりと終わりの見張り。 */
@@ -358,7 +399,8 @@ class ParadisBotsWindowWorker extends Disposable {
 				const last = detection.commands.at(-1);
 				if (detection.executingCommandObject !== undefined) {
 					note(undefined, false);
-				} else if (last !== undefined) {
+				} else if (last !== undefined && instance.shellLaunchConfig.attachPersistentProcess === undefined) {
+					// つなぎ直したペイン（窓の再読み込み）は、前のコマンドだけが戻って実行中のコマンドが戻らないことがあるので知らせない
 					note(last.exitCode, true);
 				}
 				store.add(detection.onCommandExecuted(() => note(undefined, false)));

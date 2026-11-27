@@ -116,6 +116,8 @@ export interface IParadisBotsServiceOptions {
 	 * 会話の Bot を Codex で起動するときに、para-browser が Codex の `config.toml` に登録されているかと MCP の口を読む。
 	 * 無ければ登録済みとして扱う（今までどおり道具の許可だけを渡す）。
 	 */
+	/** Bot のペインを起動するフォルダの親（会話の専用フォルダの親と、見回りのフォルダの親）。 */
+	readonly paneFolderRoots?: readonly string[];
 	readonly codexBrowserRegistration?: () => Promise<{ readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined }>;
 }
 
@@ -157,6 +159,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly agentTemplate: IParadisBotsServiceOptions['agentTemplate'];
 	private readonly forgetPatrol: IParadisBotsServiceOptions['forgetPatrol'];
 	private readonly codexBrowserRegistration: IParadisBotsServiceOptions['codexBrowserRegistration'];
+	private readonly folderRoots: readonly string[];
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -207,6 +210,7 @@ export class ParadisBotsService extends Disposable {
 		this.agentTemplate = options.agentTemplate;
 		this.forgetPatrol = options.forgetPatrol;
 		this.codexBrowserRegistration = options.codexBrowserRegistration;
+		this.folderRoots = options.paneFolderRoots ?? [];
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -845,6 +849,16 @@ export class ParadisBotsService extends Disposable {
 		this.notify();
 		this.scheduleSetupCheck();
 		return true;
+	}
+
+	/** Bot のペインを起動するフォルダの親。 */
+	paneFolderRoots(): readonly string[] {
+		return this.folderRoots;
+	}
+
+	/** 今 Bot に結び付いているペインのトークンの SHA-256（全部の Bot）。 */
+	boundPaneHashes(): string[] {
+		return this.panes.boundTokens().map(paradisBotPaneTokenHash);
 	}
 
 	/** Bot のペインのシェルでコマンドが始まった・終わった（ウィンドウがシェル統合から知らせる）。 */

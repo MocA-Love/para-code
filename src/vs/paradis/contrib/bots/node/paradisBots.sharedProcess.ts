@@ -114,6 +114,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		}, agent, botId, home),
 		forgetPatrol: async botId => paradisForgetBotPatrol({ folder: join(paradisBotsDataFolder(userDataPath), 'patrol'), runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs') }, botId, await claudeConfigFile().catch(() => undefined)),
 		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
+		paneFolderRoots: [join(homedir(), '.para-code', 'bots'), join(paradisBotsDataFolder(userDataPath), 'patrol-runs')],
 		codexBrowserRegistration: () => paradisReadCodexBrowserRegistration({
 			gatewayPort: () => readGatewayPort(userDataPath),
 			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),

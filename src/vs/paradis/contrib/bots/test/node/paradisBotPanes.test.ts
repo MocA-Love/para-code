@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotSummary } from '../../common/paradisBotsApi.js';
+import { isEqualOrParent } from '../../../../../base/common/extpath.js';
+import { paradisBotSummary, paradisIsLeftoverBotTerminal } from '../../common/paradisBotsApi.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE } from '../../common/paradisBotItems.js';
 import { IParadisBot } from '../../common/paradisBots.js';
 import { PARADIS_BOT_SETUP_STALL_MS, ParadisBotPanes } from '../../node/paradisBotPanes.js';
@@ -91,5 +92,22 @@ suite('Paradis bot panes', () => {
 			['idle', { kind: 'needsUser' }],
 			['working', undefined],
 		]);
+	});
+
+	test('復元・つなぎ直しで戻ったターミナルは、Bot のフォルダで起動していて結び付いていなければ捨てる（待避のスペース・pty の常駐から戻ったものも）', () => {
+		const roots = ['/Users/me/.para-code/bots', '/Users/me/Library/Application Support/Para Code/paradis/bots/patrol-runs'];
+		const leftover = (cwd: string | undefined, bound: boolean) => paradisIsLeftoverBotTerminal(cwd, roots, bound, (path, parent) => isEqualOrParent(path, parent, false, true));
+		const panes = new ParadisBotPanes();
+		panes.issue('launch-1', 'b1', 'chat', 0, 'claude');
+		panes.report('launch-1', 'token-live', 0);
+		assert.deepStrictEqual([
+			leftover('/Users/me/.para-code/bots/bot', false),
+			leftover('/Users/me/Library/Application Support/Para Code/paradis/bots/patrol-runs/b1', false),
+			leftover('/Users/me/.para-code/bots/bot', true),
+			leftover('/Users/me/.para-code/botsX', false),
+			leftover('/Users/me/project', false),
+			leftover(undefined, false),
+			panes.boundTokens(),
+		], [true, true, false, false, false, false, ['token-live']]);
 	});
 });
