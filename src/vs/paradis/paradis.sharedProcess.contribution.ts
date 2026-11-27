@@ -64,6 +64,7 @@ import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/humanAsk/node/paradisHumanAskChannel.js';
 import { registerParadisHumanAskPaneOwner } from './contrib/humanAsk/node/paradisHumanAskPaneOwner.js';
+import './contrib/humanAsk/node/paradisAskHumanTool.sharedProcess.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/taskBoard/node/paradisTaskBoardBridge.sharedProcess.js';

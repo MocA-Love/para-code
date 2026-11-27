@@ -65,6 +65,17 @@
 	top: 48px;
 }
 
+/*
+	While a panel other than the chat (items, files, settings) covers the tab, the corner badges belong to the hidden
+	conversation: hide them so they do not sit on the panel's fields. They come back with the chat tab.
+*/
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items > .paradis-pane-indicator,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items .paradis-prompt-cache-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items .paradis-context-usage-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items > .paradis-terminal-resume-banner {
+	display: none;
+}
+
 .paradis-bot-page-face {
 	display: flex;
 	flex: none;
@@ -81,10 +92,13 @@
 	gap: var(--vscode-spacing-size80);
 	min-width: 0;
 	flex: 0 1 auto;
+	overflow: hidden;
 }
 
+/* On a narrow tab the status line gives way first, then the name is cut with an ellipsis (the tabs keep their size). */
 .paradis-bot-page-name {
-	flex: none;
+	flex: 0 1 auto;
+	min-width: 0;
 	max-width: 240px;
 	overflow: hidden;
 	white-space: nowrap;
@@ -95,6 +109,7 @@
 }
 
 .paradis-bot-page-status {
+	flex: 0 100 auto;
 	min-width: 0;
 	overflow: hidden;
 	white-space: nowrap;
@@ -394,4 +409,179 @@ button.paradis-bot-page-link:hover {
 
 .paradis-bot-page-item-actions {
 	margin-top: var(--vscode-spacing-size160);
+}
+
+/* The settings tab: a key/value grid (the mock's .kv), swatches drawn with the bot face so colours come from the theme. */
+.paradis-bot-settings {
+	display: grid;
+	grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+	align-items: center;
+	gap: var(--vscode-spacing-size120) var(--vscode-spacing-size200);
+	margin-top: var(--vscode-spacing-size160);
+}
+
+.paradis-bot-settings-key {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* Next to a tall field, the label sits on the field's first line. */
+.paradis-bot-settings-key.top {
+	align-self: start;
+	padding-top: var(--vscode-spacing-size100);
+}
+
+.paradis-bot-settings-value {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+}
+
+.paradis-bot-settings-value > .paradis-field {
+	align-self: stretch;
+}
+
+.paradis-bot-settings-swatches {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size60);
+}
+
+.paradis-bot-settings-swatch,
+.paradis-bot-settings-shape {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	background: transparent;
+	cursor: pointer;
+}
+
+.paradis-bot-settings-swatch:hover,
+.paradis-bot-settings-shape:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-bot-settings-swatch[aria-checked="true"],
+.paradis-bot-settings-shape[aria-checked="true"] {
+	border-color: var(--vscode-paradis-lineSubtle);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-settings-swatch > .paradis-bot-face,
+.paradis-bot-settings-shape > .paradis-bot-face {
+	width: 20px;
+	height: 20px;
+}
+
+.monaco-workbench .paradis-field.paradis-bot-settings-role,
+.monaco-workbench .paradis-field.paradis-bot-files-editor {
+	height: auto;
+	align-items: stretch;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+}
+
+.paradis-bot-settings-role > textarea,
+.paradis-bot-files-editor > textarea {
+	flex: 1;
+	min-width: 0;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+	resize: vertical;
+}
+
+.paradis-bot-files-editor {
+	margin-top: var(--vscode-spacing-size120);
+}
+
+/* The memory file changed elsewhere after it was opened: what changed, and overwrite or reload. */
+.paradis-bot-files-conflict {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	margin-bottom: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size120);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-files-conflict-title {
+	color: var(--vscode-paradis-warning, var(--vscode-editorWarning-foreground));
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-files-diff {
+	max-height: 160px;
+	overflow: auto;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-files-diff-line.added {
+	color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.paradis-bot-files-diff-line.removed {
+	color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+.paradis-bot-files-view {
+	margin-top: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size100) var(--vscode-spacing-size120);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-bot-page-row.selected {
+	background: var(--vscode-paradis-raised);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-settings-help {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-settings-elsewhere {
+	margin-top: var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-warning, var(--vscode-editorWarning-foreground));
+}
+
+.paradis-bot-settings-error {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-danger);
+}
+
+.paradis-bot-settings-error:empty {
+	display: none;
+}
+
+.paradis-bot-settings-foot {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size120);
+	margin-top: var(--vscode-spacing-size200);
+}
+
+.paradis-bot-settings-foot > .paradis-bot-settings-help {
+	flex: 1;
+	min-width: 0;
 }

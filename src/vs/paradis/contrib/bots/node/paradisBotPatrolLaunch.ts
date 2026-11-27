@@ -94,12 +94,18 @@ export function paradisBotPatrolInstructions(home: IParadisBotPatrolHome): strin
 }
 
 
-/** 見回りのフォルダの親に、エージェントがフォルダから読む設定があればその場所を返す。 */
+/**
+ * 見回りのフォルダの親に、エージェントがフォルダから読む設定があればその場所を返す。userData のパスが symlink を
+ * 含むとき、Claude Code・Codex は実体のパスの親を見るので、書いたままのパスと実体のパスの両方を確かめる。
+ */
 async function agentConfigAbove(folder: string, stopFolder: string): Promise<string | undefined> {
-	for (let current = folder; current !== stopFolder && dirname(current) !== current; current = dirname(current)) {
-		for (const entry of AGENT_CONFIG_ENTRIES) {
-			if (await exists(join(current, entry))) {
-				return join(current, entry);
+	const stops = new Set([stopFolder, await fs.realpath(stopFolder).catch(() => stopFolder)]);
+	for (const start of new Set([folder, await fs.realpath(folder)])) {
+		for (let current = start; !stops.has(current) && dirname(current) !== current; current = dirname(current)) {
+			for (const entry of AGENT_CONFIG_ENTRIES) {
+				if (await exists(join(current, entry))) {
+					return join(current, entry);
+				}
 			}
 		}
 	}
