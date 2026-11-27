@@ -439,7 +439,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 	private async remove(bot: IParadisBotSummary): Promise<void> {
 		const { confirmed } = await this.paradisDialogService.confirm({
 			message: localize('paradis.bots.remove.message', "「{0}」を削除しますか?", bot.name),
-			detail: localize('paradis.bots.remove.detail', "Bot と項目の一覧から外します。専用フォルダの人格メモと記憶は消さずに残します。"),
+			detail: localize('paradis.bots.remove.detail', "Bot を一覧から外し、この Bot の項目もコメントや回答ごと消します。元に戻せません。専用フォルダの人格メモと記憶は消さずに残します。"),
 			primaryButton: localize('paradis.bots.remove.confirm', "削除"),
 			destructive: true,
 		});

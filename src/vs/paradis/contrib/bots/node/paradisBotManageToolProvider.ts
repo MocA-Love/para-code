@@ -22,6 +22,7 @@ import {
 	PARADIS_BOT_STOP_TOOL,
 	paradisBotChangeRequest,
 	paradisBotManageRow,
+	paradisBotUpdateNeedsConfirmation,
 	paradisParseBotCreateArgs,
 	paradisParseBotRefArgs,
 	paradisParseBotUpdateArgs,
@@ -35,6 +36,20 @@ const READ_CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this re
 const FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot create, change, start, stop or remove bots (including itself); only the user or an agent outside the bots can. Tell your owner what you would change.';
 const BOTS_DISABLED_MESSAGE = `Para Code bots are still experimental and turned off. The user can turn them on with the setting ${PARADIS_BOTS_ENABLED_SETTING}; do not try to change the setting yourself.`;
 const UNKNOWN_BOT_MESSAGE = 'There is no bot with that id. Call list_bots for the ids.';
+const IDE_ACTION_FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot start, open, type into or close other terminals, or change spaces, with the IDE tools: a terminal it started would not be a bot and could change bots. The reading tools still work. Tell your owner what you would do.';
+
+/**
+ * IDE の操作の道具（launch_agent・create_terminal・send_terminal_input ほか）を、Bot のペインからは断る
+ * （{@link paradisRegisterAgentIdeActionRefusal} に渡す）。Bot が Bot でないペインを起こす・動かして、そこから
+ * Bot を変える道具を呼ぶ穴を塞ぐ。
+ */
+export function paradisBotIdeActionRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane'>): (paneToken: string) => Promise<string | undefined> {
+	return async paneToken => {
+		// 起動の直後は結び付けの表を読み終えていないので、待ってから引く（待たないと門が開いたままになる）
+		await service.ready;
+		return service.botOfPane(paneToken) !== undefined ? IDE_ACTION_FROM_BOT_MESSAGE : undefined;
+	};
+}
 /** 起動はターミナルの起動とエージェントの立ち上がりを待つ。 */
 const START_TIMEOUT_MS = 60_000;
 
@@ -57,12 +72,20 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 		private readonly settings: IParadisBotManageSettings,
 	) { }
 
-	listTools(): readonly IParadisMcpToolDefinition[] {
-		return PARADIS_BOT_MANAGE_TOOLS;
+	/**
+	 * Bot の機能がオンのとき、Bot でないペインにだけ出す（オフの利用者の全ペインの一覧と説明を埋めない。Bot のペインは
+	 * どうせ書く道具を断られる）。出さなくても、呼ばれたときの門（callTool）はそのまま。
+	 */
+	private shownTo(paneToken: string | undefined): boolean {
+		return this.settings.botsEnabled() && paneToken !== undefined && paneToken.length > 0 && this.service.botOfPane(paneToken) === undefined;
 	}
 
-	instructions(): string {
-		return PARADIS_BOT_MANAGE_INSTRUCTIONS;
+	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[] {
+		return this.shownTo(paneToken) ? PARADIS_BOT_MANAGE_TOOLS : [];
+	}
+
+	instructions(paneToken?: string): string | undefined {
+		return this.shownTo(paneToken) ? PARADIS_BOT_MANAGE_INSTRUCTIONS : undefined;
 	}
 
 	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<unknown | undefined> {
@@ -107,14 +130,14 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 			if (!parsed.ok) {
 				return toolError(parsed.message);
 			}
-			if (!parsed.value.needsConfirmation) {
-				return this.bot(await this.service.updateBot(parsed.value.botId, parsed.value.patch));
-			}
-			// エージェント・権限・役割の変更は、利用者の確認を通す（確認されたらウィンドウが呼び出し全体を当てる）
 			const target = this.service.getBot(parsed.value.botId);
 			if (target === undefined) {
 				return toolError(UNKNOWN_BOT_MESSAGE);
 			}
+			if (!paradisBotUpdateNeedsConfirmation(target, parsed.value)) {
+				return this.bot(await this.service.updateBot(parsed.value.botId, parsed.value.patch));
+			}
+			// エージェント・権限・役割・名前の変更と、一時停止を解くのは、利用者の確認を通す（確認されたらウィンドウが呼び出し全体を当てる）
 			if (!context) {
 				return toolError('This Para Code build cannot route bot tools to its window. Update Para Code.');
 			}
