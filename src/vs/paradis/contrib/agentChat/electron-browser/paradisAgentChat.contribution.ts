@@ -50,7 +50,7 @@ import { IParadisEditorTerminalOverlay, paradisRegisterEditorTerminalOverlay } f
 import { IParadisAgentInsightsService } from '../../agentInsights/common/paradisAgentInsights.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
-import { IParadisAgentChatTerminal, ParadisAgentChatInput, ParadisAgentChatSendOutcome, paradisIsShellProcessName } from '../browser/paradisAgentChatInput.js';
+import { IParadisAgentChatDeliverOptions, IParadisAgentChatTerminal, ParadisAgentChatInput, ParadisAgentChatSendOutcome, paradisIsShellProcessName } from '../browser/paradisAgentChatInput.js';
 import { IParadisAgentChatDictation, IParadisAgentChatDictationTarget, ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
 import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js';
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
@@ -694,10 +694,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return paradisSendToAgentPane(this.tokenFor(instanceId), text, (token, value) => this.sendMessage(instanceId, token, value));
 	}
 
-	async deliverToPane(instanceId: number, text: string): Promise<ParadisAgentChatSendOutcome> {
+	async deliverToPane(instanceId: number, text: string, options?: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome> {
 		let outcome: ParadisAgentChatSendOutcome | undefined;
 		const refusal = await paradisSendToAgentPane(this.tokenFor(instanceId), text, async (token, value) => {
-			outcome = await this.input.sendMessageOutcome(instanceId, token, value);
+			outcome = await this.input.sendMessageOutcome(instanceId, token, value, options);
 			return undefined;
 		});
 		return outcome ?? { kind: 'refused', message: refusal ?? '' };

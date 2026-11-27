@@ -11,7 +11,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 import { IParadisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
-import type { ParadisAgentChatSendOutcome } from './paradisAgentChatInput.js';
+import type { IParadisAgentChatDeliverOptions, ParadisAgentChatSendOutcome } from './paradisAgentChatInput.js';
 
 export const IParadisAgentChatService = createDecorator<IParadisAgentChatService>('paradisAgentChatService');
 
@@ -68,7 +68,8 @@ export interface IParadisAgentChatService {
 	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined>;
 	/**
 	 * {@link sendMessageToPane} と同じ確認を通して送り、結果を種類つきで返す（Bot 同士の伝言が使う）。送った文はそのペインの
-	 * 入力欄の履歴に残さない（利用者が ↑ でたどって自分の言葉として送り直さないように）。
+	 * 入力欄の履歴に残さない（利用者が ↑ でたどって自分の言葉として送り直さないように）。`options` で、作業中なら順番待ちに
+	 * 入れられる種類にだけ送る・入力欄に書きかけがあれば送らない、を足せる。
 	 */
-	deliverToPane(instanceId: number, text: string): Promise<ParadisAgentChatSendOutcome>;
+	deliverToPane(instanceId: number, text: string, options?: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome>;
 }
