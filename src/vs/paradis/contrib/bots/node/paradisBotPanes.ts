@@ -140,6 +140,13 @@ export class ParadisBotPanes {
 	private readonly panes = new Map<string, IPane>();
 	/** 保存した結び付け（ハッシュ → Bot）。生きているかは分からないので、現れるまで {@link statesOf} に数えない。 */
 	private readonly remembered = new Map<string, IParadisBotPaneRecord>();
+	/**
+	 * 会話として数えるのをやめたが、まだ閉じたと分かっていないペイン（トークン → Bot の id）。前に出す依頼にどのウィンドウも
+	 * 応えなかったときと、起動し直した後に同じ Bot の会話がもう別のペインにあったときに入る。会話・Bot の道具・様子には
+	 * 数えないが、Bot の制限（{@link restrictedBotOf}）は本物の終了（{@link release}）まで残す（生きていれば制限の外で
+	 * 動き続けないように）。
+	 */
+	private readonly detached = new Map<string, string>();
 
 	/** @param onDidChangeRemembered 保存する結び付けが変わった（保存し直す）。 */
 	constructor(private readonly onDidChangeRemembered: () => void = () => { }) { }
@@ -163,15 +170,17 @@ export class ParadisBotPanes {
 	 */
 	restore(paneToken: string, botExists: (botId: string) => boolean, now: number): string | undefined {
 		const bound = this.panes.get(paneToken)?.botId;
-		if (bound !== undefined || paneToken.length === 0) {
+		if (bound !== undefined || paneToken.length === 0 || this.detached.has(paneToken)) {
 			return bound;
 		}
 		const record = this.remembered.get(paradisBotPaneTokenHash(paneToken));
 		if (record === undefined || !botExists(record.botId)) {
 			return undefined;
 		}
-		// その Bot に別の会話のペインがもう結び付いていれば戻さない（会話を 2 つ結び付けない。古いペインは Bot として扱わない）
+		// その Bot に別の会話のペインがもう結び付いていれば会話として戻さない（会話を 2 つ結び付けない）。
+		// 古いペインは生きているので、制限だけは残す
 		if (record.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === record.botId && pane.purpose === 'chat')) {
+			this.detached.set(paneToken, record.botId);
 			return undefined;
 		}
 		// 戻したペインは hook で現れたもの（エージェントが動いている）
@@ -262,25 +271,39 @@ export class ParadisBotPanes {
 		return [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'patrol' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS) ? 'launching' : undefined;
 	}
 
-	/** その Bot の会話のペインを「まだ現れていない」に戻す（前に出す依頼にどのウィンドウも応えなかった）。 */
+	/**
+	 * その Bot の会話のペインを会話として数えるのをやめる（前に出す依頼にどのウィンドウも応えなかった）。応えが無いだけでは
+	 * 閉じたと言えないので、結び付けは外さず {@link detached} へ移す（Bot の制限は本物の終了まで残る）。
+	 */
 	detachChat(botId: string): boolean {
 		let changed = false;
 		for (const [token, pane] of this.panes) {
 			if (pane.botId === botId && pane.purpose === 'chat') {
 				this.panes.delete(token);
+				this.detached.set(token, botId);
 				changed = true;
 			}
 		}
 		return changed;
 	}
 
-	/** 結び付いているペインのトークン（全部の Bot）。 */
+	/** 結び付いているペインのトークン（全部の Bot。会話として数えるのをやめたペインも含む）。 */
 	boundTokens(): string[] {
-		return [...this.panes.keys()];
+		return [...this.panes.keys(), ...this.detached.keys()];
 	}
 
 	botOf(paneToken: string): string | undefined {
 		return this.panes.get(paneToken)?.botId;
+	}
+
+	/** Bot の制限を掛けるペインなら、その Bot の id（結び付いたペインと、会話として数えるのをやめたペイン）。 */
+	restrictedBotOf(paneToken: string): string | undefined {
+		return this.panes.get(paneToken)?.botId ?? this.detached.get(paneToken);
+	}
+
+	/** その Bot の、会話として数えるのをやめたペインのトークン（止める依頼で一緒に閉じる）。 */
+	detachedTokensOf(botId: string): string[] {
+		return [...this.detached].filter(([, owner]) => owner === botId).map(([token]) => token);
 	}
 
 	/** そのペインの用途（会話か見回りか）。Bot のペインでなければ undefined。 */
@@ -329,8 +352,9 @@ export class ParadisBotPanes {
 
 	/** ペインが閉じた。結び付けがあれば Bot の id。まだ現れていない（戻していない）保存した結び付けも忘れる。 */
 	release(paneToken: string): string | undefined {
-		const botId = this.panes.get(paneToken)?.botId;
+		const botId = this.panes.get(paneToken)?.botId ?? this.detached.get(paneToken);
 		this.panes.delete(paneToken);
+		this.detached.delete(paneToken);
 		const hash = paradisBotPaneTokenHash(paneToken);
 		this.forget(record => record.hash === hash);
 		return botId;
@@ -348,6 +372,12 @@ export class ParadisBotPanes {
 		for (const [id, entry] of this.pending) {
 			if (entry.botId === botId) {
 				this.pending.delete(id);
+			}
+		}
+		for (const [token, owner] of this.detached) {
+			if (owner === botId) {
+				this.detached.delete(token);
+				changed = true;
 			}
 		}
 		this.forget(record => record.botId === botId);

@@ -96,6 +96,18 @@ suite('paradisCdpPeerResolver', () => {
 		], ['descendant', 'descendant', 'unknown', 'unknown', 'tunnel', 'unknown', 'unknown', 'unknown', 'tunnel', 'unknown']);
 	});
 
+	test('a process in a bot\'s terminal that names another terminal\'s token is not that terminal\'s descendant, and is found under the bot\'s shell', async () => {
+		// bot の shell 50 -> claude 60 -> curl 70（盗んだトークンを名乗る）。利用者のペインの shell は 90。orphan 80 は launchd の子
+		const table: Record<number, IParadisProcessInfo> = { 50: { ppid: 40 }, 60: { ppid: 50 }, 70: { ppid: 60 }, 90: { ppid: 40 }, 80: { ppid: 1 } };
+		assert.deepStrictEqual([
+			// 名乗ったペイン（shell 90）の子孫かを見る照合（IDE の操作などの classifyCaller）は通らない
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 90 }, probe([70], table)),
+			// Bot のペインのシェルの並びと照合すると見つかる
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPids: [90, 50] }, probe([70], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPids: [50] }, probe([80], table)),
+		], ['unknown', 'descendant', 'unknown']);
+	});
+
 	test('Windows: one snapshot carries the connection owners and the process table', () => {
 		const snapshot = paradisParseWindowsPeerSnapshot(['C 303', 'P 303 60 638600000000000000', 'P 60 50 638500000000000000', 'P 4 0 0', 'noise'].join('\r\n'));
 		assert.deepStrictEqual({ peers: snapshot.peerPids, processes: [...snapshot.processes] }, {
