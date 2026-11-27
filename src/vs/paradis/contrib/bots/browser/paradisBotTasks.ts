@@ -88,7 +88,7 @@ export function paradisBotTaskReasonLabel(reason: ParadisScheduledRunReason): st
 		case 'botUnsupported': return localize('paradis.botTasks.reason.botUnsupported', "この Bot のエージェントでは定期実行を動かせないため見送りました");
 		case 'botMissed': return localize('paradis.botTasks.reason.botMissed', "スリープ中・終了中に時刻が過ぎたため見送りました");
 		case 'botNoWindow': return localize('paradis.botTasks.reason.botNoWindow', "起動できるウィンドウ（この PC のウィンドウ）が開いていなかったため見送りました");
-		case 'botBusy': return localize('paradis.botTasks.reason.botBusy', "同じ Bot の前の定期実行がまだ動いていたため見送りました");
+		case 'botBusy': return localize('paradis.botTasks.reason.botBusy', "前の定期実行がまだ動いていた（「会話と同じ権限」の段では会話が開いていた）ため見送りました");
 		case 'botConcurrency': return localize('paradis.botTasks.reason.botConcurrency', "ほかの Bot の見回り・定期実行が {0} つ動いていたため見送りました", PARADIS_BOT_PATROL_MAX_CONCURRENT);
 		case 'botDailyLimit': return localize('paradis.botTasks.reason.botDailyLimit', "Bot の見回り・定期実行の 1 日の上限（{0} 回）に達したため見送りました", PARADIS_BOT_PATROL_MAX_DAILY_TOTAL);
 		case 'botsTurnedOff': return localize('paradis.botTasks.reason.botsTurnedOff', "Bot の機能がオフになったため止めました");

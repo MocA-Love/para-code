@@ -389,8 +389,11 @@ export function paradisBotTaskLaunchArgs(context: ParadisBotPatrolLaunchContext,
 		}
 		return [
 			'--permission-mode', 'dontAsk',
+			// 利用者の設定（~/.claude の CLAUDE.md・hook・許可）を読まない。Para Code の状態の hook は `--settings` のファイルに
+			// 書いてある（paradisBotPatrolClaudeSettingsText）。Claude Code 2.1.332 で、空の値なら利用者の hook が走らず
+			// `--settings` の hook が走ることを確かめた
 			`--settings=${context.settingsFile}`,
-			'--setting-sources=user',
+			'--setting-sources=',
 			'--strict-mcp-config',
 			`--tools=${PARADIS_BOT_TASK_WEB_TOOLS.join(',')}`,
 			`--allowedTools=${PARADIS_BOT_TASK_WEB_TOOLS.join(',')}`,

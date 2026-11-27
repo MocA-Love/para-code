@@ -113,7 +113,7 @@ export interface IParadisBotsServiceOptions {
 	 * 見回りの起動のたびに、読むだけに制限するのに要るもの（Claude Code の設定ファイル・Codex の止める MCP サーバー）を
 	 * 用意する（paradisBotPatrolLaunch.ts）。用意できなければ断る理由（英文）。渡さなければ見回りは `unavailable` で断る。
 	 */
-	readonly preparePatrol?: (agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome) => Promise<ParadisBotPatrolLaunchContext | string>;
+	readonly preparePatrol?: (agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome, options?: { readonly webOnly?: boolean }) => Promise<ParadisBotPatrolLaunchContext | string>;
 	/** Bot を消したときに、見回りのフォルダ・設定ファイルと Claude Code の信頼の項目を外す。 */
 	readonly forgetPatrol?: (botId: string) => Promise<void>;
 	/** そのエージェントの起動の雛形（利用者の設定 `paradis.workspaceSwitch.agents` を反映したもの）。 */
@@ -714,6 +714,9 @@ export class ParadisBotsService extends Disposable {
 			if (task !== undefined && this.panes.taskInUse(botId, this.now())) {
 				return { ok: false, code: 'task_busy', message: 'A scheduled task of this bot is still running.' };
 			}
+			if (task === 'bot' && this.panes.chatInUse(botId, this.now()) !== undefined) {
+				return { ok: false, code: 'already_open', message: 'The bot\'s conversation is open, so a scheduled task with its own permissions does not start now.' };
+			}
 			// 見回りは、読むだけに制限できるエージェントのときだけ起動する（機能がオフなら上で断っている）
 			const patrolAgent = purpose === 'patrol' ? bot.agent : undefined;
 			if (patrolAgent !== undefined && !paradisBotPatrolSupported(patrolAgent)) {
@@ -774,7 +777,7 @@ export class ParadisBotsService extends Disposable {
 						files.push({ name, text });
 					}
 				}
-				const context = this.preparePatrol === undefined ? 'Para Code cannot prepare the limited settings here.' : await this.preparePatrol(bot.agent, paradisBotTaskFolderKey(bot.id), { folder: cwd, files });
+				const context = this.preparePatrol === undefined ? 'Para Code cannot prepare the limited settings here.' : await this.preparePatrol(bot.agent, paradisBotTaskFolderKey(bot.id), { folder: cwd, files }, { webOnly: task === 'web' });
 				if (typeof context === 'string') {
 					return { ok: false, code: 'task_unavailable', message: context };
 				}
@@ -939,6 +942,11 @@ export class ParadisBotsService extends Disposable {
 		// 見送るのは、同じ Bot の前の定期実行がまだ動いているときだけ
 		if (tools === 'web' && this.getBot(botId)?.agent === 'codex') {
 			return 'unsupported';
+		}
+		// 「会話と同じ権限」の段は Bot の専用フォルダで記憶を書けるので、会話が開いている間は走らせない（同じ記憶を 2 つの
+		// エージェントが書かないように）。ほかの段は空の作業フォルダなので見ない
+		if (tools === 'bot' && this.panes.chatInUse(botId, this.now()) !== undefined) {
+			return 'busy';
 		}
 		return this.panes.taskInUse(botId, this.now()) ? 'busy' : 'ok';
 	}

@@ -175,7 +175,8 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 				if (this.settings.scheduleTask === undefined) {
 					return toolError('Scheduled tasks are not available in this Para Code.');
 				}
-				const tools = input.tools === undefined ? 'web' : input.tools;
+				// Codex の Bot は「Web だけ」で動かせないので、既定を「読む＋Web」にする（有効にするときに利用者が確かめる）
+				const tools = input.tools === undefined ? (this.service.getBot(botId)?.agent === 'codex' ? 'readWeb' : 'web') : input.tools;
 				const result = await this.settings.scheduleTask(botId, { name: typeof input.name === 'string' ? input.name : '', schedule: input.schedule, prompt: input.request, tools, enabled: false });
 				return result.ok && result.definition !== undefined
 					? toolJson({ bot: botId, task: result.definition.id, name: result.definition.name, enabled: false, note: 'Created turned off. Tell the user to read it and turn it on in the bot\'s settings tab.' })

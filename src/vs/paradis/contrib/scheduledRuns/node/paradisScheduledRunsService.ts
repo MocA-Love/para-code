@@ -390,6 +390,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
 		// エージェントが作る・変えるものは無効で始めるので、ここでは確かめない（利用者が有効にするときに画面が確かめる）
+		if (this.botGate?.checkTask(botId, input.tools) === 'unsupported') {
+			return { ok: false, error: localize('paradis.scheduledRuns.error.botTaskUnsupported', "この Bot のエージェントでは、この段の定期実行を動かせません（Codex の Bot では「Web だけ」を選べません）。") };
+		}
 		if (!byAgent && paradisBotTaskNeedsConfirmation(input, existing)) {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.botTaskConfirm', "「読む＋Web」と「Bot の権限」の段は、確認してから選んでください。") };
 		}

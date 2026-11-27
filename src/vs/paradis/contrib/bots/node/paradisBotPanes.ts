@@ -261,7 +261,7 @@ export class ParadisBotPanes {
 	 */
 	idleChatTokens(now: number, idleMs = PARADIS_BOT_IDLE_STOP_MS): { readonly botId: string; readonly token: string }[] {
 		return [...this.panes]
-			.filter(([, pane]) => pane.purpose === 'chat' && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt, pane.activeAt ?? 0) >= idleMs)
+			.filter(([, pane]) => (pane.purpose === 'chat' || pane.purpose === 'task') && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt, pane.activeAt ?? 0) >= idleMs)
 			.map(([token, pane]) => ({ botId: pane.botId, token }));
 	}
 
@@ -438,7 +438,8 @@ export class ParadisBotPanes {
 
 	/** その Bot の定期実行が動いている・起動中か（定期実行は Bot ごとに同時に 1 つ）。 */
 	taskInUse(botId: string, now: number): boolean {
-		return [...this.panes.values()].some(pane => pane.botId === botId && pane.purpose === 'task' && pane.working)
+		// 結び付けてから最初の hook までは、シェルのプロンプトを待って起動している最中なので動いていると数える
+		return [...this.panes.values()].some(pane => pane.botId === botId && pane.purpose === 'task' && (pane.working || !pane.hookSeen))
 			|| [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'task' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS);
 	}
 

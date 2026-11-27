@@ -16,6 +16,7 @@ import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskCh
 import { paradisBotTaskLaunchArgs } from '../../common/paradisBotTools.js';
 import { ParadisBotHomes } from '../../node/paradisBotHomes.js';
 import { ParadisBotPanes } from '../../node/paradisBotPanes.js';
+import { paradisBotPatrolClaudeSettingsText } from '../../node/paradisBotPatrolLaunch.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { paradisBotPatrolToolRefusal } from '../../node/paradisBotManageToolProvider.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, paradisBotsDataFolder } from '../../node/paradisBotsStore.js';
@@ -36,7 +37,7 @@ suite('Paradis bot scheduled tasks: launching', () => {
 	});
 
 	teardown(async () => {
-		await fs.rm(join(root, '..'), { recursive: true, force: true });
+		await fs.rm(join(root, '..'), { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 	});
 
 	test('段ごとの起動の引数: Web だけは Web の道具だけで MCP も手元を読む道具も渡さない。読む＋Web は見回りの引数に Web を足す', () => {
@@ -48,7 +49,8 @@ suite('Paradis bot scheduled tasks: launching', () => {
 			codexReadWeb: paradisBotTaskLaunchArgs(codex, 'readWeb', READ_ONLY).slice(0, 5),
 			codexWeb: (() => { try { paradisBotTaskLaunchArgs(codex, 'web', READ_ONLY); return 'built'; } catch { return 'refused'; } })(),
 		}, {
-			web: ['--permission-mode', 'dontAsk', '--settings=/d/s.json', '--setting-sources=user', '--strict-mcp-config', '--tools=WebFetch,WebSearch', '--allowedTools=WebFetch,WebSearch'],
+			// 利用者の設定（CLAUDE.md・hook）を読まない。Para Code の hook は --settings のファイルに入れる
+			web: ['--permission-mode', 'dontAsk', '--settings=/d/s.json', '--setting-sources=', '--strict-mcp-config', '--tools=WebFetch,WebSearch', '--allowedTools=WebFetch,WebSearch'],
 			readWebTools: 3,
 			codexReadWeb: ['-s', 'read-only', '-a', 'never', '--search'],
 			codexWeb: 'refused',
@@ -74,6 +76,9 @@ suite('Paradis bot scheduled tasks: launching', () => {
 		const chat = await service.requestLaunch('id1', 'chat');
 		assert.ok(chat.ok && service.reportLaunch(chat.value.launchId, 'pane-chat'));
 		const gateWithChat = service.taskGateState('id1', 'web');
+		// 「会話と同じ権限」の段だけは、会話が開いている間は走らせない（同じ記憶を 2 つのエージェントが書かないように）
+		const botGateWithChat = service.taskGateState('id1', 'bot');
+		const botWithChat = await service.requestLaunch('id1', 'task', { task: 'bot' });
 		const web = await service.requestLaunch('id1', 'task', { task: 'web' });
 		assert.ok(web.ok);
 		const gateLaunching = service.taskGateState('id1', 'web');
@@ -82,13 +87,14 @@ suite('Paradis bot scheduled tasks: launching', () => {
 		const readWeb = await service.requestLaunch('id1', 'task', { task: 'readWeb' });
 		assert.ok(readWeb.ok);
 		await service.cancelLaunch(readWeb.value.launchId);
+		service.releasePane('pane-chat');
 		const bot = await service.requestLaunch('id1', 'task', { task: 'bot' });
 		assert.ok(bot.ok);
 		await service.cancelLaunch(bot.value.launchId);
 		const noTools = await service.requestLaunch('id1', 'task');
 		const flags = web.value.extraFlags as readonly string[];
 		assert.deepStrictEqual({
-			gateWithChat, gateLaunching,
+			gateWithChat, gateLaunching, botGateWithChat, botWithChat: !botWithChat.ok && botWithChat.code,
 			second: !second.ok && second.code,
 			web: [web.value.purpose, web.value.permissionId, web.value.resumed, flags.includes('--resume'), web.value.cwd],
 			readWeb: [readWeb.value.cwd, (readWeb.value.extraFlags as readonly string[]).includes('--resume')],
@@ -97,6 +103,8 @@ suite('Paradis bot scheduled tasks: launching', () => {
 			prepared,
 		}, {
 			gateWithChat: 'ok',
+			botGateWithChat: 'busy',
+			botWithChat: 'already_open',
 			gateLaunching: 'busy',
 			second: 'task_busy',
 			web: ['task', undefined, undefined, false, '/data/runs/b-task'],
@@ -105,6 +113,21 @@ suite('Paradis bot scheduled tasks: launching', () => {
 			noTools: 'invalid',
 			// Web だけは指示文（記憶を含む）を写さず、読む＋Web は写す。作業フォルダは見回りとは別の鍵
 			prepared: ['id1-task:', 'id1-task:AGENTS.md,SOUL.md,MEMORY.md'],
+		});
+	});
+
+	test('「Web だけ」の --settings には Para Code の状態の hook を書く（利用者の hook ではない）。見回りには書かない', () => {
+		const web = JSON.parse(paradisBotPatrolClaudeSettingsText(true));
+		const patrol = JSON.parse(paradisBotPatrolClaudeSettingsText(false));
+		const commands = (event: string) => (web.hooks?.[event] ?? []).flatMap((group: { hooks: { command: string }[] }) => group.hooks.map(hook => hook.command));
+		assert.deepStrictEqual({
+			bypassOff: [web.permissions, patrol.permissions],
+			events: ['SessionStart', 'UserPromptSubmit', 'Stop'].map(event => commands(event).length === 1 && commands(event)[0].includes('.para-code/hooks/notify-v')),
+			patrolHooks: patrol.hooks,
+		}, {
+			bypassOff: [{ disableBypassPermissionsMode: 'disable' }, { disableBypassPermissionsMode: 'disable' }],
+			events: [true, true, true],
+			patrolHooks: undefined,
 		});
 	});
 

@@ -104,14 +104,14 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
 		homes,
 		// 見回りの設定ファイルも専用フォルダ（Bot が書ける）の外に置く
-		preparePatrol: (agent, botId, home) => paradisPrepareBotPatrolLaunch({
+		preparePatrol: (agent, botId, home, options) => paradisPrepareBotPatrolLaunch({
 			folder: join(paradisBotsDataFolder(userDataPath), 'patrol'),
 			runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs'),
 			stopFolder: homedir(),
 			gatewayPort: () => readGatewayPort(userDataPath),
 			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
 			trustClaudeFolder: folder => trustClaudeFolder(folder),
-		}, agent, botId, home),
+		}, agent, botId, home, options),
 		forgetPatrol: async botId => paradisForgetBotPatrol({ folder: join(paradisBotsDataFolder(userDataPath), 'patrol'), runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs') }, botId, await claudeConfigFile().catch(() => undefined)),
 		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 		paneFolderRoots: [join(homedir(), '.para-code', 'bots'), join(paradisBotsDataFolder(userDataPath), 'patrol-runs')],
