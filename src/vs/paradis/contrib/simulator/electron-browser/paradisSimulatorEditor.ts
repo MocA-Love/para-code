@@ -27,6 +27,7 @@ import { localize } from '../../../../nls.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -36,10 +37,11 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
-import { IParadisSimulatorDevice } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX } from '../common/paradisSimulator.js';
 import { paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorNextOrientation, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { ParadisSimulatorFoldBar, ParadisSimulatorFoldRequest } from './paradisSimulatorFoldBar.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
+import { ParadisSimulatorShareButton } from './paradisSimulatorShareButton.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, ParadisSimulatorEditorInput } from './paradisSimulatorEditorInput.js';
 import { paradisLabelSimulatorScreen, ParadisSimulatorFrameView } from './paradisSimulatorFrameView.js';
 
@@ -153,6 +155,8 @@ export class ParadisSimulatorEditor extends EditorPane {
 	private _stage: HTMLElement | undefined;
 	private _bar: HTMLElement | undefined;
 	private readonly _buttons: { rotate?: ParadisButton; home?: ParadisButton; save?: ParadisButton; power?: ParadisButton } = {};
+	/** 見出しの「ペインに渡す」ボタン（内蔵ブラウザの共有のボタンと同じ形。q.html Q688）。 */
+	private _share: ParadisSimulatorShareButton | undefined;
 
 	private readonly _session = this._register(new MutableDisposable<ParadisSimulatorEditorSession>());
 	private readonly _deviceHubTimer = this._register(new IntervalTimer());
@@ -172,6 +176,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IFileDialogService private readonly _fileDialogService: IFileDialogService,
 		@IFileService private readonly _fileService: IFileService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super(PARADIS_SIMULATOR_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
@@ -187,6 +192,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 		// 映像の枠の読み上げの説明（aria-describedby）。分割で同じ端末を 2 つ開けるので id はペインごとに替える
 		this._keyHint.id = `paradis-simulator-key-hint-${generateUuid()}`;
 		const actions = dom.append(this._bar, $('.paradis-simulator-actions'));
+		this._share = this._register(this._instantiationService.createInstance(ParadisSimulatorShareButton, actions));
 		const button = (label: string, run: () => Promise<void>) => {
 			const created = this._register(new ParadisButton(actions, { kind: 'secondary', small: true, label, title: label }));
 			this._register(created.onDidClick(() => void run().catch(error => this._notificationService.error(localize('paradis.simulator.actionFailed', "シミュレータの操作に失敗しました: {0}", errorMessage(error))))));
@@ -228,6 +234,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 		if (!(input instanceof ParadisSimulatorEditorInput) || !this._stage) {
 			return;
 		}
+		this._share?.setDevice(`${PARADIS_SIMULATOR_DEVICE_ID_PREFIX}${input.udid}`);
 		if (this._session.value?.input === input) {
 			return;
 		}
@@ -283,6 +290,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 	override clearInput(): void {
 		// タブを閉じた・別のタブへ替えた: 映像の購読と Blob URL を放す
 		this._session.clear();
+		this._share?.setDevice(undefined);
 		this._foldBar?.update(undefined);
 		this._stallRetry.clear();
 		this._stallCount = 0;
@@ -292,6 +300,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 
 	protected override setEditorVisible(visible: boolean): void {
 		super.setEditorVisible(visible);
+		if (!visible) {
+			this._share?.closePopover();
+		}
 		this._updateStreaming();
 	}
 
@@ -544,7 +555,8 @@ export class ParadisSimulatorEditor extends EditorPane {
 		if (!this._title || !this._subtitle) {
 			return;
 		}
-		this._title.textContent = session?.input.getName() ?? '';
+		// 題は端末の名前だけ（渡しているペインはタブの名前と「ペインに渡す」ボタンの一覧で見える）
+		this._title.textContent = session ? (session.input.deviceName || localize('paradis.simulator.inputName', "シミュレータ")) : '';
 		if (session) {
 			paradisLabelSimulatorScreen(session.frameView.element, session.input.getName(), this._keyHint);
 		}
