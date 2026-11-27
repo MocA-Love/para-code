@@ -34,6 +34,8 @@ import {
 	ParadisBotItemsResult,
 	ParadisBotItemStatus,
 	paradisBotItemAdd,
+	paradisBotItemLinkBoardTask,
+	paradisBotItemNoteBoardStep,
 	paradisBotItemOwnerComment,
 	paradisBotItemOwnerSnooze,
 	paradisBotItemOwnerStatus,
@@ -48,7 +50,8 @@ import {
 	paradisIsBotItemSnoozed,
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
-import { IParadisBotLaunch, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
+import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchFlags } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
@@ -93,7 +96,12 @@ export interface IParadisBotsServiceOptions {
 	readonly enabled?: () => boolean;
 	/** 項目の台帳の大きさの上限（テストで小さくする）。既定は {@link PARADIS_BOT_ITEMS_BYTE_LIMIT}。 */
 	readonly itemsByteLimit?: number;
+	/** 前に出す依頼にウィンドウが応えるのを待つ時間。既定は {@link PARADIS_BOT_REVEAL_TIMEOUT_MS}。 */
+	readonly revealTimeoutMs?: number;
 }
+
+/** 前に出す依頼にウィンドウが応えるのを待つ時間。 */
+export const PARADIS_BOT_REVEAL_TIMEOUT_MS = 2_000;
 
 const ITEMS_FULL_MESSAGE = 'Para Code\'s list of bot items is full. Close the items you no longer need (status "done" or "canceled"), or ask your owner to close or remove some items; then you can write again.';
 
@@ -105,6 +113,7 @@ const BOTS_DISABLED = { ok: false, code: 'disabled', message: 'Para Code bots ar
 export class ParadisBotsService extends Disposable {
 
 	private bots: IParadisBotsState = EMPTY_PARADIS_BOTS_STATE;
+	private githubView: IParadisBotGithubView = PARADIS_BOT_GITHUB_OFF_VIEW;
 	private items: IParadisBotItemsState = EMPTY_PARADIS_BOT_ITEMS_STATE;
 	private revision = 0;
 	private loaded = false;
@@ -119,6 +128,9 @@ export class ParadisBotsService extends Disposable {
 	private readonly memorySnapshots: ParadisBotMemorySnapshots | undefined;
 	private suggestions: IParadisBotSuggestionsState = EMPTY_PARADIS_BOT_SUGGESTIONS_STATE;
 	private readonly itemsByteLimit: number;
+	private readonly revealTimeoutMs: number;
+	/** 前に出す依頼の番号 → ウィンドウが応えたときに呼ぶもの。 */
+	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
@@ -141,6 +153,10 @@ export class ParadisBotsService extends Disposable {
 	/** Bot を台帳から外した（定期実行の見回りの定義を消すのに使う）。 */
 	readonly onDidRemoveBot: Event<string> = this._onDidRemoveBot.event;
 
+	private readonly _onDidRequestReveal = this._register(new Emitter<IParadisBotRevealRequest>());
+	/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとして断った）。 */
+	readonly onDidRequestReveal: Event<IParadisBotRevealRequest> = this._onDidRequestReveal.event;
+
 	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
 	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
 	private readonly wakeScheduler = this._register(new RunOnceScheduler(() => this.changed(), 0));
@@ -160,6 +176,7 @@ export class ParadisBotsService extends Disposable {
 		this.suggestionsFile = options.suggestionsFile;
 		this.memorySnapshots = options.memorySnapshots;
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
+		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
 		this.enabled = options.enabled ?? (() => true);
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
@@ -213,7 +230,25 @@ export class ParadisBotsService extends Disposable {
 			revision: this.revision,
 			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
 			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
+			...(this.githubView.status.state !== 'off' ? { github: this.githubView } : {}),
 		};
+	}
+
+	/** GitHub の見張りの様子が変わった（見張りだけが呼ぶ）。画面へ知らせる。 */
+	setGithubView(view: IParadisBotGithubView): void {
+		this.githubView = view;
+		this.notify();
+	}
+
+	/** 見張る Bot（GitHub の入り切りがオンで一時停止していない）の開いている項目に結んだ PR（`owner/repo#n`、重なりなし）。 */
+	githubPullRequestRefs(): string[] {
+		const watching = new Set(this.bots.bots.filter(bot => bot.watchGithub === true && !bot.paused).map(bot => bot.id));
+		return [...new Set(paradisBotItemsOf(this.items, { open: true }).filter(item => watching.has(item.botId)).flatMap(item => item.links.filter(link => link.kind === 'pr').map(link => link.ref)))];
+	}
+
+	/** 台帳の Bot（知らない欄を持つものも含む）。 */
+	listBots(): readonly IParadisBot[] {
+		return this.bots.bots;
 	}
 
 	getBot(botId: string): IParadisBot | undefined {
@@ -430,6 +465,29 @@ export class ParadisBotsService extends Disposable {
 		});
 	}
 
+	// ---- タスクボードとの行き来（Para Code が書く） ----------------------------------------------------
+
+	/** Bot が自分の項目からボードへ載せたタスクを項目に結ぶ。ボードへ載せた道具だけが呼ぶ。 */
+	linkBoardTask(botId: string, uid: string, taskId: string): Promise<Result<IParadisBotItem>> {
+		return this.write(async () => this.apply(paradisBotItemLinkBoardTask(this.items, botId, uid, taskId, this.now())));
+	}
+
+	/**
+	 * ボードのエージェントの工程の終わりの報告を、そのタスクを結んだ項目へ写す（`launchId` は `<タスクの id>:<試行番号>`）。
+	 * Bot の機能がオフ・写す先が無いときは何もしない。
+	 */
+	async noteBoardStep(launchId: string, summary: string): Promise<void> {
+		const at = launchId.lastIndexOf(':');
+		if (!this.enabled() || at <= 0) {
+			return;
+		}
+		const taskId = launchId.slice(0, at);
+		await this.write<IParadisBotItem | undefined>(async () => {
+			const result = paradisBotItemNoteBoardStep(this.items, taskId, launchId, summary, this.now());
+			return result === undefined ? { ok: true, value: undefined } : this.apply(result);
+		});
+	}
+
 	// ---- ペインとの結び付け ----------------------------------------------------------------------
 
 	/**
@@ -450,6 +508,18 @@ export class ParadisBotsService extends Disposable {
 			if (bot.preserved !== undefined) {
 				// 新しい版が足した設定（権限など）を、この版は分からないまま起動しない
 				return { ok: false, code: 'read_only', message: 'This bot was changed by a newer Para Code, so this version does not start it.' };
+			}
+			// 会話は 1 つの Bot に 1 つだけ（2 つのエージェントが同じ記憶と項目を書かないように）。この口は書き込みの列で
+			// 1 つずつ走るので、2 つのウィンドウから同時に開いても、先に発行した番号が「起動中」になって 2 つ目は断る。
+			// 見回りは別のペインなので、会話があっても断らない
+			if (purpose === 'chat') {
+				const inUse = this.panes.chatInUse(botId, this.now());
+				if (inUse?.state === 'open') {
+					return { ok: false, code: 'already_open', message: 'This bot is already open in another window.' };
+				}
+				if (inUse?.state === 'launching') {
+					return { ok: false, code: 'launching', message: 'This bot is starting in another window.' };
+				}
 			}
 			if (this.homes === undefined) {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
@@ -484,6 +554,43 @@ export class ParadisBotsService extends Disposable {
 			};
 		});
 	}
+
+	/**
+	 * 会話のペインを持つウィンドウへ、前に出してほしいと頼む（別のウィンドウから開こうとして `already_open` で断られた
+	 * ときに、利用者の操作からだけ呼ぶ。エージェントの道具からの起動では呼ばない＝フォーカスを奪わない）。
+	 * 現れた会話のペインが無ければ false。
+	 */
+	async requestReveal(botId: string): Promise<boolean> {
+		const inUse = this.panes.chatInUse(botId, this.now());
+		if (inUse?.state !== 'open') {
+			return false;
+		}
+		const revealId = this.uuid();
+		const answered = await new Promise<boolean>(resolve => {
+			const timer = setTimeout(() => {
+				this.pendingReveals.delete(revealId);
+				resolve(false);
+			}, this.revealTimeoutMs);
+			this.pendingReveals.set(revealId, () => {
+				clearTimeout(timer);
+				this.pendingReveals.delete(revealId);
+				resolve(true);
+			});
+			this._onDidRequestReveal.fire({ revealId, botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
+		});
+		// どのウィンドウもそのペインを持っていなかった（閉じたことが伝わらなかった）。会話のペインを「まだ現れていない」に
+		// 戻し、呼んだ側が起動へ進めるようにする（本当に生きていれば、hook か道具の呼び出しで現れたときに戻る）
+		if (!answered && this.panes.detachChat(botId)) {
+			this.notify();
+		}
+		return answered;
+	}
+
+	/** 前に出す依頼に、そのペインを持つウィンドウが応えた。 */
+	ackReveal(revealId: string): void {
+		this.pendingReveals.get(revealId)?.();
+	}
+
 
 	/** Bot を止める依頼を全ウィンドウへ出す。結び付いた・保存したペインが無ければ false。 */
 	requestStop(botId: string): boolean {

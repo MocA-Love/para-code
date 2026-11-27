@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import type { ITaskBoardAddIssuesRequest, TaskBoardAddIssuesResult } from './paradisTaskBoard.js';
+import type { ITaskBoardAddIssuesRequest, ITaskBoardAddTaskRequest, TaskBoardAddIssuesResult, TaskBoardAddTaskResult } from './paradisTaskBoard.js';
 
 /*
  * 同梱のタスクボードを開く口（main プロセス）。ボードのサーバー（resources/paradis/taskboard/server/main.mjs）を
@@ -55,6 +55,17 @@ export interface IParadisTaskBoardHost {
 	stop(): Promise<void>;
 }
 
+/**
+ * Bot がボードへタスクを載せる口（main プロセス → shared process だけ）。窓には出さない（出どころの札を窓から偽れないように）。
+ * 載せるだけで、ボードの窓は出さず、動いていないボードを起こしもしない。
+ */
+export const PARADIS_TASK_BOARD_BOT_HOST_CHANNEL = 'paradisTaskBoardBotHost';
+
+export interface IParadisTaskBoardBotHost {
+	/** 動いている手元のボードの未着手にタスクを載せる。動いていなければ `not-running`、SSH の窓のボードなら `remote`。 */
+	addTask(request: ITaskBoardAddTaskRequest): Promise<TaskBoardAddTaskResult>;
+}
+
 /** SSH の窓のボードの対象（中継のセッション）。ボードはこれを init で受け取り、リポジトリを中継で扱う。 */
 export interface IParadisTaskBoardRemoteTarget {
 	readonly sessionId: string;
@@ -95,7 +106,8 @@ export interface IParadisTaskBoardHostService extends IParadisTaskBoardHost {
 export type ParadisTaskBoardServerMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
 	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
-	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult };
+	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult }
+	| { readonly type: 'add-task-result'; readonly requestId: string; readonly result: TaskBoardAddTaskResult };
 
 /** 同梱のボードが優先して使うポート（手で起動するボードの既定 4870 と分ける。画面の設定はポートごとに残る）。 */
 export const PARADIS_TASK_BOARD_EMBEDDED_PORT = 4871;

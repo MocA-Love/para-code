@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { ITaskBoardFlow, ITaskBoardNotice, ITaskBoardSnapshot, ITaskBoardStep, ITaskBoardTask, TaskBoardErrorCode, TaskBoardStatus, TaskBoardStepKind } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardFlow, ITaskBoardNotice, ITaskBoardSnapshot, ITaskBoardStep, ITaskBoardTask, ITaskBoardTaskOrigin, TaskBoardErrorCode, TaskBoardStatus, TaskBoardStepKind } from '@engine/paradisTaskBoard.js';
 import { taskBoardActivityText, taskBoardErrorText as errorText } from '@engine/paradisTaskBoardAsks.js';
 
 /* 画面の文言はここに集める。 */
@@ -32,6 +32,11 @@ export const KIND: Record<TaskBoardStepKind, { label: string; desc: string }> = 
 export const TONE_VAR: Record<Tone, string> = {
 	blue: 'var(--blue)', red: 'var(--red)', amber: 'var(--amber)', green: 'var(--green)', gray: 'var(--faint)', accent: 'var(--accent)',
 };
+
+/** Para Code の Bot が載せたタスクの札（「Bot: 名前 · 項目 #35」）。 */
+export function botOriginLabel(origin: ITaskBoardTaskOrigin): string {
+	return `Bot: ${origin.botName} · 項目 #${origin.itemNumber}`;
+}
 
 export function needs(task: ITaskBoardTask): boolean {
 	return Boolean(STATUS[task.status].need);

@@ -211,8 +211,8 @@ suite('Paradis bot ask', () => {
 	test('見回りの起動の引数: 書く道具は確認を出さずに断る形。読む道具と見回りの Bot の道具だけを許す', () => {
 		const read = new Set(['get_text', 'take_snapshot']);
 		assert.deepStrictEqual(['claude', 'codex', 'opencode'].map(agent => paradisBotPatrolLaunchFlags(agent, read)), [
-			'--permission-mode dontAsk --tools \'Read,Grep,Glob\' \'--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__get_text,mcp__para-browser__take_snapshot\'',
-			'-s read-only -a never -c \'mcp_servers.para-browser.enabled_tools=["bot_item_list","bot_item_show","bot_suggest","get_text","take_snapshot"]\' -c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\'',
+			'--permission-mode dontAsk --tools \'Read,Grep,Glob\' \'--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__bot_github_news,mcp__para-browser__get_text,mcp__para-browser__take_snapshot\'',
+			'-s read-only -a never -c \'mcp_servers.para-browser.enabled_tools=["bot_item_list","bot_item_show","bot_suggest","bot_github_news","get_text","take_snapshot"]\' -c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve\'',
 			undefined,
 		]);
 	});

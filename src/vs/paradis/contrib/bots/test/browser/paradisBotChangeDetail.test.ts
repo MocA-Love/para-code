@@ -31,6 +31,14 @@ suite('Paradis bot change detail', () => {
 		].join('\n'));
 	});
 
+	test('GitHub の見張りを入れるときは、5 分ごとに gh で確かめることを出す', () => {
+		assert.strictEqual(paradisBotChangeDetail({ changes: [{ field: 'watch_github', from: 'false', to: 'true' }] }), [
+			'GitHub の見張り: false → true',
+			'',
+			'5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。',
+		].join('\n'));
+	});
+
 	test('持ち主が画面から変えるとき（依頼したターミナルなし）は、依頼の行を出さない', () => {
 		assert.strictEqual(paradisBotChangeDetail({ changes: [{ field: 'name', from: 'A', to: 'B' }] }), '名前: A → B');
 	});

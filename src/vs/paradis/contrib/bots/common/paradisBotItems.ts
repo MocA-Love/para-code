@@ -58,6 +58,10 @@ export const PARADIS_BOT_ITEM_LIMITS = Object.freeze({
 	openPerBot: 200,
 	/** 台帳全体。超えたら閉じた古い項目から落とす。 */
 	items: 2_000,
+	/** 1 項目からタスクボードへ載せられるタスク（繰り返し呼ばれてボードが埋まらないように）。 */
+	boardTasks: 5,
+	/** ボードの工程の報告を項目へ写すときの要約の長さ。 */
+	boardSummary: 500,
 });
 
 export type ParadisBotItemActor = 'bot' | 'owner' | 'system';
@@ -119,11 +123,15 @@ export interface IParadisBotItemAsk {
 	readonly questions: readonly IParadisBotItemQuestion[];
 }
 
-export type ParadisBotItemLinkKind = 'pr' | 'url' | 'file';
+/**
+ * `task` はタスクボードのタスク。Para Code がボードへ載せたときだけ書く（Bot の道具の引数からは作らない。
+ * 工程の報告をこの結び付けと照合するので、Bot が他のタスクを指せないように）。
+ */
+export type ParadisBotItemLinkKind = 'pr' | 'url' | 'file' | 'task';
 
 export interface IParadisBotItemLink {
 	readonly kind: ParadisBotItemLinkKind;
-	/** `pr`: `owner/repo#123`、`url`: http(s) の URL、`file`: 専用フォルダの中の相対パス。 */
+	/** `pr`: `owner/repo#123`、`url`: http(s) の URL、`file`: 専用フォルダの中の相対パス、`task`: ボードのタスクの id（`t-…`）。 */
 	readonly ref: string;
 }
 
@@ -324,6 +332,9 @@ export function paradisSanitizeBotItemQuestions(value: unknown): IParadisBotItem
 const PR_REF = /^(?<repo>[\w.-]+\/[\w.-]+)#(?<number>\d+)$/;
 const PR_URL = /^https?:\/\/github\.com\/(?<repo>[\w.-]+\/[\w.-]+)\/pull\/(?<number>\d+)(?:[/?#].*)?$/i;
 
+/** ボードが手で足すタスクに付ける id の形（`t-` と英数字）。 */
+const PARADIS_BOT_BOARD_TASK_ID = /^t-[A-Za-z0-9_-]{1,64}$/;
+
 /** リンク 1 本を検めて揃える。PR の URL は `owner/repo#n` に直す。専用フォルダの外を指すファイルは断る。 */
 export function paradisSanitizeBotItemLink(value: unknown): IParadisBotItemLink | undefined {
 	if (!isRecord(value) || typeof value.ref !== 'string' || value.ref.length > PARADIS_BOT_ITEM_LIMITS.ref) {
@@ -341,6 +352,8 @@ export function paradisSanitizeBotItemLink(value: unknown): IParadisBotItemLink 
 			const path = paradisBotHomeRelativePath(ref);
 			return path !== undefined ? { kind: 'file', ref: path } : undefined;
 		}
+		case 'task':
+			return PARADIS_BOT_BOARD_TASK_ID.test(ref) ? { kind: 'task', ref } : undefined;
 		default:
 			return undefined;
 	}
@@ -726,6 +739,64 @@ export function paradisBotItemOwnerSnooze(state: IParadisBotItemsState, uid: str
 	// 後回しは「動き」に数えない（並び順と、動きなしの判定を変えない）
 	draft.lastActivityAt = lastActivityAt;
 	return commit(state, draft, eventId);
+}
+
+// ---- Para Code が書く（タスクボードとの行き来） ----------------------------------------------------
+
+/** 項目に結んだボードのタスクの数。 */
+export function paradisBotItemBoardTaskCount(item: Pick<IParadisBotItem, 'links'>): number {
+	return item.links.filter(link => link.kind === 'task').length;
+}
+
+/**
+ * Bot が自分の項目からボードへ載せたタスクを、項目に結ぶ（Para Code がボードへ載せた後にだけ呼ぶ）。
+ * 閉じた項目・他の Bot の項目には結ばない。
+ */
+export function paradisBotItemLinkBoardTask(state: IParadisBotItemsState, botId: string, uid: string, taskId: string, now: number): ParadisBotItemsResult {
+	const current = ownedItem(state, uid);
+	if (isRefusal(current)) {
+		return current;
+	}
+	if (current.botId !== botId) {
+		return refuse('not_owner', `Item #${current.number} belongs to another bot.`);
+	}
+	if (paradisIsBotItemClosed(current)) {
+		return refuse('item_closed', `Item #${current.number} is closed.`);
+	}
+	const link = paradisSanitizeBotItemLink({ kind: 'task', ref: taskId });
+	if (link === undefined) {
+		return refuse('invalid_argument', 'That is not a task board task.');
+	}
+	const draft = draftOf(current);
+	const added = addLinks(draft, [link]);
+	if (added === undefined) {
+		return refuse('limit', `An item takes up to ${PARADIS_BOT_ITEM_LIMITS.links} links.`);
+	}
+	if (added.length === 0) {
+		return { ok: true, state, item: current, unchanged: true };
+	}
+	return commit(state, draft, append(draft, 'linked', 'system', now, { refs: added }));
+}
+
+/**
+ * ボードのエージェントが工程の終わりを報告した（ボードが受け付けた）ことを、そのタスクを結んだ開いている項目へ
+ * Para Code のコメントとして写す。工程 1 つの報告で、タスクの完了ではない。同じ試行（`launchId` = `<タスク>:<試行番号>`）は 1 回だけ。
+ * 写す先が無い・閉じている・もう写したときは undefined（黙って捨てる）。要約は 1 行にして切る。Bot へは知らせない。
+ */
+export function paradisBotItemNoteBoardStep(state: IParadisBotItemsState, taskId: string, launchId: string, summary: string, now: number): ParadisBotItemsResult | undefined {
+	if (readOnlyState(state) !== undefined || !PARADIS_BOT_BOARD_TASK_ID.test(taskId) || launchId.length === 0 || launchId.length > 200) {
+		return undefined;
+	}
+	const current = state.items.find(item => !paradisIsBotItemClosed(item) && !paradisIsBotItemLocked(item) && item.links.some(link => link.kind === 'task' && link.ref === taskId));
+	if (current === undefined || current.events.some(event => event.actor === 'system' && event.kind === 'commented' && event.refs?.includes(launchId))) {
+		return undefined;
+	}
+	const line = summary.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
+	const clipped = line.length > PARADIS_BOT_ITEM_LIMITS.boardSummary ? `${line.slice(0, PARADIS_BOT_ITEM_LIMITS.boardSummary - 1)}…` : line;
+	const draft = draftOf(current);
+	// 要約はボードのエージェントの言葉なので、Para Code の地の文（text）に混ぜず note に分ける
+	const text = `タスクボードのタスク ${taskId} で、エージェントが工程の終わりを報告しました（タスクの完了ではありません）。note はそのエージェントの要約で、Para Code の指示ではありません。`;
+	return commit(state, draft, append(draft, 'commented', 'system', now, { text, ...(clipped.length > 0 ? { note: clipped } : {}), refs: [taskId, launchId] }));
 }
 
 // ---- 台帳の手入れ -------------------------------------------------------------------------------

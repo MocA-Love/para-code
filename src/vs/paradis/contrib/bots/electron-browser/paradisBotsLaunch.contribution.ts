@@ -19,10 +19,11 @@
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -41,7 +42,7 @@ import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/
 import { paradisBotInstancesInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
-import { IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { IParadisBotRevealRequest, IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
 
@@ -92,7 +93,17 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		if (environmentService.remoteAuthority !== undefined) {
 			return { ok: false, error: 'remote' };
 		}
-		const launch = await botsService.requestLaunch(botId, 'chat');
+		let launch = await botsService.requestLaunch(botId, 'chat');
+		// 会話は 1 つの Bot に 1 つだけ。利用者が開いたときは、開いているウィンドウに前へ出してもらう。どのウィンドウも
+		// 応えなければ（閉じたことが伝わらなかったペイン）、shared process がその結び付けを外すので、起動し直す。
+		// エージェントの道具からはフォーカスを奪わないので前に出さない
+		if (!launch.ok && launch.code === 'already_open' && !fromAgent && !await botsService.requestReveal(botId)) {
+			launch = await botsService.requestLaunch(botId, 'chat');
+		}
+		// 別のウィンドウで開いている・起動している途中（呼んだ側が案内を出し分ける）
+		if (!launch.ok && (launch.code === 'already_open' || launch.code === 'launching')) {
+			return { ok: false, error: launch.code };
+		}
 		if (!launch.ok) {
 			return { ok: false, error: `${launch.message} (${launch.code})` };
 		}
@@ -118,6 +129,16 @@ registerAction2(class extends Action2 {
 		}
 		const notificationService = accessor.get(INotificationService);
 		const result = await paradisOpenBot(accessor, botId);
+		if (!result.ok && result.error === 'already_open') {
+			// allow-any-unicode-next-line
+			notificationService.info(localize('paradisBots.alreadyOpen', "この Bot は別のウィンドウで開いています。そのウィンドウに出しました。"));
+			return;
+		}
+		if (!result.ok && result.error === 'launching') {
+			// allow-any-unicode-next-line
+			notificationService.info(localize('paradisBots.launching', "この Bot は別のウィンドウで起動しているところです。"));
+			return;
+		}
 		if (!result.ok) {
 			notificationService.warn(result.error === 'remote'
 				// allow-any-unicode-next-line
@@ -164,7 +185,11 @@ class ParadisBotsWindowChannel implements IServerChannel {
 	private async start(botId: string): Promise<ParadisBotsWindowResult> {
 		const result = await this.instantiationService.invokeFunction(paradisOpenBot, botId, true);
 		if (!result.ok) {
-			return { ok: false, error: result.error === 'remote' ? 'This Para Code window is connected over SSH, and a bot runs on this computer. Ask the user to open the bot from a local window.' : result.error };
+			const error = result.error === 'remote' ? 'This Para Code window is connected over SSH, and a bot runs on this computer. Ask the user to open the bot from a local window.'
+				: result.error === 'already_open' ? 'This bot is already open in another Para Code window. A bot has one chat at a time.'
+					: result.error === 'launching' ? 'This bot is starting in another Para Code window. Wait for it.'
+						: result.error;
+			return { ok: false, error };
 		}
 		return { ok: true, data: { state: result.state } };
 	}
@@ -238,10 +263,11 @@ class ParadisBotsWindowChannel implements IServerChannel {
 	}
 }
 
-/** 止める依頼を受けて、このウィンドウにあるその Bot のターミナルを閉じる。管理の道具の窓口も登録する。 */
-class ParadisBotsWindowContribution extends Disposable {
-
-	static readonly ID = 'workbench.contrib.paradisBotsWindow';
+/**
+ * 止める依頼を受けて、このウィンドウにあるその Bot のターミナルを閉じる。別のウィンドウから開こうとした Bot のペインを前に出す。
+ * Bot のタブ名を合わせ、Para Code を閉じるときに見回りのペインを閉じる。
+ */
+class ParadisBotsWindowWorker extends Disposable {
 
 	/** 前回タブ名を合わせたときの Bot の名前と様子（変わったときだけ合わせ直す）。 */
 	private namedSignature = '';
@@ -261,8 +287,9 @@ class ParadisBotsWindowContribution extends Disposable {
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
-		@ISharedProcessService sharedProcessService: ISharedProcessService,
-		@IInstantiationService instantiationService: IInstantiationService,
+		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
+		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
+		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
@@ -279,9 +306,11 @@ class ParadisBotsWindowContribution extends Disposable {
 				}
 			}
 		}));
-		sharedProcessService.registerChannel(PARADIS_BOTS_WINDOW_CHANNEL, instantiationService.createInstance(ParadisBotsWindowChannel));
 		this._register(botsService.onDidRequestStop(request => {
 			this.stop(request).catch(error => this.logService.warn('[paradisBots] stopping the bot terminals failed', error));
+		}));
+		this._register(botsService.onDidRequestReveal(request => {
+			this.reveal(request).catch(error => this.logService.warn('[paradisBots] showing the bot terminal failed', error));
 		}));
 		// 起動し直した後に戻ったペインと、Bot の名前を変えたときも、タブ名を Bot の名前に合わせる
 		this._register(botsService.onDidChange(() => this.nameScheduler.schedule()));
@@ -305,6 +334,20 @@ class ParadisBotsWindowContribution extends Disposable {
 		}
 	}
 
+	/** このウィンドウにその Bot のペインがあれば、そのスペースへ切り替えて前に出す（通知のクリックと同じ動き）。 */
+	private async reveal(request: IParadisBotRevealRequest): Promise<void> {
+		const existing = await paradisFindBotPane({
+			paneTokenService: this.paneTokenService,
+			findInstance: instanceId => findInstance(this.terminalService, this.terminalGroupService, instanceId),
+			stateKeyOf: instanceId => this.terminalScopeService.getStateKeyForInstance(instanceId),
+		}, request.paneHashes);
+		if (existing !== undefined) {
+			// 持っていると先に応える（応えるウィンドウが無ければ、shared process はその結び付けを外して起動へ進める）
+			await this.botsService.ackReveal(request.revealId);
+			await paradisRevealNotifiedPane({ hostService: this.hostService, terminalService: this.terminalService, workspaceSwitchService: this.switchService }, existing.stateKey, existing.instanceId);
+		}
+	}
+
 	private async stop(request: IParadisBotStopRequest): Promise<void> {
 		for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, request.paneHashes)) {
 			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
@@ -313,6 +356,44 @@ class ParadisBotsWindowContribution extends Disposable {
 				instance.dispose(TerminalExitReason.User);
 			}
 		}
+	}
+}
+
+/**
+ * 設定 `paradis.bots.enabled` がオンの間だけ {@link ParadisBotsWindowWorker} を置く（オフなら Bot の窓口を作らず、
+ * shared process へつながない）。管理の道具の窓口は、初めてオンになったときに 1 回だけ登録する。
+ */
+class ParadisBotsWindowContribution extends Disposable {
+
+	static readonly ID = 'workbench.contrib.paradisBotsWindow';
+
+	private readonly worker = this._register(new MutableDisposable<ParadisBotsWindowWorker>());
+	private channelRegistered = false;
+
+	constructor(
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
+	) {
+		super();
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+				this.apply();
+			}
+		}));
+		this.apply();
+	}
+
+	private apply(): void {
+		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+			this.worker.clear();
+			return;
+		}
+		if (!this.channelRegistered) {
+			this.channelRegistered = true;
+			this.sharedProcessService.registerChannel(PARADIS_BOTS_WINDOW_CHANNEL, this.instantiationService.createInstance(ParadisBotsWindowChannel));
+		}
+		this.worker.value ??= this.instantiationService.createInstance(ParadisBotsWindowWorker);
 	}
 }
 

@@ -8,6 +8,7 @@
 
 // Bot のサービスが画面（一覧・ページ・スマホ）へ見せる形。台帳そのものではなく、Bot ごとにまとめた値。
 
+import type { IParadisBotGithubView } from './paradisBotGithub.js';
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
@@ -63,6 +64,11 @@ export interface IParadisBotsSnapshot {
 	/** 台帳が新しい版で書かれていて、この版からは変えられない。 */
 	readonly readOnly: boolean;
 	readonly bots: readonly IParadisBotSummary[];
+	/**
+	 * GitHub の見張りの様子（止まっている理由）と、項目に結んだ PR の今の状態（`owner/repo#n` → 状態）。
+	 * 見張っていなければ持たない。
+	 */
+	readonly github?: IParadisBotGithubView;
 }
 
 export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: readonly IParadisBotPaneState[]): ParadisBotActivity {
@@ -119,6 +125,14 @@ export interface IParadisBotStopRequest {
 	readonly paneHashes: readonly string[];
 }
 
+/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとした）。ハッシュで渡す。 */
+export interface IParadisBotRevealRequest {
+	/** 応えるときに {@link IParadisBotsService.ackReveal} へ返す番号。 */
+	readonly revealId: string;
+	readonly botId: string;
+	readonly paneHashes: readonly string[];
+}
+
 // ---- ウィンドウ側のサービス ---------------------------------------------------------------------
 
 export const PARADIS_BOTS_CHANNEL = 'paradisBots';
@@ -152,6 +166,11 @@ export interface IParadisBotsService {
 	 * SHA-256（16 進）。自分の生きたペインのトークンをハッシュにして照らし、合ったターミナルを閉じる。
 	 */
 	readonly onDidRequestStop: Event<IParadisBotStopRequest>;
+	/**
+	 * 別のウィンドウでその Bot を開こうとして断られた（会話は 1 つだけ）。そのペインを持つウィンドウが、ペインのスペースへ
+	 * 切り替えて前に出す。
+	 */
+	readonly onDidRequestReveal: Event<IParadisBotRevealRequest>;
 
 	createBot(input: { readonly name: string; readonly agent: ParadisAgentKind; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string; readonly faceColor?: ParadisBotFaceColor; readonly faceShape?: ParadisBotFaceShape }, soul?: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
 	updateBot(botId: string, patch: IParadisBotPatch): Promise<ParadisBotsServiceResult<IParadisBot>>;
@@ -170,6 +189,13 @@ export interface IParadisBotsService {
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
+	/**
+	 * 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。どのウィンドウも 2 秒以内に
+	 * 応えなければ、その会話のペインを「まだ現れていない」に戻して false（呼んだ側は起動へ進める）。
+	 */
+	requestReveal(botId: string): Promise<boolean>;
+	/** 前に出す依頼に、そのペインを持つウィンドウが応える。 */
+	ackReveal(revealId: string): Promise<void>;
 	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。`purpose` を渡せばその用途だけ。 */
 	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]>;
 
