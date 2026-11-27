@@ -103,6 +103,36 @@ suite('Paradis bot groups', () => {
 		assert.deepStrictEqual([state.records.length, state.records[0].text, state.nextRecordId], [300, '5', 306]);
 	});
 
+	test('上限で捨てるのは既読の伝言とあなたの sent から。まだ読まれていない伝言は上限を超えても残る（読み込みでも同じ）', () => {
+		let state = withGroup();
+		const append = (input: Parameters<typeof paradisBotGroupAppendRecord>[2], at: number) => {
+			const result = paradisBotGroupAppendRecord(state, 'g1', input, at);
+			assert.ok(result.ok);
+			state = result.state;
+		};
+		append({ kind: 'asked', from: 'a', to: ['b'], text: '未読の質問' }, 0);
+		append({ kind: 'told', from: 'b', to: ['a'], text: '既読の伝言' }, 1);
+		const read = paradisBotGroupMarkRead(state, 'a', ['2'], 2);
+		assert.ok(read.ok);
+		state = read.state;
+		for (let index = 0; index < 305; index++) {
+			append({ kind: 'sent', from: 'owner', to: ['a'], text: `${index}` }, 10 + index);
+		}
+		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify({ ...state, records: [...state.records, ...state.records.slice(-3).map((record, index) => ({ ...record, id: 1000 + index }))] })));
+		assert.deepStrictEqual({
+			count: state.records.length,
+			first: state.records.slice(0, 2).map(record => record.text),
+			inbox: paradisBotGroupInbox(state, 'b').map(message => message.text),
+			reread: [reread?.records.length, reread?.records[0].text],
+		}, {
+			count: 300,
+			// 未読の質問が先頭に残り、既読の伝言と古い sent が先に捨てられる
+			first: ['未読の質問', '6'],
+			inbox: ['未読の質問'],
+			reread: [300, '未読の質問'],
+		});
+	});
+
 	test('読み込み: 壊れた 1 件・知らないグループの記録・重なる id を捨て、新しい版は版を保つ', () => {
 		const parsed = paradisParseBotGroupsState({
 			version: 1,

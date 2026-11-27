@@ -173,6 +173,34 @@
 	background: var(--vscode-paradis-fillHover);
 }
 
+/* Unread bot messages in the inbox, and "ask it to read them" while the bot is idle. */
+.paradis-bot-page-inbox {
+	flex: 0 1 auto;
+	min-width: 0;
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size80);
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground) 40%, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+.paradis-bot-page-inbox:disabled {
+	cursor: default;
+	border-color: color-mix(in srgb, var(--vscode-paradis-textMuted) 40%, transparent);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-page-inbox[hidden] {
+	display: none;
+}
+
 /* Pill tabs, as in the mock: the selected one is filled with the raised surface. */
 .paradis-bot-page-tabs {
 	display: flex;

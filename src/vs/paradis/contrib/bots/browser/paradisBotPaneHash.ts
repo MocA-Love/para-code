@@ -62,7 +62,7 @@ interface IParadisBotPaneLookup {
 }
 
 /**
- * このウィンドウにある、その Bot の会話のペイン（見回りのペインは選ばない。部屋から送る先と、伝言を届ける先）。
+ * このウィンドウにある、その Bot の会話のペイン（見回りのペインは選ばない。部屋から送る先）。
  * 無ければ undefined。
  */
 export async function paradisFindBotChatPane<T extends { readonly isDisposed: boolean }>(
