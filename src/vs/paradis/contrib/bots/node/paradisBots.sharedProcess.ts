@@ -21,6 +21,7 @@ import { ParadisSharedProcessContributions } from '../../../common/paradisProces
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
+import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
 import { IParadisTaskBoardBotHost, PARADIS_TASK_BOARD_BOT_HOST_CHANNEL } from '../../taskBoard/common/paradisTaskBoardHost.js';
@@ -28,7 +29,7 @@ import { onParadisTaskBoardStepCompleted } from '../../taskBoard/node/paradisTas
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotBoardToolProvider } from './paradisBotBoardToolProvider.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
-import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js';
+import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotMessageToolProvider } from './paradisBotMessageToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
@@ -93,6 +94,8 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: enabled,
 	})));
+	// Bot のペインからは、別のペインを起こす・動かす IDE の道具を断る
+	store.add(paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(service)));
 	store.add({
 		dispose: () => {
 			if (shared === service) {
