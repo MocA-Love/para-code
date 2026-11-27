@@ -14,22 +14,17 @@
 //   別のスペースで動いている Bot は動かさない（開くとスペースが切り替わるため）。部屋に「別のスペースで動作中」と出す。
 // - 送る: 部屋の入力欄の文を、名指しした Bot のペインへ送る。送る口はチャット表示と同じ
 //   （IParadisAgentChatService.sendMessageToPane。許可・質問の画面が出ている間などは断られる）。新しい入力の経路は作らない。
-// - Bot 同士の伝言を受け付ける窓口 `paradisBotGroupsWindow`（伝言の道具 paradisBotMessageToolProvider.ts が呼ぶ）。
-//   伝言はペインへ打ち込まず、宛先の Bot の受け箱（グループの台帳の未読の記録）に入る。宛先は道具 `bot_inbox` で読む。
+// - Bot 同士の伝言はペインへ打ち込まない。伝言の道具（paradisBotMessageToolProvider.ts）が shared process で台帳に記録し、
+//   宛先の Bot の受け箱（未読の記録）に入る。宛先は道具 `bot_inbox` で読む。このウィンドウ側には窓口を置かない。
 //
 // どれも設定 paradis.bots.enabled（既定オフ）の下。
 
-import { Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -38,10 +33,8 @@ import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentCh
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisBotGroupSender, ParadisBotGroupEditorInput } from '../browser/paradisBotGroupEditor.js';
-import { paradisBotIdByPaneHash, paradisFindBotChatPane } from '../browser/paradisBotPaneHash.js';
+import { paradisFindBotChatPane } from '../browser/paradisBotPaneHash.js';
 import { paradisBotGroupMembers } from '../common/paradisBotGroups.js';
-import { PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT, paradisBotGroupDeliver, paradisWaitForLoaded } from '../browser/paradisBotGroupDeliver.js';
-import { PARADIS_BOT_GROUPS_WINDOW_CHANNEL, ParadisBotGroupDeliverResult } from '../common/paradisBotMessages.js';
 import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisOpenBot } from './paradisBotsLaunch.contribution.js';
@@ -185,64 +178,6 @@ class ParadisBotGroupSender implements IParadisBotGroupSender {
 
 }
 
-/**
- * Bot 同士の伝言を受け付ける窓口（伝言の道具 paradisBotMessageToolProvider.ts が `callPaneWindow` で呼ぶ）。呼ぶのは
- * 宛先の Bot の会話のペインを持つウィンドウで、送り手のペインは別のウィンドウにあってよい。引数は
- * `[送り手のペイントークンのハッシュ, 宛先の Bot の id, 文]`（生のトークンは別のウィンドウへ渡さない）。ペインへは何も
- * 打ち込まない（受け箱の方式）。伝言は道具の側がグループの台帳に記録として残し、宛先の受け箱に入る。戻り値は
- * {@link ParadisBotGroupDeliverResult} の `queued`（受け箱に入れた）か `refused`。送り手の Bot はハッシュをそのまま台帳と
- * 照らして見分ける（もう一度ハッシュにしない。引数の名乗りは信じない）。手順は {@link paradisBotGroupDeliver}。
- */
-class ParadisBotGroupsWindowChannel implements IServerChannel {
-
-	/** 届ける役。設定がオンで最初に届いたときに作る（それまで Bot とグループのサービスに触れない）。 */
-	private deliverer: ParadisBotGroupsDeliverer | undefined;
-
-	constructor(
-		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
-	) { }
-
-	listen<T>(): Event<T> {
-		throw new Error('no events');
-	}
-
-	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
-		if (command !== 'deliver') {
-			throw new Error(`unknown command ${command}`);
-		}
-		const [callerHash, to, text] = Array.isArray(arg) ? arg : [];
-		let result: ParadisBotGroupDeliverResult;
-		if (typeof callerHash !== 'string' || typeof to !== 'string' || typeof text !== 'string' || text.trim().length === 0) {
-			result = { kind: 'refused', reason: 'Para Code could not read the message, so do not send it again' };
-		} else if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
-			result = { kind: 'refused', reason: 'bots are turned off in that bot\'s Para Code window, so do not send it again' };
-		} else {
-			this.deliverer ??= this.instantiationService.createInstance(ParadisBotGroupsDeliverer);
-			result = await this.deliverer.deliver(callerHash, to);
-		}
-		return result as T;
-	}
-}
-
-/** {@link paradisBotGroupDeliver} にこのウィンドウのサービスをつなぐ。 */
-class ParadisBotGroupsDeliverer {
-
-	constructor(
-		@IParadisBotsService private readonly botsService: IParadisBotsService,
-		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
-	) { }
-
-	deliver(callerHash: string, to: string): Promise<ParadisBotGroupDeliverResult> {
-		return paradisBotGroupDeliver({
-			// このウィンドウで台帳のクライアントを初めて作った直後は空なので、最初の取得を待つ
-			waitForLoaded: () => paradisWaitForLoaded([this.botsService, this.groupsService], PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT),
-			groups: () => this.groupsService.snapshot.groups,
-			botIdByPaneHash: hash => paradisBotIdByPaneHash(this.botsService, hash),
-		}, callerHash, to);
-	}
-}
-
 registerSingleton(IParadisBotGroupSender, ParadisBotGroupSender, InstantiationType.Delayed);
 
 registerAction2(class extends Action2 {
@@ -261,19 +196,3 @@ registerAction2(class extends Action2 {
 		}
 	}
 });
-
-/** Bot 同士の伝言の窓口を登録する。 */
-class ParadisBotGroupsContribution extends Disposable {
-
-	static readonly ID = 'workbench.contrib.paradisBotGroups';
-
-	constructor(
-		@ISharedProcessService sharedProcessService: ISharedProcessService,
-		@IInstantiationService instantiationService: IInstantiationService,
-	) {
-		super();
-		sharedProcessService.registerChannel(PARADIS_BOT_GROUPS_WINDOW_CHANNEL, instantiationService.createInstance(ParadisBotGroupsWindowChannel));
-	}
-}
-
-registerWorkbenchContribution2(ParadisBotGroupsContribution.ID, ParadisBotGroupsContribution, WorkbenchPhase.AfterRestored);
