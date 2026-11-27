@@ -16,6 +16,7 @@ import {
 	paradisBotsBandDraggedHeight,
 	paradisBotsBandListHeight,
 	paradisBotsBandRows,
+	paradisBotStatusDetail,
 	paradisBotStatusLine,
 	paradisBotsNeedsYouTotal,
 	paradisParseBotsBandState,
@@ -109,7 +110,7 @@ suite('Paradis bots band', () => {
 			bot('x', 'x', { activity: 'idle', halt: { kind: 'exited', exitCode: 0 } }),
 			bot('x', 'x', { activity: 'idle', halt: { kind: 'needsUser' } }),
 			bot('x', 'x', { activity: 'idle' }),
-		].map(paradisBotStatusLine), ['エージェントが見つかりません', '終了しました（コード 1）', '終了しました', '操作が要ります', '待機中']);
+		].map(paradisBotStatusLine).concat(paradisBotStatusDetail(bot('x', 'x', { activity: 'idle', halt: { kind: 'notFound' } }))), ['見つかりません', '終了しました（コード 1）', '終了しました', '操作が要ります', '待機中', 'エージェントのコマンドが見つかりません']);
 	});
 
 	test('顔は台帳の形と色、動きは様子から', () => {
