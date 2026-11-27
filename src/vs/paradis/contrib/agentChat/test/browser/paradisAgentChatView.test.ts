@@ -25,9 +25,13 @@ import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatV
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
+import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer, paradisHumanAskCounts } from '../../../humanAsk/common/paradisHumanAsk.js';
+import { paradisInboxPaneKey } from '../../../notificationInbox/common/paradisNotificationInbox.js';
+import { fromNow } from '../../../../../base/common/date.js';
 import { IParadisAgentChoiceMenu } from '../../../agentIde/common/paradisAgentChoiceMenu.js';
 
 class TestHost implements IParadisAgentChatViewHost {
+	humanAsk: IParadisHumanAskService | undefined;
 	readonly answers: { group: string; answers: readonly ParadisAgentQuestionAnswer[] }[] = [];
 	readonly approvals: { id: string; choice: string }[] = [];
 	readonly sent: string[] = [];
@@ -83,7 +87,7 @@ function sourceReturning(views: IParadisAgentChatView[]): IParadisAgentChatSourc
 suite('ParadisAgentChatView', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function createView(views: IParadisAgentChatView[]): Promise<{ view: ParadisAgentChatView; host: TestHost; container: HTMLElement; disposables: DisposableStore; session: ParadisAgentChatSession }> {
+	async function createView(views: IParadisAgentChatView[], humanAsk?: IParadisHumanAskService): Promise<{ view: ParadisAgentChatView; host: TestHost; container: HTMLElement; disposables: DisposableStore; session: ParadisAgentChatSession }> {
 		const disposables = store.add(new DisposableStore());
 		const container = mainWindow.document.createElement('div');
 		container.className = 'terminal-overflow-guard terminal-editor';
@@ -95,6 +99,7 @@ suite('ParadisAgentChatView', () => {
 		instantiationService.set(IMarkdownRendererService, instantiationService.createInstance(MarkdownRendererService));
 		const session = disposables.add(new ParadisAgentChatSession('pane', sourceReturning(views), new NullLogService()));
 		const host = new TestHost(session);
+		host.humanAsk = humanAsk;
 		disposables.add(host);
 		const view = disposables.add(instantiationService.createInstance(ParadisAgentChatView, container, host));
 		view.setTarget(1, 'pane');
@@ -213,6 +218,104 @@ suite('ParadisAgentChatView', () => {
 			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 · キャッシュ 3,000 · 出力 34',
 		]);
 	});
+
+	function ledgerFixture(initial: (paneKey: string) => IParadisHumanAskEntry[]) {
+		const paneKey = paradisInboxPaneKey('pane');
+		let entries = initial(paneKey);
+		const onDidChange = new Emitter<void>();
+		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
+		const humanAsk: IParadisHumanAskService = {
+			_serviceBrand: undefined,
+			onDidChange: onDidChange.event,
+			get snapshot() { return { entries, counts: paradisHumanAskCounts(entries), revision: 1 }; },
+			answer: async (key, answer) => { answered.push({ key, answer }); return { ok: true }; },
+		};
+		return {
+			humanAsk, answered, onDidChange,
+			update: (next: (current: IParadisHumanAskEntry[]) => IParadisHumanAskEntry[]) => { entries = next(entries); onDidChange.fire(); },
+		};
+	}
+	const ledgerAsk = (paneKey: string, id: string, extra: Partial<IParadisHumanAskEntry>): IParadisHumanAskEntry => ({
+		key: `bot:${id}`, owner: 'bots', source: 'bot', id, kind: 'question', from: { title: 'リリース係' }, questions: [], actions: [], canSkip: false,
+		askedAt: 1, state: 'waiting', paneKey, ...extra,
+	});
+	const ledgerQuestion = (text: string, options: { id: string; label: string; recommended?: boolean }[]) => [{ id: '0', text, options, allowText: false }];
+
+	test('shows the board and Bot questions of the ledger for this pane as the inbox cards, and answers them through the ledger once the cards stop moving', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const ledger = ledgerFixture(paneKey => [
+			ledgerAsk(paneKey, 'q1', { questions: ledgerQuestion('Windows 版も出しますか', [{ id: 'y', label: '出す', recommended: true }, { id: 'n', label: '出さない' }]) }),
+			ledgerAsk(paneKey, 'p1', { kind: 'permission', preface: 'Bash: npm test', actions: [{ id: 'yes', label: '許可' }] }),
+			ledgerAsk('another-pane', 'other', { questions: [{ id: '0', text: '別のペイン', options: [], allowText: true }] }),
+		]);
+		const { container, disposables } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }], ledger.humanAsk);
+		disposables.add(ledger.onDidChange);
+		const cards = () => [...container.querySelectorAll<HTMLElement>('.paradis-agent-chat-card.ledger')].map(card => card.textContent);
+		const shown = cards();
+		const click = () => container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger [data-ask-control="option:y"]')!.click();
+		// 出た直後の押下は効かない（受信箱と同じ 0.6 秒の守り）
+		click();
+		const whileGuarded = ledger.answered.length;
+		await new Promise(resolve => setTimeout(resolve, 600));
+		click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		disposables.dispose();
+		assert.deepStrictEqual({ shown, whileGuarded, answered: ledger.answered }, {
+			// 受信箱と同じカード（種類・出どころ・だれから・時刻・問い・選択肢）。会話の中なので「ペインへ移動」は無い
+			shown: [`質問Botリリース係${fromNow(1, true)}Windows 版も出しますか出す（おすすめ）出さない`],
+			whileGuarded: 0,
+			answered: [{ key: 'bot:q1', answer: { type: 'answers', answers: [{ questionId: '0', optionIds: ['y'] }] } }],
+		});
+	}));
+
+	test('keeps a card answered elsewhere as answered for a while so the next one does not slide under the pointer, and guards the next one after it moves up', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const ledger = ledgerFixture(paneKey => [
+			ledgerAsk(paneKey, 'q1', { askedAt: 1, questions: ledgerQuestion('1 問目', [{ id: 'a', label: 'はい' }]) }),
+			ledgerAsk(paneKey, 'q2', { askedAt: 2, questions: ledgerQuestion('2 問目', [{ id: 'b', label: 'やり直す' }]) }),
+		]);
+		const { container, disposables } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }], ledger.humanAsk);
+		disposables.add(ledger.onDidChange);
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const settledKinds = () => [...container.querySelectorAll<HTMLElement>('.paradis-agent-chat-card.ledger .pnip-ask')].map(card => `${card.dataset.askKey}:${card.classList.contains('settled') ? 'settled' : 'waiting'}`);
+		// 1 問目は受信箱など、ほかの場所で答えられた
+		ledger.update(current => current.map(entry => entry.id === 'q1' ? { ...entry, state: 'answered' as const, resolution: { at: 3, surface: 'inbox' as const } } : entry));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const lingering = settledKinds();
+		await new Promise(resolve => setTimeout(resolve, 4000));
+		const after = settledKinds();
+		// 2 問目が上へ上がった直後の押下は効かない
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger [data-ask-control="option:b"]')!.click();
+		const rightAfterMove = ledger.answered.length;
+		disposables.dispose();
+		assert.deepStrictEqual({ lingering, after, rightAfterMove }, {
+			lingering: ['bot:q1:settled', 'bot:q2:waiting'],
+			after: ['bot:q2:waiting'],
+			rightAfterMove: 0,
+		});
+	}));
+
+	test('guards the ledger cards right after the conversation scrolls itself to the newest message', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const ledger = ledgerFixture(paneKey => [ledgerAsk(paneKey, 'q1', { questions: ledgerQuestion('1 問目', [{ id: 'a', label: 'はい' }]) })]);
+		const many = (count: number) => Array.from({ length: count }, (_, rev) => ({ rev, role: 'assistant' as const, kind: 'text' as const, text: `発言 ${rev}` }));
+		const base = { token: 'pane', agent: 'claude' as const, epoch: 'e', reset: true, busy: false, live: null, interaction: null };
+		const { container, session, disposables } = await createView([{ ...base, rev: 40, messages: many(40) }, { ...base, rev: 40, messages: many(40) }, { ...base, rev: 80, messages: many(80) }], ledger.humanAsk);
+		disposables.add(ledger.onDidChange);
+		// 単体テストには CSS が無いので、会話の欄の高さとスクロールをここで与える
+		const scroller = container.querySelector<HTMLElement>('.paradis-agent-chat-scroll')!;
+		scroller.style.height = '200px';
+		scroller.style.overflowY = 'auto';
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		// 新しい発言が届き、最下部へついていく（カードの位置が動く）
+		await session.refresh();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger [data-ask-control="option:a"]')!.click();
+		const rightAfterScroll = ledger.answered.length;
+		await new Promise(resolve => setTimeout(resolve, 600));
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger [data-ask-control="option:a"]')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const afterGuard = ledger.answered.length;
+		disposables.dispose();
+		assert.deepStrictEqual({ rightAfterScroll, afterGuard }, { rightAfterScroll: 0, afterGuard: 1 });
+	}));
 
 	test('shows the terminal band while Codex shows its choice menu, keeps the same button across ticks, and stops sending until it closes', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const { view, host, container, disposables } = await createView([{ token: 'pane', agent: 'codex', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
@@ -456,6 +559,17 @@ suite('ParadisAgentChatView', () => {
 			'card:許可/拒否',
 			'group:2 手順Bash',
 		]);
+	});
+
+	test('grows the input to fit a multi-line draft restored when the chat comes back into view', async () => {
+		const { view, host, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const input = container.querySelector<HTMLTextAreaElement>('textarea.paradis-agent-chat-input')!;
+		host.setDraft('other', '1 行目\n2 行目\n3 行目');
+		// ターミナルへ戻って（隠れて）から、下書きのあるペインのチャットを開く
+		view.setTarget(undefined, undefined);
+		view.setTarget(2, 'other');
+		// 隠れたまま測ると scrollHeight が 0 で、高さが 0px（min-height の 1 行）になる
+		assert.deepStrictEqual({ value: input.value, fits: parseFloat(input.style.height) > 0 && input.scrollHeight <= input.clientHeight + 1 }, { value: '1 行目\n2 行目\n3 行目', fits: true });
 	});
 
 	test('clears the draft of a message that was sent while the user switched to another pane', async () => {
