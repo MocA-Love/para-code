@@ -29,6 +29,8 @@ import {
 } from '../common/paradisBotManageTools.js';
 import { IParadisBot } from '../common/paradisBots.js';
 import { PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsServiceResult, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
+import { PARADIS_BOT_PATROL_TOOLS } from '../common/paradisBotTools.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses changes to bots. This always happens for agents connected over SSH.';
@@ -37,6 +39,25 @@ const FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot create,
 const BOTS_DISABLED_MESSAGE = `Para Code bots are still experimental and turned off. The user can turn them on with the setting ${PARADIS_BOTS_ENABLED_SETTING}; do not try to change the setting yourself.`;
 const UNKNOWN_BOT_MESSAGE = 'There is no bot with that id. Call list_bots for the ids.';
 const IDE_ACTION_FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot start, open, type into or close other terminals, or change spaces, with the IDE tools: a terminal it started would not be a bot and could change bots. The reading tools still work. Tell your owner what you would do.';
+
+const PATROL_WRITE_MESSAGE = 'This is a look-around, which only reads. Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Offer what you would do with bot_suggest.';
+
+/**
+ * Bot の見回りのペインからの para-browser の呼び出しを、読むだけの道具（`PARADIS_READ_ONLY_MCP_TOOL_NAMES`）と見回りの
+ * Bot の道具（`PARADIS_BOT_PATROL_TOOLS`。`bot_suggest` ほか）に限る（{@link paradisRegisterMcpCallRefusal} に渡す）。
+ * 見回りの起動の引数（`paradisBotPatrolLaunchArgs`）と同じ一覧で、利用者がエージェントの側で常に許可した書く道具も
+ * サーバーの側で断る（見回りは誰も見ていない時間に外の文を読むので、読んだ文に誘導されて書かないように）。
+ */
+export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'purposeOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
+	return async (paneToken, toolName) => {
+		if (PARADIS_READ_ONLY_MCP_TOOL_NAMES.has(toolName) || PARADIS_BOT_PATROL_TOOLS.has(toolName)) {
+			return undefined;
+		}
+		await service.ready;
+		// 起動し直した後に初めて現れたペインの結び付けを戻してから、用途を引く
+		return service.botOfPane(paneToken) !== undefined && service.purposeOfPane(paneToken) === 'patrol' ? PATROL_WRITE_MESSAGE : undefined;
+	};
+}
 
 /**
  * IDE の操作の道具（launch_agent・create_terminal・send_terminal_input ほか）を、Bot のペインからは断る
