@@ -58,6 +58,8 @@ interface ISpawnedBoard {
 	readonly remote: IRemoteBoardTarget | undefined;
 	/** 起動の合図（ready の port）か失敗。 */
 	readonly ready: Promise<{ readonly result: ParadisTaskBoardOpenResult; readonly port: number }>;
+	/** 起こし始めたときの世代（{@link ParadisTaskBoardHost.stop} のたびに進む。違っていれば、待つ間に止められた）。 */
+	readonly generation: number;
 }
 
 function isSpawned(value: ISpawnedBoard | ParadisTaskBoardOpenResult): value is ISpawnedBoard {
@@ -89,6 +91,10 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 	/** 起動中（合図を待っている）の子。止める操作と終了処理は、これも止める。 */
 	private startingChild: ChildProcess | undefined;
 	private window: electron.BrowserWindow | undefined;
+	/** ボードの窓が開いた、自分のサーバーのページの窓（成果物を別の窓で見る等）。止めるときに一緒に閉じる。 */
+	private readonly childWindows = new Set<electron.BrowserWindow>();
+	/** 止めるたびに進む番号。起動の途中（子を起こす前の待ちを含む）で止められたかを見分ける。 */
+	private generation = 0;
 	private readonly shellEnv: ParadisCachedShellEnv;
 	private quitting = false;
 	/** SSH の窓が起こし、起動の合図を待っているボード（`finished` は起動しきったか。失敗なら止めてある）。 */
@@ -237,6 +243,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 
 	/** ボードのサーバーを起こし、鍵を ipc で渡す。起動の合図は待たない。 */
 	private async spawnBoard(targetArgs: readonly string[], init: Record<string, unknown>, remote: IRemoteBoardTarget | undefined): Promise<ISpawnedBoard | ParadisTaskBoardOpenResult> {
+		const generation = this.generation;
 		const root = this.boardRoot();
 		const entry = join(root, 'server', 'main.mjs');
 		if (!(await fs.access(entry).then(() => true, () => false))) {
@@ -250,6 +257,10 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		const boardKey = randomBytes(32).toString('base64url');
 		const bridgeFile = join(this.environmentMainService.userDataPath, PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE);
 		const env = boardEnvironment(await this.shellEnv.getEnv());
+		if (generation !== this.generation) {
+			// 子を起こす前の待ち（空きポート探し・シェルの環境の読み込み）の間に止められた。起こさない
+			return { ok: false, reason: 'stopped' };
+		}
 		const child = spawn(process.execPath, [entry, '--prod', '--embedded', '--agents', 'para-code', ...targetArgs, '--port', String(port), '--bridge', bridgeFile], {
 			// 作業フォルダはリポジトリにしない。Windows は名前だけで起動したコマンドを作業フォルダから先に探すので、
 			// リポジトリに置かれた git.exe などが動いてしまう（ボードの側でも、Windows では絶対パスで起動している）
@@ -302,7 +313,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			child.on('error', onError);
 			child.send({ type: 'init', token, boardKey, ...init }, error => error && onError(error));
 		}).then(result => ({ result, port: readyPort }));
-		return { child, token, boardKey, remote, ready };
+		return { child, token, boardKey, remote, ready, generation };
 	}
 
 	/** 起動の合図を待ち、動いているボードとして覚える。失敗したら止める。 */
@@ -314,12 +325,25 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		if (this.startingChild === child) {
 			this.startingChild = undefined;
 		}
+		if (spawned.generation !== this.generation) {
+			// 起動の合図を待つ間に止められた。失敗としては扱わない（開いた側は知らせを出さない）
+			await this.stopChild(child);
+			return { ok: false, reason: 'stopped' };
+		}
 		if (!result.ok || this.quitting) {
 			await this.stopChild(child);
 			return result.ok ? { ok: false, reason: 'start-failed', message: 'Para Code is quitting' } : result;
 		}
 		const running: IRunningBoard = { child, token, port: readyPort, boardKey, remote };
 		this.running = running;
+		if (!remote) {
+			// クローンの作業場所を足すときのフォルダの選択（手元のボードだけ。SSH のボードは接続先のフォルダを使う）
+			child.on('message', (message: ParadisTaskBoardServerMessage) => {
+				if (message?.type === 'pick-folder' && typeof message.requestId === 'string' && message.requestId.length <= 64) {
+					void this.pickFolder(running, message.requestId);
+				}
+			});
+		}
 		child.once('exit', code => {
 			if (this.running === running) {
 				this.running = undefined;
@@ -330,6 +354,28 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			}
 		});
 		return result;
+	}
+
+	/** フォルダの選択のダイアログをボードの窓に出し、選んだフォルダ（選ばなければ無し）をボードへ返す。 */
+	private async pickFolder(running: IRunningBoard, requestId: string): Promise<void> {
+		let path: string | undefined;
+		try {
+			const window = this.window && !this.window.isDestroyed() ? this.window : undefined;
+			const options: electron.OpenDialogOptions = {
+				// allow-any-unicode-next-line
+				title: localize('paradis.taskBoard.pickCloneTitle', "クローンのフォルダを選ぶ"),
+				// allow-any-unicode-next-line
+				buttonLabel: localize('paradis.taskBoard.pickCloneButton', "このフォルダを足す"),
+				properties: ['openDirectory'],
+			};
+			const picked = window ? await electron.dialog.showOpenDialog(window, options) : await electron.dialog.showOpenDialog(options);
+			path = picked.canceled ? undefined : picked.filePaths[0];
+		} catch (error) {
+			this.logService.warn(`[ParadisTaskBoardHost] ${error instanceof Error ? error.message : String(error)}`);
+		}
+		if (this.running === running && running.child.connected) {
+			running.child.send({ type: 'pick-folder-result', requestId, ...(path !== undefined ? { path } : {}) }, error => error && this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
+		}
 	}
 
 	/** ボードの窓を出す。`hash` は画面の行き先（`#/board/task/<id>` など。開いている窓でも、そこへ移す）。 */
@@ -395,7 +441,13 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			window.setBackgroundColor(background);
 			this.stateService.setItem(PARADIS_TASK_BOARD_BACKGROUND_STATE_KEY, background);
 		});
-		// Para Code の画面ではないウィンドウでは、編集のメニューの一部が届かない。よく使うキーをここで渡す
+		this.forwardKeys(window);
+		void window.loadURL(`${origin}/?token=${encodeURIComponent(running.token)}${hash ?? ''}`);
+	}
+
+	/** Para Code の画面ではないウィンドウでは、編集のメニューの一部が届かない。よく使うキーをここで渡す。 */
+	private forwardKeys(window: electron.BrowserWindow): void {
+		const contents = window.webContents;
 		contents.on('before-input-event', (event, input) => {
 			const mod = isMacintosh ? input.meta : input.control;
 			if (input.type !== 'keyDown' || !mod || input.alt) {
@@ -420,7 +472,6 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 				contents.reload();
 			}
 		});
-		void window.loadURL(`${origin}/?token=${encodeURIComponent(running.token)}${hash ?? ''}`);
 	}
 
 	/**
@@ -451,10 +502,20 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			}
 			return { action: 'deny' };
 		});
-		contents.on('did-create-window', child => this.guardContents(child.webContents, origin, partition));
+		contents.on('did-create-window', child => {
+			this.guardContents(child.webContents, origin, partition);
+			// ボードの窓と同じ扱いにする（メニューを消す・キーを渡す・ボードを止めたら閉じる）
+			if (!isMacintosh) {
+				child.removeMenu();
+			}
+			this.forwardKeys(child);
+			this.childWindows.add(child);
+			child.once('closed', () => this.childWindows.delete(child));
+		});
 	}
 
 	async stop(): Promise<void> {
+		this.generation++;
 		const running = this.running;
 		this.running = undefined;
 		const starting = this.startingChild;
@@ -462,6 +523,11 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		this.pendingRemote = undefined;
 		if (this.window && !this.window.isDestroyed()) {
 			this.window.close();
+		}
+		for (const child of [...this.childWindows]) {
+			if (!child.isDestroyed()) {
+				child.close();
+			}
 		}
 		await Promise.all([running?.child, starting].filter((child): child is ChildProcess => child !== undefined).map(child => this.stopChild(child)));
 	}
