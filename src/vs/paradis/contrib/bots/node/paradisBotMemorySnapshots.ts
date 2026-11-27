@@ -115,12 +115,32 @@ export class ParadisBotMemorySnapshots {
 		while (existing.includes(takenAt)) {
 			takenAt++;
 		}
-		await paradisWriteFileAtomic(join(folder, `${takenAt}.json`), JSON.stringify({ version: 1, takenAt, files }), { rejectSymlink: true });
+		const partial = listed.files.length < listed.total;
+		// 件数と「一部だけか」も写しに残す（画面が写しの一覧に出す）
+		await paradisWriteFileAtomic(join(folder, `${takenAt}.json`), JSON.stringify({ version: 1, takenAt, files, total: listed.total, partial }), { rejectSymlink: true });
 		for (const old of [takenAt, ...existing].sort((a, b) => b - a).slice(PARADIS_BOT_MEMORY_SNAPSHOTS_KEEP)) {
 			await fs.unlink(join(folder, `${old}.json`)).catch(() => undefined);
 		}
-		const count = Object.keys(files).length;
-		return { takenAt, files: count, total: listed.total, partial: listed.files.length < listed.total };
+		return { takenAt, files: Object.keys(files).length, total: listed.total, partial };
+	}
+
+	/**
+	 * 写しの一覧（新しい順）。時刻・写したファイルの数・記憶のファイルの数・一部だけか。`total`・`partial` を
+	 * 持たない古い写しは、写した数を `total` にし、一部だけではないとみなす。読めない写しは飛ばす。
+	 */
+	async listSnapshots(bot: SnapshotBot): Promise<IParadisBotMemorySnapshot[]> {
+		const result: IParadisBotMemorySnapshot[] = [];
+		for (const takenAt of await this.list(bot)) {
+			try {
+				const value: unknown = JSON.parse(await fs.readFile(join(this.folder(bot), `${takenAt}.json`), 'utf8'));
+				const files = isRecord(value) && isRecord(value.files) ? Object.values(value.files).filter(text => typeof text === 'string').length : 0;
+				const total = isRecord(value) && typeof value.total === 'number' && Number.isSafeInteger(value.total) && value.total >= files ? value.total : files;
+				result.push({ takenAt, files, total, partial: isRecord(value) && value.partial === true });
+			} catch {
+				// 消えた・壊れた写しは一覧に出さない
+			}
+		}
+		return result;
 	}
 
 	/** その Bot の写しを全部消す（Bot を消したとき）。 */
