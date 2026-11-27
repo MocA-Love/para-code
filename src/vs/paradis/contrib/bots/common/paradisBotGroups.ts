@@ -79,6 +79,8 @@ export interface IParadisBotGroupRecord {
 	readonly undelivered?: ParadisBotMessageUndeliveredReason;
 	/** Bot 同士の伝言を、宛先が作業中だったので順番待ちに入れた（次の番に読まれる。{@link paradisBotGroupMarkQueued}）。 */
 	readonly queued?: true;
+	/** 宛先の Bot が受け箱から読んだ時刻（{@link paradisBotGroupMarkRead}）。 */
+	readonly readAt?: number;
 }
 
 export interface IParadisBotGroupsState {
@@ -313,92 +315,78 @@ export function paradisResolveBotGroupMentions(text: string, members: readonly {
 	return { ok: true, targets: members.filter(member => targets.has(member.id)).map(member => member.id), everyone: false };
 }
 
-// ---- Bot 同士の伝言 ------------------------------------------------------------------------------
+// ---- Bot 同士の伝言（受け箱） ---------------------------------------------------------------------
 
-/** 同じ宛先へ 1 分あたりに届ける伝言の上限。 */
-export const PARADIS_BOT_GROUP_RELAY_PER_MINUTE = 3;
-
-/**
- * 宛先ごとの伝言の回数を数える（Bot 同士が言い合いを続けて、あなたの知らないうちにペインを埋めないため）。
- * 時刻は呼ぶ側が渡す。
- */
-export class ParadisBotGroupRelayLimiter {
-
-	private readonly sent = new Map<string, number[]>();
-
-	constructor(private readonly perMinute = PARADIS_BOT_GROUP_RELAY_PER_MINUTE) { }
-
-	/** 今送ってよいか。よければ数えて true。 */
-	take(target: string, now: number): boolean {
-		const recent = (this.sent.get(target) ?? []).filter(at => now - at < 60_000);
-		if (recent.length >= this.perMinute) {
-			this.sent.set(target, recent);
-			return false;
-		}
-		recent.push(now);
-		this.sent.set(target, recent);
-		return true;
-	}
-
-	/** 数えた 1 回を戻す（宛先がペインへ何も書かずに断ったとき）。 */
-	refund(target: string): void {
-		this.sent.get(target)?.pop();
-	}
-}
+/** 伝言を断る理由（受け箱に入れない）。 */
+export type ParadisBotGroupDeliverRefusal = 'not_a_member' | 'self';
 
 /**
- * Bot 同士の伝言の文の先頭（空白を除いた最初の文字）が `/` か `!` なら全角（`／`・`！`）に替える。エージェントの入力欄では
- * 先頭の `/` がスラッシュコマンド（`/model` など）、`!` がシェルの実行になるので、ほかの Bot の言葉でそれを動かさない。
- * 伝言の道具は頭に出どころを付けるので先頭はふつう `[` だが、届ける側でも重ねて守る。部屋の入力欄から利用者が送る文には
- * 使わない（利用者が打った `/` は利用者の意図）。
- */
-export function paradisBotGroupNeutralizeCommand(text: string): string {
-	return text.replace(/^(?<space>\s*)(?<mark>[/!])/u, (_match, space: string, mark: string) => `${space}${mark === '/' ? '\uFF0F' : '\uFF01'}`);
-}
-
-/** 伝言を断る理由（どれもペインへ何も書く前に断る）。 */
-export type ParadisBotGroupDeliverRefusal = 'not_a_member' | 'self' | 'not_running' | 'rate_limited';
-
-/**
- * Bot 同士の伝言を届けてよいか。送り手と宛先が同じグループのメンバーで、宛先がこのウィンドウで動いているときだけ届ける。
- * 宛先が作業中でも断らない（届ける口がエージェントの順番待ちに入れ、今のターンを止めない。順番待ちの無いエージェントと、
- * 許可・質問の画面が出ているときは届ける口が断る）。回数の上限は最後に数える（ここで断った伝言を数えない。届ける口が
- * 何も書かずに断ったら呼ぶ側が {@link ParadisBotGroupRelayLimiter.refund} で戻す）。
+ * Bot 同士の伝言を受け箱に入れてよいか。送り手と宛先が同じグループのメンバーで、自分宛てでないときだけ。宛先が動いて
+ * いない・作業中・一時停止中でも受け箱には入る（宛先のペインへは何も打ち込まない）。
  */
 export function paradisBotGroupDeliverRefusal(input: {
 	readonly group: Pick<IParadisBotGroup, 'members'> | undefined;
 	readonly from: string | undefined;
 	readonly to: string;
-	readonly toActivity: 'stopped' | 'idle' | 'working' | 'patrolling' | undefined;
-	/** 宛先の会話のペインがこのウィンドウにあるか（伝言は宛先の会話のペインを持つウィンドウへ送られるので、無ければ閉じた・移った直後）。 */
-	readonly toRunningHere: boolean;
-	readonly takeRate: () => boolean;
 }): ParadisBotGroupDeliverRefusal | undefined {
 	const { group, from, to } = input;
 	if (group === undefined || from === undefined || !group.members.includes(from) || !group.members.includes(to)) {
 		return 'not_a_member';
 	}
-	if (from === to) {
-		return 'self';
-	}
-	if (!input.toRunningHere || input.toActivity === undefined || input.toActivity === 'stopped') {
-		return 'not_running';
-	}
-	return input.takeRate() ? undefined : 'rate_limited';
+	return from === to ? 'self' : undefined;
 }
 
-/**
- * 伝言の道具へ返す、断った理由の英文（エージェントが読む。`refused` の `reason`）。道具は `"…" did not take the message now
- * (理由). Send it again later if it still matters; each try counts toward your limit.` の括弧に入れるので、理由だけを小文字で
- * 始めて書く。送り直しても通らないもの（メンバーでない・自分宛て・上限）は、送り直さないよう重ねて言う。
- */
+/** 伝言の道具へ返す、断った理由の英文（エージェントが読む。`refused` の `reason`）。どちらも送り直しても通らない。 */
 export function paradisBotGroupDeliverRefusalMessage(refusal: ParadisBotGroupDeliverRefusal): string {
 	switch (refusal) {
 		case 'not_a_member': return 'you and that bot are not in the same group, so do not send it again';
 		case 'self': return 'it was addressed to yourself, so do not send it again';
-		case 'not_running': return 'that bot is not running, or its chat is no longer open in this Para Code window';
-		case 'rate_limited': return `the limit was reached: that bot takes up to ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} bot messages a minute from all bots. Do not keep the exchange going: stop, and tell your owner what you wanted to say`;
 	}
+}
+
+/** 受け箱の 1 件（宛先の Bot がまだ読んでいない伝言）。 */
+export interface IParadisBotInboxMessage {
+	/** 記録の id（口では文字列）。既読にするときに返す。 */
+	readonly recordId: string;
+	readonly groupId: string;
+	readonly kind: 'asked' | 'told';
+	/** 送った Bot の id。 */
+	readonly from: string;
+	readonly text: string;
+	readonly at: number;
+}
+
+/** その Bot の受け箱にある伝言か（Bot からの伝言で、宛先にその Bot がいて、まだ読まれておらず、届けられなかった印も無い）。 */
+function inInbox(record: IParadisBotGroupRecord, botId: string): boolean {
+	return record.kind !== 'sent' && record.to.includes(botId) && record.readAt === undefined && record.undelivered === undefined;
+}
+
+/** その Bot の受け箱（古い順）。今もその Bot が入っているグループの伝言だけ。 */
+export function paradisBotGroupInbox(state: IParadisBotGroupsState, botId: string): IParadisBotInboxMessage[] {
+	const groups = new Set(state.groups.filter(group => group.members.includes(botId)).map(group => group.id));
+	return state.records
+		.filter(record => groups.has(record.groupId) && inInbox(record, botId))
+		.map(record => ({ recordId: String(record.id), groupId: record.groupId, kind: record.kind === 'asked' ? 'asked' : 'told', from: record.from, text: record.text, at: record.at }));
+}
+
+/**
+ * その Bot が読んだ伝言を既読にする。その Bot の受け箱にある記録だけを直し（ほかの Bot 宛て・あなたの `sent`・知らない id は
+ * 変えない）、直した数を返す。1 件も直らなければ断る（書かない）。
+ */
+export function paradisBotGroupMarkRead(state: IParadisBotGroupsState, botId: string, recordIds: readonly string[], now: number): ParadisBotGroupsResult<number> {
+	if (!writable(state)) {
+		return refuse('read_only', READ_ONLY);
+	}
+	const ids = new Set(recordIds.filter(id => /^[1-9]\d{0,15}$/u.test(id)).map(Number));
+	let count = 0;
+	const records = state.records.map(record => {
+		if (ids.has(record.id) && inInbox(record, botId)) {
+			count++;
+			return { ...record, readAt: now };
+		}
+		return record;
+	});
+	return count === 0 ? refuse('not_found', 'There is no such message.') : { ok: true, state: { ...state, records }, value: count };
 }
 
 // ---- 保存した値の読み込み ------------------------------------------------------------------------
@@ -433,7 +421,8 @@ function storedRecord(value: unknown, groups: ReadonlySet<string>): IParadisBotG
 	if (kind === 'sent') {
 		return record;
 	}
-	return undelivered !== undefined ? { ...record, undelivered } : value.queued === true ? { ...record, queued: true } : record;
+	const marked: IParadisBotGroupRecord = undelivered !== undefined ? { ...record, undelivered } : value.queued === true ? { ...record, queued: true } : record;
+	return typeof value.readAt === 'number' && Number.isFinite(value.readAt) ? { ...marked, readAt: value.readAt } : marked;
 }
 
 /**

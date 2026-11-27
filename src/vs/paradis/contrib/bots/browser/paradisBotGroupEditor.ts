@@ -24,7 +24,6 @@ import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import type { IParadisAgentChatDeliverOptions, ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -39,7 +38,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { IParadisBotItem } from '../common/paradisBotItems.js';
 import { paradisBotItemGroups } from '../common/paradisBotPageModel.js';
-import { paradisBotCanReceiveBotMessages, paradisBotCannotReceiveLabel, paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../common/paradisBotGroupRoomModel.js';
+import { paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../common/paradisBotGroupRoomModel.js';
 import { IParadisBotGroup, paradisBotGroupMembers, paradisResolveBotGroupMentions, ParadisBotGroupReplyMode } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsService } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, IParadisBotSummary, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -62,8 +61,6 @@ export interface IParadisBotGroupSender {
 	whereIs(botId: string): Promise<'here' | 'elsewhere' | 'none'>;
 	/** 送れたら undefined、送れなければ理由の文。 */
 	send(botId: string, text: string): Promise<string | undefined>;
-	/** Bot 同士の伝言を送る（同じ確認に `options` を足す。結果を種類つきで返し、入力欄の履歴に残さない）。 */
-	deliver(botId: string, text: string, options: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome>;
 }
 
 function clock(time: number): string {
@@ -271,11 +268,6 @@ export class ParadisBotGroupEditor extends EditorPane {
 			names('none') && localize('paradis.botGroups.notStarted', "起動していません: {0}", names('none')),
 			names('paused') && localize('paradis.botGroups.pausedNote', "停止中: {0}", names('paused')),
 		];
-		const cannotReceive = members.filter(bot => !paradisBotCanReceiveBotMessages(bot.agent)).map(bot => bot.name).join('・');
-		if (cannotReceive) {
-			// allow-any-unicode-next-line
-			notes.push(localize('paradis.botGroups.cannotReceiveNote', "{0}: {1}（Bot 同士の伝言を受け取れるのは、入力欄を読む Para Code の mod が動いている Claude Code の Bot だけです）", paradisBotCannotReceiveLabel(), cannotReceive));
-		}
 		this.where.textContent = notes.filter(note => !!note).join('　');
 	}
 
@@ -326,7 +318,8 @@ export class ParadisBotGroupEditor extends EditorPane {
 			if (mark !== undefined) {
 				const chip = dom.append(row, dom.$('span.pbgr-undelivered'));
 				chip.textContent = mark;
-				chip.classList.toggle('queued', record.queued === true);
+				chip.classList.toggle('read', record.undelivered === undefined && record.readAt !== undefined);
+				chip.classList.toggle('unread', record.undelivered === undefined && record.readAt === undefined);
 			}
 			const text = dom.append(row, dom.$('span.pbgr-text'));
 			text.textContent = record.text;
