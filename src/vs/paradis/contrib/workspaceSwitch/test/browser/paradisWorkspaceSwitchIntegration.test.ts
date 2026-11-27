@@ -31,7 +31,7 @@ import { Workspace } from '../../../../../platform/workspace/test/common/testWor
 import { IWorkspaceFolderCreationData } from '../../../../../platform/workspaces/common/workspaces.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { EditorExtensions, EditorsOrder, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
-import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupDirection, GroupsOrder, IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
@@ -45,6 +45,7 @@ import { ACTIVE_GROUP } from '../../../../../workbench/services/editor/common/ed
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
+import { paradisMarkTerminalSpaceFree, paradisRegisterSpaceFreeEditorType, paradisResetSpaceFreeTerminalsForTest } from '../../browser/paradisSpaceFreeTerminals.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisHoldBackTerminalEditorReveal, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisParseTerminalEditorPlacements, paradisSerializeTerminalEditorPlacements } from '../../common/paradisTerminalEditorPlacement.js';
@@ -58,7 +59,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { extUri, isEqual } from '../../../../../base/common/resources.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js';
-import { IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
+import { EditorInput, IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
 import { TerminalEditorInput } from '../../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { ITextFileEditorModel, ITextFileService, TextFileEditorModelState } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisRegisterWorktreePresenceLookup, paradisSetManagedWorkspaceWindowForTest, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
@@ -216,6 +217,195 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
 			}
 			testDisposables.dispose();
+		}
+	});
+
+	// Bot の会話のペイン（どのスペースにも属さないターミナル）は、切り替えで退避せず着いたスペースの画面へ持ち越す。
+	// 切り替え元の working set にも載せない（戻ったときに 2 つ目のタブとして開き直されない）。ほかの端末は今までどおり退避する。
+	test('carries a terminal that belongs to no space across switches instead of parking it, and keeps it out of the working set', async () => {
+		const testDisposables = new DisposableStore();
+		const botIds = createUniqueTerminalIds();
+		const shellIds = createUniqueTerminalIds();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const file = harness.createEditor('/workspace-a/saved.txt', false);
+			const shellInput = harness.createCleanTerminalEditor('/workspace-a/shell');
+			const botInput = harness.createCleanTerminalEditor('/bots/bot');
+			// 眠った Bot の会話のタブの代わり（ターミナルでない、どのスペースにも属さない種類のタブ）
+			paradisRegisterSpaceFreeEditorType('paradisWorkspaceSwitchIntegration.spaceFreeEditor');
+			const sleepingInput = testDisposables.add(new TestFileEditorInput(URI.file('/bots/sleeping'), 'paradisWorkspaceSwitchIntegration.spaceFreeEditor'));
+			await harness.parts.activeGroup.openEditor(sleepingInput, { pinned: true });
+			await harness.parts.activeGroup.openEditor(file, { pinned: true });
+			await harness.parts.activeGroup.openEditor(shellInput, { pinned: true });
+			await harness.parts.activeGroup.openEditor(botInput, { pinned: true });
+			const shell = harness.addTerminal(shellInput, shellIds.instanceId, shellIds.persistentProcessId, shellIds.shellIntegrationNonce);
+			const bot = harness.addTerminal(botInput, botIds.instanceId, botIds.persistentProcessId, botIds.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(bot.instanceId);
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const inSpaceB = {
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				fileVisible: harness.parts.activeGroup.contains(file),
+				botVisible: harness.parts.activeGroup.contains(botInput),
+				botIsActiveTab: harness.parts.activeGroup.activeEditor === botInput,
+				sleepingVisible: harness.parts.activeGroup.contains(sleepingInput),
+				botParkedIn: paradisGetParkedTerminalEditorStateKey(bot.instanceId),
+				shellParkedIn: paradisGetParkedTerminalEditorStateKey(shell.instanceId),
+				detachedTerminalInstanceIds: harness.detachedTerminalInstanceIds,
+				workingSetTerminalsOfA: (harness.workspaceSwitchService as unknown as { _workingSetTerminals: Map<string, number> })._workingSetTerminals.get('space-a'),
+			};
+
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const backInSpaceA = {
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				fileVisible: harness.parts.activeGroup.contains(file),
+				botTabs: harness.parts.activeGroup.editors.filter(editor => editor === botInput).length,
+				sleepingTabs: harness.parts.activeGroup.editors.filter(editor => editor === sleepingInput).length,
+				botParkedIn: paradisGetParkedTerminalEditorStateKey(bot.instanceId),
+			};
+
+			assert.deepStrictEqual({ inSpaceB, backInSpaceA }, {
+				inSpaceB: {
+					activeStateKey: 'space-b',
+					fileVisible: false,
+					botVisible: true,
+					botIsActiveTab: true,
+					sleepingVisible: true,
+					botParkedIn: undefined,
+					shellParkedIn: 'space-a',
+					detachedTerminalInstanceIds: [shellIds.instanceId],
+					workingSetTerminalsOfA: 1,
+				},
+				backInSpaceA: {
+					activeStateKey: 'space-a',
+					fileVisible: true,
+					botTabs: 1,
+					sleepingTabs: 1,
+					botParkedIn: undefined,
+				},
+			});
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
+			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(shellIds.persistentProcessId, shellIds.shellIntegrationNonce));
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	// 分割の片側に Bot だけを置いていたら、着いた先でも同じ側に分割して開く。ほかのタブと同じグループにあったなら、着いた先の
+	// 今のグループの後ろへ入れ、前に出ているファイルを隠さない。
+	test('keeps a carried bot tab on its own side of a split, and behind the open file when it shared a group', async () => {
+		const testDisposables = new DisposableStore();
+		const sideIds = createUniqueTerminalIds();
+		const sharedIds = createUniqueTerminalIds();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const parts = harness.parts;
+			const fileA = harness.createEditor('/workspace-a/saved.txt', false);
+			const fileB = harness.createEditor('/workspace-b/saved.txt', false);
+			await parts.activeGroup.openEditor(fileA, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await parts.activeGroup.openEditor(fileB, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			// A: 左にファイル、右に Bot だけ（右を見ている）
+			const sideInput = harness.createCleanTerminalEditor('/bots/side');
+			const right = parts.addGroup(parts.activeGroup, GroupDirection.RIGHT);
+			await right.openEditor(sideInput, { pinned: true });
+			parts.activateGroup(right);
+			const side = harness.addTerminal(sideInput, sideIds.instanceId, sideIds.persistentProcessId, sideIds.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(side.instanceId);
+
+			// 戻ってきたファイルは working set から作り直された入力なので、パスで見分ける
+			const nameOf = (editor: EditorInput | undefined) => editor === sideInput ? 'bot' : editor?.resource?.path === fileA.resource.path ? 'fileA' : editor?.resource?.path === fileB.resource.path ? 'fileB' : 'other';
+			const layout = () => parts.getGroups(GroupsOrder.GRID_APPEARANCE).map(group => group.editors.map(nameOf));
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const inB = layout();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const backInA = layout();
+
+			// 同じグループに置いた Bot は、着いた先の今のグループの後ろへ（ファイルを前に出したまま）
+			for (const group of parts.getGroups(GroupsOrder.GRID_APPEARANCE).filter(candidate => candidate.contains(sideInput))) {
+				group.closeEditor(sideInput);
+			}
+			const sharedInput = harness.createCleanTerminalEditor('/bots/shared');
+			const left = parts.getGroups(GroupsOrder.GRID_APPEARANCE)[0];
+			parts.activateGroup(left);
+			await left.openEditor(sharedInput, { pinned: true });
+			const shared = harness.addTerminal(sharedInput, sharedIds.instanceId, sharedIds.persistentProcessId, sharedIds.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(shared.instanceId);
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const sharedInB = {
+				groups: parts.getGroups(GroupsOrder.GRID_APPEARANCE).length,
+				activeEditor: nameOf(parts.activeGroup.activeEditor ?? undefined),
+				botInActiveGroup: parts.activeGroup.contains(sharedInput),
+			};
+
+			assert.deepStrictEqual({ inB, backInA, sharedInB }, {
+				inB: [['fileB'], ['bot']],
+				backInA: [['fileA'], ['bot']],
+				sharedInB: { groups: 1, activeEditor: 'fileB', botInActiveGroup: true },
+			});
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	// 空のグループを閉じない設定でも、Bot だけの分割を持ち越すたびに空のグループが増えない
+	test('does not pile up empty groups when a bot-only split is carried and empty groups are kept open', async () => {
+		const testDisposables = new DisposableStore();
+		const ids = createUniqueTerminalIds();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const parts = harness.parts;
+			testDisposables.add(parts.mainPart.enforcePartOptions({ closeEmptyGroups: false }));
+			const fileA = harness.createEditor('/workspace-a/saved.txt', false);
+			const fileB = harness.createEditor('/workspace-b/saved.txt', false);
+			await parts.activeGroup.openEditor(fileA, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await parts.activeGroup.openEditor(fileB, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const botInput = harness.createCleanTerminalEditor('/bots/side');
+			const right = parts.addGroup(parts.activeGroup, GroupDirection.RIGHT);
+			await right.openEditor(botInput, { pinned: true });
+			const bot = harness.addTerminal(botInput, ids.instanceId, ids.persistentProcessId, ids.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(bot.instanceId);
+
+			const counts: number[] = [];
+			for (const target of ['space-b', 'space-a', 'space-b', 'space-a']) {
+				await harness.workspaceSwitchService.switchRepository(target);
+				counts.push(parts.mainPart.count);
+			}
+
+			assert.deepStrictEqual({ counts, botInLastGroup: parts.getGroups(GroupsOrder.GRID_APPEARANCE).at(-1)?.contains(botInput) }, {
+				counts: [2, 2, 2, 2],
+				botInLastGroup: true,
+			});
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
 		}
 	});
 

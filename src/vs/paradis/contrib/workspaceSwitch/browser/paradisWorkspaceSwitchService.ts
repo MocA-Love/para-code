@@ -22,7 +22,7 @@ import { IWorkspaceTrustManagementService } from '../../../../platform/workspace
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { EditorsOrder } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupDirection, GroupOrientation, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -42,6 +42,7 @@ import { IParadisEditorScopeService, ParadisScopeRetirementPreparation } from '.
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisHoldTerminalLayout } from '../../terminalRenderer/browser/paradisTerminalLayoutHold.js';
+import { paradisIsSpaceFreeEditor, paradisIsTerminalSpaceFree } from './paradisSpaceFreeTerminals.js';
 import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalEditorEndedListener, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IParadisTerminalEditorPlacement, PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisUpdateTerminalEditorPlacements } from '../common/paradisTerminalEditorPlacement.js';
@@ -301,6 +302,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * 再起動後は空＝孤児索引を必ず引く側へ倒れる（世代跨ぎの復元は索引が唯一の防波堤）。
 	 */
 	private readonly _workingSetTerminalNonces = new Map<string, ReadonlySet<string>>();
+	/**
+	 * 切り替えの間だけ外して握っている、どのスペースにも属さないターミナルのタブ（Bot の会話のペイン。
+	 * paradisSpaceFreeTerminals.ts）。切り替えが済む（巻き戻しを含む）と、着いたスペースの画面へ開き直す。
+	 */
+	private readonly _carriedSpaceFreeEditors: { readonly editor: EditorInput; readonly sideGroupId: number | undefined; readonly side: GroupDirection | undefined; readonly index: number; readonly active: boolean; readonly activeGroup: boolean; readonly pinned: boolean }[] = [];
+	private readonly _carriedSpaceFreeRetentions = new Map<EditorInput, IDisposable>();
+	/** 開き直せなかった、どのスペースにも属さないタブの握り（放すと Bot のペインが終わる）。 */
+	private readonly _strandedSpaceFreeRetentions = new Map<EditorInput, IDisposable>();
 	/** Persisted identities of the terminal editor inputs that belong to each Working Set. */
 	private readonly _workingSetRestoreNonces = new Map<string, ReadonlySet<string>>();
 	/**
@@ -419,6 +428,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			if (event.isOperation(FileOperation.DELETE)) {
 				this._lastDeleteAt[event.resource.scheme === Schemas.vscodeRemote ? 'remote' : 'local'] = Date.now();
 			}
+		}));
+		this._register(toDisposable(() => {
+			for (const retention of [...this._carriedSpaceFreeRetentions.values(), ...this._strandedSpaceFreeRetentions.values()]) {
+				retention.dispose();
+			}
+			this._carriedSpaceFreeRetentions.clear();
+			this._strandedSpaceFreeRetentions.clear();
 		}));
 		this._register(toDisposable(() => {
 			if (this._switchOwnerLeaseTimer !== undefined) {
@@ -1837,6 +1853,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 					if (previousKey !== undefined) {
 						// 外す間、隣のグループが全幅になってもターミナルの大きさを変えない (paradisTerminalLayoutHold.ts)。
+						// どのスペースにも属さないターミナル（Bot）のタブは、退避・working set の保存より先に外して握る。
+						// 切り替えの finally で、着いたスペースの画面へ開き直す（`reopenCarriedSpaceFreeEditors`）。
+						this.carrySpaceFreeEditors();
 						const terminalLayoutHold = paradisHoldTerminalLayout(this.mainAreaTerminalEditors());
 						try {
 							timeSyncPhase('capture_scope', () => {
@@ -2172,6 +2191,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
 					// 失敗時にパネルの表示を戻すのは、切り替え元を退避し終えていた回だけ（従来のロールバックと同じ条件）。
 					const panelKey = completed || sourceCaptured ? restoreKey : undefined;
+					// 持ち越した Bot のタブを、着いたスペース（失敗なら元のスペース）の画面へ戻す。完了の知らせより先に戻し、
+					// 知らせを受ける側には今の画面として見せる。
+					await this.reopenCarriedSpaceFreeEditors();
 					if (restoreKey !== undefined) {
 						// 制御フローを担う非同期 participant を先に完走させてから、完了通知を配る。
 						// この await 中も Sequencer のスロットは保持されるので、次の切り替えは始まらない。
@@ -2777,6 +2799,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	private parkableTerminalEditors(): ITerminalInstance[] {
 		return this.terminalEditorService.instances.filter(instance => {
+			// どのスペースにも属さないターミナル（Bot）は退避しない。切り替えが外して持ち越す
+			if (paradisIsTerminalSpaceFree(instance.instanceId)) {
+				return false;
+			}
 			const input = this.terminalEditorService.getInputFromResource(instance.resource);
 			if (this.editorGroupsService.isEditorInputRetained?.(input)) {
 				return false;
@@ -2827,6 +2853,137 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 */
 	private ownerParkScope(instance: ITerminalInstance, previousKey: string): string {
 		return this.availableOwnerScope(instance) ?? previousKey;
+	}
+
+	/**
+	 * どのスペースにも属さないタブ（Bot の会話のペインと、眠った Bot の会話）を、メインのエディタ領域から外して握る。外したタブは
+	 * 切り替え元の working set にも預け先にも載らず、退避（park）もされない。同期で済ませる（直後の `captureScope` が
+	 * 同じ画面を読むため）。
+	 *
+	 * 置き場所も控える。そのタブだけのグループ（分割の片側）なら、どちらの端の側だったかを控え、着いた先でも同じ側に分割して
+	 * 開き直す。ほかのタブと同じグループにあったなら、着いた先の今のグループの後ろへ入れる（開いていたファイルの上に被せない）。
+	 */
+	private carrySpaceFreeEditors(): void {
+		if (!this.editorGroupsService.retainEditor) {
+			return;
+		}
+		this.releaseSettledStrandedSpaceFreeEditors();
+		const mainPart = this.editorGroupsService.mainPart;
+		const mainGroups = mainPart.getGroups(GroupsOrder.GRID_APPEARANCE);
+		// どのスペースにも属さないターミナルのタブと、どのスペースにも属さない種類のタブ（眠った Bot の会話）
+		const editors = new Set<EditorInput>();
+		for (const instance of this.terminalEditorService.instances) {
+			if (!instance.isDisposed && paradisIsTerminalSpaceFree(instance.instanceId)) {
+				editors.add(this.terminalEditorService.getInputFromResource(instance.resource));
+			}
+		}
+		for (const group of mainGroups) {
+			for (const editor of group.editors) {
+				if (paradisIsSpaceFreeEditor(editor)) {
+					editors.add(editor);
+				}
+			}
+		}
+		const activeGroup = this.editorGroupsService.activeGroup;
+		const carriable = [...editors].filter(editor => !this.editorGroupsService.isEditorInputRetained?.(editor));
+		const placements = new Map<EditorInput, { readonly group: IEditorGroup; readonly side: GroupDirection | undefined }>();
+		for (const editor of carriable) {
+			const group = mainGroups.find(candidate => candidate.contains(editor, { strictEquals: true }));
+			if (group === undefined || !group.detachEditor) {
+				continue;
+			}
+			// グループのタブが全部持ち越すタブなら、分割の片側として控える（グループが 1 つだけなら側は無い）
+			const alone = mainGroups.length > 1 && group.editors.every(candidate => carriable.includes(candidate));
+			const horizontal = mainPart.orientation === GroupOrientation.HORIZONTAL;
+			const first = mainGroups.indexOf(group) === 0;
+			const side = !alone ? undefined : first ? (horizontal ? GroupDirection.LEFT : GroupDirection.UP) : (horizontal ? GroupDirection.RIGHT : GroupDirection.DOWN);
+			placements.set(editor, { group, side });
+		}
+		for (const [editor, { group, side }] of placements) {
+			this._carriedSpaceFreeEditors.push({
+				editor,
+				sideGroupId: side !== undefined ? group.id : undefined,
+				side,
+				index: group.getIndexOfEditor(editor),
+				active: group.activeEditor === editor,
+				activeGroup: group === activeGroup,
+				pinned: group.isPinned(editor),
+			});
+			this._carriedSpaceFreeRetentions.set(editor, this.editorGroupsService.retainEditor(editor));
+			group.detachEditor!(editor);
+		}
+		// 持ち出して空にした分割の片側は閉じる（`workbench.editor.closeEmptyGroups` が切ってあると残り、切り替えのたびに空の
+		// グループが増える）。閉じるのはここで空にしたグループだけ。利用者が自分で空にしておいたグループには触らない
+		for (const { group, side } of new Set(placements.values())) {
+			if (side !== undefined && group.isEmpty && mainPart.groups.includes(group) && mainPart.count > 1) {
+				mainPart.removeGroup(group);
+			}
+		}
+	}
+
+	/**
+	 * {@link carrySpaceFreeEditors} で外したタブを、今のスペースのメインのエディタ領域へ開き直してから握りを放す。開き直せなかった
+	 * タブは握ったまま残す（放すと Bot のペインが終わる）。帯から開けばそのまま今の画面に出る。
+	 */
+	private async reopenCarriedSpaceFreeEditors(): Promise<void> {
+		const carried = this._carriedSpaceFreeEditors.splice(0);
+		const mainPart = this.editorGroupsService.mainPart;
+		// 分割の片側にあったタブは、元のグループごとに 1 つの新しいグループへまとめる
+		const sideGroups = new Map<number, IEditorGroup>();
+		for (const entry of carried) {
+			const retention = this._carriedSpaceFreeRetentions.get(entry.editor);
+			this._carriedSpaceFreeRetentions.delete(entry.editor);
+			if (entry.editor.isDisposed()) {
+				retention?.dispose();
+				continue;
+			}
+			try {
+				let group: IEditorGroup;
+				if (entry.side !== undefined && entry.sideGroupId !== undefined) {
+					let sideGroup = sideGroups.get(entry.sideGroupId);
+					if (sideGroup === undefined) {
+						const ordered = mainPart.getGroups(GroupsOrder.GRID_APPEARANCE);
+						const reference = entry.side === GroupDirection.LEFT || entry.side === GroupDirection.UP ? ordered[0] : ordered[ordered.length - 1];
+						// 着いた画面が空のグループ 1 つだけなら、そのグループを使う（空の分割を作らない）
+						sideGroup = ordered.length === 1 && reference.isEmpty ? reference : mainPart.addGroup(reference, entry.side);
+						sideGroups.set(entry.sideGroupId, sideGroup);
+					}
+					group = sideGroup;
+				} else {
+					group = mainPart.activeGroup;
+				}
+				const ownSide = entry.side !== undefined;
+				await group.openEditor(entry.editor, {
+					index: ownSide ? Math.min(entry.index, group.count) : group.count,
+					pinned: entry.pinned,
+					// 自分の側のグループでは見ていたタブを前に出す。今のグループへ入れるときは、前に出ているファイルを隠さない
+					inactive: !(ownSide && entry.active) && !(group.isEmpty),
+					preserveFocus: true,
+				});
+				if (!group.contains(entry.editor, { strictEquals: true })) {
+					throw new Error('the editor did not open');
+				}
+				if (ownSide && entry.active && entry.activeGroup) {
+					mainPart.activateGroup(group);
+				}
+				retention?.dispose();
+			} catch (error) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to reopen a tab that belongs to no space after the switch; keeping it alive', error);
+				if (retention !== undefined) {
+					this._strandedSpaceFreeRetentions.set(entry.editor, retention);
+				}
+			}
+		}
+	}
+
+	/** 開き直せずに握っていたタブのうち、その後どこかで開かれた・終わったものの握りを放す。 */
+	private releaseSettledStrandedSpaceFreeEditors(): void {
+		for (const [editor, retention] of [...this._strandedSpaceFreeRetentions]) {
+			if (editor.isDisposed() || this.editorGroupsService.groups.some(group => group.contains(editor, { strictEquals: true }))) {
+				this._strandedSpaceFreeRetentions.delete(editor);
+				retention.dispose();
+			}
+		}
 	}
 
 	private async applyWorkingSetFor(stateKey: string): Promise<void> {
