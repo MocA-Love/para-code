@@ -85,7 +85,7 @@ export interface IParadisBotsServiceOptions {
 	readonly now?: () => number;
 	readonly uuid?: () => string;
 	/** shared process の hook のバス。Bot のペインの様子（動いている・待っている）を追う。 */
-	readonly hookEvents?: Event<{ readonly token: string; readonly event: string }>;
+	readonly hookEvents?: Event<{ readonly token: string; readonly event: string; readonly observedExit?: true }>;
 	/** ペインとの結び付けの保存先（トークンのハッシュだけ）。渡さなければ結び付けはメモリだけ。 */
 	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
@@ -202,9 +202,13 @@ export class ParadisBotsService extends Disposable {
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
-				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す
+				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す。
+				// 外すのは Para Code が終了を見たもの（observedExit）だけ。agent-hook の HTTP の TerminalExit は、Bot の
+				// エージェントが自分のトークンで送れる（結び付けを外して、IDE の操作や見回りの読むだけの制限を外せてしまう）
 				if (event.event === 'TerminalExit') {
-					this.releasePane(event.token);
+					if (event.observedExit === true) {
+						this.releasePane(event.token);
+					}
 					return;
 				}
 				// 起動し直した後に現れた Bot のペインなら、保存した結び付けを戻す

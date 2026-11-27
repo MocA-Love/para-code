@@ -418,7 +418,7 @@ suite('Paradis bot homes', () => {
 	test('サービス: 定期実行の見回りの門と、前の回の見回りのペインだけを閉じる依頼', async () => {
 		const userData = join(root, '..', 'userData');
 		const settings = { enabled: true };
-		const hooks = store.add(new Emitter<{ token: string; event: string }>());
+		const hooks = store.add(new Emitter<{ token: string; event: string; observedExit?: true }>());
 		let ids = 0;
 		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled, hookEvents: hooks.event }));
 		const beforeLoad = service.patrolGateState('id1');
