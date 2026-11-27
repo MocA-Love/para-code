@@ -26,6 +26,7 @@ import { paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgent
 import { IParadisAgentChatSource } from '../../agentChat/common/paradisAgentChat.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
 import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { PARADIS_ASK_HUMAN_CHANNEL } from '../common/paradisAskHumanTool.js';
 import { IParadisHumanAskPaneAnswerRequest, PARADIS_HUMAN_ASK_PANES_CHANNEL } from '../common/paradisHumanAskPane.js';
 
 /** ITerminalInstance を、チャットの入力が使う形へ写す（agentChat・タスクボードの写しと同じ規則）。 */
@@ -81,16 +82,19 @@ class ParadisHumanAskPaneAnswer extends Disposable implements IWorkbenchContribu
 			}
 		}));
 
-		const channel = sharedProcessService.getChannel(PARADIS_HUMAN_ASK_PANES_CHANNEL);
-		this._register(channel.listen<IParadisHumanAskPaneAnswerRequest>('onDidRequestPaneAnswer', nativeHostService.windowId)(async request => {
-			let delivered = false;
-			try {
-				delivered = await this.deliver(request);
-			} catch (error) {
-				this.logService.warn('[paradisHumanAsk] could not deliver the answer to the pane', error);
-			}
-			channel.call('settle', [request.claim, request.key, delivered]).catch(error => this.logService.trace('[paradisHumanAsk] settle failed', String(error)));
-		}));
+		// ペインの質問・許可（paradisHumanAskPaneOwner.ts）と、ask_human の答え（paradisAskHumanToolProvider.ts）
+		for (const channelName of [PARADIS_HUMAN_ASK_PANES_CHANNEL, PARADIS_ASK_HUMAN_CHANNEL]) {
+			const channel = sharedProcessService.getChannel(channelName);
+			this._register(channel.listen<IParadisHumanAskPaneAnswerRequest>('onDidRequestPaneAnswer', nativeHostService.windowId)(async request => {
+				let delivered = false;
+				try {
+					delivered = await this.deliver(request);
+				} catch (error) {
+					this.logService.warn('[paradisHumanAsk] could not deliver the answer to the pane', error);
+				}
+				channel.call('settle', [request.claim, request.key, delivered]).catch(error => this.logService.trace('[paradisHumanAsk] settle failed', String(error)));
+			}));
+		}
 	}
 
 	private terminal(instanceId: number, token: string): IParadisAgentChatTerminal | undefined {
@@ -112,9 +116,12 @@ class ParadisHumanAskPaneAnswer extends Disposable implements IWorkbenchContribu
 		if (token === undefined || instanceId === undefined) {
 			return false;
 		}
-		const error = request.delivery.kind === 'question'
-			? await this.input.answerQuestions(instanceId, token, request.interactionId, request.delivery.answers)
-			: await this.input.answerApproval(instanceId, token, request.interactionId, request.delivery.choiceId);
+		const delivery = request.delivery;
+		const error = delivery.kind === 'question'
+			? await this.input.answerQuestions(instanceId, token, request.interactionId, delivery.answers)
+			: delivery.kind === 'approval'
+				? await this.input.answerApproval(instanceId, token, request.interactionId, delivery.choiceId)
+				: await this.input.sendMessage(instanceId, token, delivery.text);
 		if (error !== undefined) {
 			this.logService.info(`[paradisHumanAsk] the answer was not delivered: ${error}`);
 		}

@@ -26,6 +26,7 @@ import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHoo
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
 import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
 import { IParadisTaskBoardBotHost, PARADIS_TASK_BOARD_BOT_HOST_CHANNEL } from '../../taskBoard/common/paradisTaskBoardHost.js';
@@ -146,6 +147,12 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	})));
 	// Bot のペインからは、別のペインを起こす・動かす IDE の道具を断る
 	store.add(paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(service)));
+	// Bot のペインからの ask_human は断る（Bot は作業項目の Needs you で聞く）
+	// 起動し直した直後は、保存した結び付けを読み終えるまで Bot のペインと分からないので待つ
+	store.add(paradisSetAskHumanBotPaneCheck(async paneToken => {
+		await service.ready;
+		return service.isBotPane(paneToken);
+	}));
 	store.add({
 		dispose: () => {
 			if (shared === service) {
