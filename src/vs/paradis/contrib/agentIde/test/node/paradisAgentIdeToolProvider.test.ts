@@ -9,7 +9,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisAgentIdeInternal, ParadisAgentIdeRequest, ParadisAgentIdeResult } from '../../common/paradisAgentIde.js';
-import { IParadisAgentIdeClock, IParadisAgentIdeSettings, ParadisAgentIdeToolProvider } from '../../node/paradisAgentIdeToolProvider.js';
+import { IParadisAgentIdeClock, IParadisAgentIdeSettings, ParadisAgentIdeToolProvider, paradisRegisterAgentIdeActionRefusal } from '../../node/paradisAgentIdeToolProvider.js';
 
 const CALLER = 'caller-token';
 const TARGET = 'target-secret-token';
@@ -160,6 +160,31 @@ suite('ParadisAgentIdeToolProvider', () => {
 			text(await tunnel.provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, tunnel.context)).isError,
 		];
 		assert.deepStrictEqual({ results, calls: [off.calls.length, unverified.calls.length, tunnel.calls.length] }, { results: [true, true, true], calls: [0, 0, 0] });
+	});
+
+	test('a registered refusal stops actions from that pane, but not reading', async () => {
+		const { provider, context, calls } = setup();
+		const seen: string[] = [];
+		const registration = paradisRegisterAgentIdeActionRefusal(async (paneToken, toolName) => {
+			seen.push(`${paneToken} ${toolName}`);
+			return paneToken === CALLER ? 'no from this pane' : undefined;
+		});
+		try {
+			const launch = text(await provider.callTool(CALLER, 'launch_agent', { agent: 'claude' }, undefined, context));
+			const send = text(await provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'go', press_enter: false }, undefined, context));
+			const read = text(await provider.callTool(CALLER, 'list_terminals', {}, undefined, context));
+			assert.deepStrictEqual({ launch, send, read: read.isError, seen, calls: ops(calls) }, {
+				launch: { isError: true, body: 'no from this pane' },
+				send: { isError: true, body: 'no from this pane' },
+				read: false,
+				seen: [`${CALLER} launch_agent`, `${CALLER} send_terminal_input`],
+				calls: ['listTerminals'],
+			});
+		} finally {
+			registration.dispose();
+		}
+		const after = text(await provider.callTool(CALLER, 'create_terminal', {}, undefined, context));
+		assert.strictEqual(after.body.includes('no from this pane'), false);
 	});
 
 	test('reading also needs a verified caller; over the SSH return path it works but actions are shown as unavailable', async () => {
