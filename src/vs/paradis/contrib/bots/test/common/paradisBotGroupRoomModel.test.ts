@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotGroupDialogProblem, paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupSendSummary } from '../../common/paradisBotGroupRoomModel.js';
+import { paradisBotGroupDialogProblem, paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../../common/paradisBotGroupRoomModel.js';
 
 suite('Paradis bot group room model', () => {
 
@@ -21,6 +21,8 @@ suite('Paradis bot group room model', () => {
 			paradisBotGroupRecordHead({ kind: 'sent', from: 'owner', to: ['a', 'b'] }, nameOf),
 			paradisBotGroupRecordHead({ kind: 'asked', from: 'a', to: ['b'] }, nameOf),
 			paradisBotGroupRecordHead({ kind: 'told', from: 'b', to: ['a'] }, nameOf),
+			paradisBotGroupRecordMark({ undelivered: true }),
+			paradisBotGroupRecordMark({}),
 			paradisBotGroupMentionProblem({ ok: true, targets: ['a'], everyone: false }),
 			paradisBotGroupMentionProblem({ ok: false, problem: 'empty' }),
 			paradisBotGroupMentionProblem({ ok: false, problem: 'no_target' }),
@@ -32,6 +34,8 @@ suite('Paradis bot group room model', () => {
 			'あなた → リリース係・レビュー係',
 			'リリース係がレビュー係に聞きました',
 			'レビュー係がリリース係に伝えました',
+			'届けられなかった',
+			undefined,
 			undefined,
 			'送る文を入れてください',
 			'「@名前」か「@全員」で送り先を選んでください（このグループは名指しのときだけ返事をします）',

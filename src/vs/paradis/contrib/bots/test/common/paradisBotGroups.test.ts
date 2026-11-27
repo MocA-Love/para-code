@@ -15,6 +15,7 @@ import {
 	paradisBotGroupAppendRecord,
 	paradisBotGroupCreate,
 	paradisBotGroupDeliverRefusal,
+	paradisBotGroupDeliverRefusalMessage,
 	paradisBotGroupMembers,
 	paradisBotGroupNeutralizeCommand,
 	paradisBotGroupRemove,
@@ -200,6 +201,14 @@ suite('Paradis bot groups', () => {
 			'busy',
 			'busy',
 			'rate_limited',
+		]);
+	});
+
+	test('伝言を断る文: 作業中は「しばらくしてから送る」、上限は「上限に達した、止まって利用者へ」（伝言の道具の文とそろえる）', () => {
+		assert.deepStrictEqual([paradisBotGroupDeliverRefusalMessage('busy'), paradisBotGroupDeliverRefusalMessage('rate_limited'), paradisBotGroupDeliverRefusalMessage('not_running')], [
+			'That bot is busy now. Send the message again after a while.',
+			'The limit has been reached: that bot takes up to 3 messages a minute. Do not keep the exchange going: stop, and tell your owner what you wanted to say.',
+			'That bot is not running, or its chat is no longer open in the Para Code window it was in. Send the message again after a while, or tell your owner.',
 		]);
 	});
 

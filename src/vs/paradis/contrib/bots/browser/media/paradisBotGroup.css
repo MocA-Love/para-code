@@ -182,6 +182,16 @@
 	color: var(--vscode-textLink-foreground);
 }
 
+.paradis-bot-group-room .pbgr-undelivered {
+	flex: none;
+	padding: 0 var(--vscode-spacing-size40);
+	border: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground) 40%, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-editorWarning-foreground);
+	line-height: 14px;
+	white-space: nowrap;
+}
+
 .paradis-bot-group-room .pbgr-text {
 	flex: 1;
 	min-width: 0;

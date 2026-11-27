@@ -12,9 +12,9 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { EMPTY_PARADIS_BOT_GROUPS_STATE, IParadisBotGroupsState } from '../../common/paradisBotGroups.js';
+import { EMPTY_PARADIS_BOT_GROUPS_STATE, IParadisBotGroupsState, paradisParseBotGroupsState } from '../../common/paradisBotGroups.js';
 import { ParadisBotGroupsChannel } from '../../node/paradisBotGroupsChannel.js';
-import { createParadisBotGroupsFile, IParadisBotGroupsFile, ParadisBotGroupsService } from '../../node/paradisBotGroupsService.js';
+import { createParadisBotGroupsFile, IParadisBotGroupsFile, ParadisBotGroupsService, paradisBotGroupsMessagePort } from '../../node/paradisBotGroupsService.js';
 
 class MemoryFile implements IParadisBotGroupsFile {
 	written: IParadisBotGroupsState[] = [];
@@ -57,6 +57,37 @@ suite('Paradis bot groups service', () => {
 			groupsOfZ: groups.groupsOf('z').length,
 			writes: file.written.length,
 		}, { created: 'g1', recorded: 1, failed: 'storage', name: '班', groupsOfB: ['g1'], groupsOfZ: 0, writes: 2 });
+	});
+
+	test('伝言の道具の口: 記録の id を文字列で返し、その id で「届けられなかった」の印を付ける。印は読み直しても残る', async () => {
+		const file = new MemoryFile();
+		const groups = service(file);
+		await groups.createGroup({ name: '班', members: ['a', 'b'] });
+		await groups.createGroup({ name: '別', members: ['a', 'b'] });
+		const sent = await groups.appendRecord('g1', { kind: 'sent', from: 'owner', to: ['a'], text: 'どうぞ' });
+		const port = paradisBotGroupsMessagePort(groups);
+		const told = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'b', text: '終わった' });
+		const refused = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'z', text: 'x' });
+		// 別のグループ・知らない id・数字でない id・あなたの sent の id は何も変えない
+		for (const [groupId, recordId] of [['g2', '2'], ['g1', '99'], ['g1', '2.0'], ['g1', '02'], ['g1', 'x'], ['g1', String(sent.ok && sent.value.id)]]) {
+			await port.markUndelivered!(groupId, recordId);
+		}
+		const writesBefore = file.written.length;
+		await port.markUndelivered!('g1', told.recordId!);
+		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(file.written.at(-1))));
+		assert.deepStrictEqual({
+			told,
+			refused: refused.ok,
+			writes: file.written.length - writesBefore,
+			records: groups.getSnapshot().records.map(record => [record.id, record.kind, record.undelivered ?? false]),
+			reread: reread?.records.map(record => [record.id, record.undelivered ?? false]),
+		}, {
+			told: { ok: true, recordId: '2' },
+			refused: false,
+			writes: 1,
+			records: [[1, 'sent', false], [2, 'told', true]],
+			reread: [[1, false], [2, true]],
+		});
 	});
 
 	test('ウィンドウからは あなたの sent だけ書ける', async () => {
