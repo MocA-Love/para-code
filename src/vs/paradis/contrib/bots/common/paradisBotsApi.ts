@@ -201,14 +201,19 @@ export interface IParadisBotsService {
 
 	/** その Bot のまだ決めていない提案（新しい順）。Bot のホームの節にだけ出す。 */
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]>;
-	/** 「始める」。返った提案の `request` を、画面が Bot の会話の入力欄へ未送信で入れる。 */
+	/** 「始める」。返った提案の `request` を、画面が Bot の会話の入力欄へ未送信で入れる。台帳は変えない。 */
 	startSuggestion(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>>;
+	/** 画面が提案の文を入力欄へ入れ終えた。提案を「始めた」にする。 */
+	markSuggestionStarted(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>>;
 	/** 「見送る」。同じ題を 30 日出さない。 */
 	dismissSuggestion(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>>;
-	/** 記憶の整理の前に、記憶のファイルの写しを取る。 */
-	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number }>>;
-	/** 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは `added` で知らせ、消さない）。 */
-	undoMemoryTidy(botId: string): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number }>>;
+	/** 記憶の整理の前に、記憶のファイルの写しを取る。`partial` なら上限で打ち切り、`total` 件のうち `files` 件だけを写した。 */
+	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean }>>;
+	/**
+	 * 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは `added` で知らせ、消さない）。
+	 * 書き戻すのは `MEMORY.md` と `memory/` の直下だけ。写しにほかのパスがあれば `skipped` で知らせる。
+	 */
+	undoMemoryTidy(botId: string): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number; readonly skipped: readonly string[] }>>;
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>>;
 	writeHomeFile(botId: string, relativePath: string, text: string): Promise<ParadisBotsServiceResult<void>>;
