@@ -184,16 +184,45 @@ export function paradisBotTemplateSkillPaths(skill: Pick<IParadisBotTemplateSkil
 	return [`.claude/skills/${skill.name}/SKILL.md`, `.agents/skills/${skill.name}/SKILL.md`];
 }
 
-/** SKILL.md の中身（front matter つき）。 */
+/**
+ * SKILL.md の中身（front matter つき）。front matter は `name` と `description` だけ（`allowed-tools` などで道具の許可を
+ * 足さない）。説明は訳で `:`・`#` が入っても YAML として読めるよう、引用符で囲む。
+ */
 export function paradisBotTemplateSkillFile(skill: IParadisBotTemplateSkill): string {
-	return `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n${skill.body}`;
+	return `---\nname: ${skill.name}\ndescription: ${JSON.stringify(skill.description)}\n---\n\n${skill.body}`;
+}
+
+/** 人格メモ（SOUL.md）の末尾に足すスキルの節（スキルを置けたときだけ足す）。 */
+export function paradisBotTemplateSkillSection(skill: Pick<IParadisBotTemplateSkill, 'name'>): string {
+	const [claude, codex] = paradisBotTemplateSkillPaths(skill);
+	return [
+		localize('paradis.bots.templateSoul.skills', "## スキル"),
+		'',
+		localize('paradis.bots.templateSoul.skill', "- {0}: 作業の前に `{1}`（Codex では `{2}`）を読み、その手順に従う。", skill.name, claude, codex),
+		'',
+	].join('\n');
+}
+
+/** 同じ名前の Bot がいれば「名前 2」「名前 3」…と番号を足す（テンプレートから 2 体目を作るとき）。 */
+export function paradisBotTemplateDefaultName(name: string, taken: readonly string[]): string {
+	const used = new Set(taken.map(value => value.trim().normalize('NFKC').toLowerCase()));
+	const key = (value: string) => value.normalize('NFKC').toLowerCase();
+	if (!used.has(key(name))) {
+		return name;
+	}
+	for (let index = 2; ; index++) {
+		const candidate = `${name} ${index}`;
+		if (!used.has(key(candidate))) {
+			return candidate;
+		}
+	}
 }
 
 /**
- * テンプレートから作る Bot の人格メモ（SOUL.md）。役割は作成のモーダルで書き換えた文。`withSkill` が false なら
- * スキルの節を書かない（モーダルでスキルを外した）。
+ * テンプレートから作る Bot の人格メモ（SOUL.md）。役割は作成のモーダルで書き換えた文。スキルの節は入れない
+ * （スキルを置けたときに、shared process が {@link paradisBotTemplateSkillSection} を末尾に足す）。
  */
-export function paradisBotTemplateSoul(name: string, role: string, template: IParadisBotTemplate, withSkill: boolean): string {
+export function paradisBotTemplateSoul(name: string, role: string, template: IParadisBotTemplate): string {
 	const lines = [
 		`# ${name}`,
 		'',
@@ -216,14 +245,5 @@ export function paradisBotTemplateSoul(name: string, role: string, template: IPa
 		template.firstChat,
 		'',
 	];
-	if (withSkill && template.skill !== undefined) {
-		const [claude, codex] = paradisBotTemplateSkillPaths(template.skill);
-		lines.push(
-			localize('paradis.bots.templateSoul.skills', "## スキル"),
-			'',
-			localize('paradis.bots.templateSoul.skill', "- {0}: 作業の前に `{1}`（Codex では `{2}`）を読み、その手順に従う。", template.skill.name, claude, codex),
-			'',
-		);
-	}
 	return lines.join('\n');
 }

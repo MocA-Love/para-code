@@ -127,6 +127,10 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				const text = args.string(2);
 				return id !== undefined && text !== undefined ? service.writeHomeFile(id, args.at(1), text) : INVALID;
 			}
+			case 'installTemplateSkill': {
+				const templateId = args.string(1);
+				return id !== undefined && templateId !== undefined ? service.installTemplateSkill(id, templateId) : INVALID;
+			}
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}

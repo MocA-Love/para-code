@@ -162,3 +162,28 @@
 .paradis-bot-templates .pbtd-grow {
 	flex: 1;
 }
+
+.paradis-bot-templates .pbtd-skill-body {
+	margin-top: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bot-templates .pbtd-skill-body > summary {
+	cursor: pointer;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-bot-templates .pbtd-skill-body > pre {
+	max-height: 160px;
+	margin: var(--vscode-spacing-size60) 0 0;
+	padding: var(--vscode-spacing-size80);
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small);
+	background: var(--vscode-textCodeBlock-background);
+	color: var(--vscode-foreground);
+	font-family: var(--monaco-monospace-font);
+}
