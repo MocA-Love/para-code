@@ -81,7 +81,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 			gatewayPort: () => readGatewayPort(userDataPath),
 			codexConfigFiles: () => paradisCodexHomeCandidates().map(home => join(home, 'config.toml')),
 		}, agent, botId),
-		agentCommand: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId)?.command,
+		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;

@@ -478,7 +478,7 @@ suite('Paradis bot homes', () => {
 
 	test('見回りの起動: 読むだけの引数で、Bot の権限の設定を使わない。設定がオフ・制限できないエージェント・用意できない・危ない雛形は断る', async () => {
 		const userData = join(root, '..', 'userData');
-		const settings = { enabled: true, prepared: true, command: 'claude {model} {prompt}' };
+		const settings = { enabled: true, prepared: true, command: 'claude {model} {prompt}', modelFlag: '--model m1' };
 		const context = { agent: 'claude', settingsFile: '/data/s.json', mcpConfigFile: '/data/m.json' } as const;
 		const prepared: string[] = [];
 		let ids = 0;
@@ -488,7 +488,7 @@ suite('Paradis bot homes', () => {
 				prepared.push(`${agent}:${botId}`);
 				return settings.prepared ? context : 'not ready';
 			},
-			agentCommand: () => settings.command,
+			agentTemplate: id => ({ id, label: id, command: settings.command, models: [{ id: 'm1', flag: settings.modelFlag }] }),
 		}));
 		const claude = await service.createBot({ name: 'リリース係', agent: 'claude', permissionId: 'skip-permissions' });
 		const other = await service.createBot({ name: 'B', agent: 'opencode' });
@@ -499,6 +499,11 @@ suite('Paradis bot homes', () => {
 		settings.command = 'claude --dangerously-skip-permissions {prompt}';
 		const unsafe = await service.requestLaunch(claude.value.id, 'patrol');
 		settings.command = 'claude {prompt}';
+		settings.modelFlag = '--model m1 --dangerously-skip-permissions';
+		const modelOk = await service.requestLaunch(claude.value.id, 'patrol');
+		await service.updateBot(claude.value.id, { modelId: 'm1' });
+		const unsafeModel = await service.requestLaunch(claude.value.id, 'patrol');
+		settings.modelFlag = '--model m1';
 		settings.prepared = false;
 		const unprepared = await service.requestLaunch(claude.value.id, 'patrol');
 		settings.enabled = false;
@@ -508,6 +513,8 @@ suite('Paradis bot homes', () => {
 			chat: chat.ok && chat.value.permissionId,
 			unsupported: !unsupported.ok && unsupported.code,
 			unsafe: !unsafe.ok && unsafe.code,
+			modelOk: modelOk.ok,
+			unsafeModel: !unsafeModel.ok && unsafeModel.code,
 			unprepared: !unprepared.ok && [unprepared.code, unprepared.message],
 			off: !off.ok && off.code,
 			prepared,
@@ -516,9 +523,11 @@ suite('Paradis bot homes', () => {
 			chat: 'skip-permissions',
 			unsupported: 'unsupported',
 			unsafe: 'unsafe_template',
+			modelOk: true,
+			unsafeModel: 'unsafe_template',
 			unprepared: ['patrol_unavailable', 'not ready'],
 			off: 'disabled',
-			prepared: ['claude:id1', 'claude:id1'],
+			prepared: ['claude:id1', 'claude:id1', 'claude:id1'],
 		});
 	});
 
