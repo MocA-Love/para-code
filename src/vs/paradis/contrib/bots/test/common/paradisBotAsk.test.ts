@@ -237,7 +237,8 @@ suite('Paradis bot ask', () => {
 			paradisCodexBrowserRegistration([registered, false]).kind,
 			paradisCodexBrowserRegistration(['mcp_servers.para-browser.url = "x"']).kind,
 			paradisCodexBrowserRegistration(['[mcp_servers.para-browser]\ncommand = "npx"\n', undefined]).kind,
-		], ['everywhere', 'nowhere', 'nowhere', 'nowhere', 'unknown', 'unknown', 'unknown']);
+			paradisCodexBrowserRegistration(['[mcp_servers.para-browser]\ncommand = "npx"\n']).kind,
+		], ['everywhere', 'nowhere', 'nowhere', 'nowhere', 'unknown', 'unknown', 'unknown', 'everywhere']);
 		const flags = (kind: 'everywhere' | 'nowhere' | 'unknown', url?: string) => paradisBotLaunchApprovalFlags('codex', { kind }, url)?.split(' -c ').slice(0, 3);
 		assert.deepStrictEqual([
 			flags('everywhere'),

@@ -303,10 +303,10 @@ class ParadisBotsWindowWorker extends Disposable {
 	) {
 		super();
 		// Para Code を終了するときに、Bot のペイン（会話と見回り）を閉じる。閉じないと次の起動でターミナルの復元が
-		// 帯の無い普通のタブ（「zsh bot」）として戻し、そのタブは Bot のペインとして見つからない（保存した結び付けの
-		// ハッシュと合わない。観察で確かめた）ので、Bot を開くと別のタブが増えていた。会話の続きはターミナルの復元ではなく Bot のページから起動し直して戻す。
-		// エディタの状態は onWillShutdown の始めに保存される（ストレージを閉じるときに保存の知らせが出る）ので、onWillShutdown
-		// で閉じても復元の対象に残る。保存より前の onBeforeShutdown で閉じる（ほかの拒否で終了が取り消されたときも閉じて
+		// 帯の無い普通のタブ（「zsh bot」）として戻し、そのタブは Bot のペインとして見つからない（推測: 復元でペイントークンが
+		// 変わる。観察で保存した結び付けは残っていたのに合わなかった）ので、Bot を開くと別のタブが増えていた。会話の続きはターミナルの復元ではなく Bot のページから起動し直して戻す。
+		// エディタの状態は onWillShutdown でストレージを閉じるときに保存される（desktop.main.ts の join.closeStorage。
+		// 推測: 保存の知らせはこの処理より先に出る）ので、onWillShutdown で閉じても復元の対象に残りうる。保存より前の onBeforeShutdown で閉じる（ほかの拒否で終了が取り消されたときも閉じて
 		// いるが、Bot は帯から開けば起動し直す）。窓の再読み込みは、ペインがそのままつなぎ直されるので閉じない。
 		// どれが Bot のペインかは、閉じるときに待てないので先に調べておく
 		this._register(botsService.onDidChange(() => this.instancesScheduler.schedule()));

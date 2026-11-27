@@ -63,6 +63,10 @@ suite('Paradis bot panes', () => {
 		const stalled = bound('claude');
 		const started = bound('claude');
 		started.panes.noteHook('token-1', 'SessionStart', 1_000);
+		// 見張りを付けたときの「実行中」が SessionStart の後に届いても、届いた印は消えない
+		const lateWatch = bound('claude');
+		lateWatch.panes.noteHook('token-1', 'SessionStart', 500);
+		lateWatch.panes.noteCommand('token-1', undefined, false, 600);
 		const codex = bound('codex');
 		const asking = bound('claude');
 		asking.panes.noteHook('token-1', 'PermissionRequest', 1_000);
@@ -74,12 +78,14 @@ suite('Paradis bot panes', () => {
 			stalled.view(PARADIS_BOT_SETUP_STALL_MS - 1),
 			stalled.view(after),
 			started.view(after),
+			lateWatch.view(after),
 			codex.view(after),
 			asking.view(after),
 			answered.view(after),
 		], [
 			['idle', undefined],
 			['idle', { kind: 'needsUser' }],
+			['idle', undefined],
 			['idle', undefined],
 			['idle', undefined],
 			['idle', { kind: 'needsUser' }],

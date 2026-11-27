@@ -305,9 +305,10 @@ export class ParadisBotPanes {
 			pane.ended = exitCode === 127 ? { kind: 'notFound' } : { kind: 'exited', ...(exitCode !== undefined ? { exitCode } : {}) };
 			pane.working = false;
 			pane.asking = false;
-		} else {
+		} else if (pane.ended !== undefined) {
+			// 終わった後にシェルで起動し直した。そのエージェントの hook を待ち直す（初回設定で止まっているかを、ここから数える）。
+			// 終わっていないときは戻さない（見張りを付けたときの「実行中」が、もう届いた SessionStart の後に来ることがある）
 			pane.ended = undefined;
-			// 起動し直したエージェントの hook を待ち直す（初回設定で止まっているかを、ここから数える）
 			pane.hookSeen = false;
 			pane.boundAt = now;
 		}
