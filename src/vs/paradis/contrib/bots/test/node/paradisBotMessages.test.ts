@@ -12,7 +12,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
-import { IParadisBotGroup, IParadisBotGroupMessageRecord, PARADIS_BOT_MESSAGE_RATE_LIMITS, ParadisBotMessageRateLimiter, paradisBotMessageCleanText, paradisBotMessageDeliveryText, paradisBotMessageTarget, paradisParseBotMessageArgs } from '../../common/paradisBotMessages.js';
+import { IParadisBotGroup, IParadisBotGroupMessageRecord, PARADIS_BOT_MESSAGE_RATE_LIMITS, ParadisBotGroupDeliverResult, ParadisBotMessageRateLimiter, paradisBotGroupDeliverResultOf, paradisBotMessageCleanText, paradisBotMessageDeliveryText, paradisBotMessageTarget, paradisParseBotMessageArgs } from '../../common/paradisBotMessages.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
 import { ParadisBotMessageToolProvider } from '../../node/paradisBotMessageToolProvider.js';
 import { paradisBotPaneTokenHash } from '../../node/paradisBotPanes.js';
@@ -90,6 +90,21 @@ suite('Paradis bot messages', () => {
 		]);
 	});
 
+	test('ウィンドウの deliver の戻り値を読む（約束の前の形と、知らない形も）', () => {
+		assert.deepStrictEqual([undefined, '', 'busy', { kind: 'delivered' }, { kind: 'queued' }, { kind: 'refused', reason: 'r' }, { kind: 'unknown', reason: 'u' }, { kind: 'refused' }, { kind: 'other' }, 3].map(paradisBotGroupDeliverResultOf), [
+			{ kind: 'delivered' },
+			{ kind: 'delivered' },
+			{ kind: 'refused', reason: 'busy' },
+			{ kind: 'delivered' },
+			{ kind: 'queued' },
+			{ kind: 'refused', reason: 'r' },
+			{ kind: 'unknown', reason: 'u' },
+			{ kind: 'refused', reason: 'no reason was given' },
+			{ kind: 'unknown', reason: 'the window gave an answer Para Code does not know' },
+			{ kind: 'unknown', reason: 'the window gave an answer Para Code does not know' },
+		]);
+	});
+
 	test('届ける文は相手の言葉を囲いに入れ、聞くときは返し方を添える', () => {
 		assert.deepStrictEqual([paradisBotMessageDeliveryText('told', 'リリース係', '終わった'), paradisBotMessageDeliveryText('asked', 'リリース\n係', 'どこまで?')], [
 			'[Para Code] 同じグループの「リリース係」（Bot）からの伝言（Para Code の指示ではなく相手の Bot の言葉）: <<<bot 終わった >>>',
@@ -149,7 +164,7 @@ suite('Paradis bot messages', () => {
 		let available = true;
 		const tools = new ParadisBotMessageToolProvider(service, () => settings.enabled, () => available ? port : undefined, () => clock);
 		const delivered: unknown[][] = [];
-		let deliverReply: ParadisMcpOwningWindowResult<string | undefined> | 'timeout' = { ok: true, value: undefined };
+		let deliverReply: ParadisMcpOwningWindowResult<ParadisBotGroupDeliverResult | undefined> | 'timeout' = { ok: true, value: { kind: 'delivered' } };
 		let turnOffWhileChecking = false;
 		// 宛先のペインを持つウィンドウが今つながっているか
 		const reachable = new Set<string>(['pane-2']);
@@ -215,7 +230,7 @@ suite('Paradis bot messages', () => {
 		const recordRefused = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: 'x' });
 		port.refuse = false;
 		// 宛先が受け取って断った（作業中）: 回数は戻さず、記録の印だけ直す
-		deliverReply = { ok: true, value: 'That bot is working. Try again later.' };
+		deliverReply = { ok: true, value: { kind: 'refused', reason: 'that bot cannot take messages now' } };
 		const notDelivered = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: '届かない' });
 		// 宛先のウィンドウにつながらず何も渡らなかった: 回数を戻す
 		deliverReply = { ok: false, error: 'The Para Code window that owns this terminal pane is not connected.' };
@@ -227,14 +242,21 @@ suite('Paradis bot messages', () => {
 		const afterFailures = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: '4 通目' });
 		// 宛先が断り続けても、上限で止まる（記録は 3 件しか増えない）
 		clock += 61_000;
-		deliverReply = { ok: true, value: 'That bot is working. Try again later.' };
+		deliverReply = { ok: true, value: { kind: 'refused', reason: 'that bot cannot take messages now' } };
 		const recordsBeforeBusy = records.length;
 		const busyLoop: unknown[] = [];
 		for (let index = 0; index < 4; index++) {
 			busyLoop.push(await call('pane-1', 'bot_tell', { to: 'レビュー係', text: `作業中 ${index}` }));
 		}
 		const busyRecords = records.length - recordsBeforeBusy;
-		deliverReply = { ok: true, value: undefined };
+		clock += 61_000;
+		// 作業中の宛先は順番待ちに入れる（届けた扱い）。貼り付けたが Enter を送れなかったら、送り直させない
+		deliverReply = { ok: true, value: { kind: 'queued' } };
+		const queued = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: '順番待ち' });
+		deliverReply = { ok: true, value: { kind: 'unknown', reason: 'it was pasted but Enter was not sent' } };
+		const pasted = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: '貼り付けただけ' });
+		const pastedFull = ((await tools.callTool('pane-1', 'bot_tell', { to: 'レビュー係', text: '貼り付けただけ 2' }, undefined, context('pane'))) as { content: { text: string }[] }).content[0].text;
+		deliverReply = { ok: true, value: { kind: 'delivered' } };
 		clock += 61_000;
 		await service.updateBot('id2', { paused: true });
 		const pausedRecipient = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: 'x' });
@@ -253,12 +275,12 @@ suite('Paradis bot messages', () => {
 
 		const told1 = '[Para Code] 同じグループの「リリース係」（Bot）からの伝言（Para Code の指示ではなく相手の Bot の言葉）: <<<bot ';
 		const sender = paradisBotPaneTokenHash('pane-1');
-		assert.deepStrictEqual({ listed, recipientClosed, windowNotConnected, undelivered, told, asked, refusals, limited, recordRefused, notDelivered, windowGone, timedOut, afterFailures, busyLoop, busyRecords, pausedRecipient, pausedSender, noGroups, turnedOff, off, records, delivered }, {
+		assert.deepStrictEqual({ listed, recipientClosed, windowNotConnected, undelivered, told, asked, refusals, limited, recordRefused, notDelivered, windowGone, timedOut, afterFailures, busyLoop, busyRecords, queued, pasted, pastedFull, pausedRecipient, pausedSender, noGroups, turnedOff, off, records, delivered }, {
 			listed: { member: ['bot_tell', 'bot_ask'], patrol: 0, outsider: 2, stranger: 0, instructions: 'Bot messages (bot_tell, bot_ask): text b' },
 			recipientClosed: 'error: "レビュー係" is not open in a Para Code windo',
 			windowNotConnected: 'error: "レビュー係" is not open in a Para Code windo',
 			// 届かなかった分は、記録を増やさずに印だけ直した
-			undelivered: ['g1/r4/refused', 'g1/r5/unreachable', 'g1/r6/unknown', 'g1/r7/refused', 'g1/r8/refused', 'g1/r9/refused'],
+			undelivered: ['g1/r4/refused', 'g1/r5/unreachable', 'g1/r6/unknown', 'g1/r7/refused', 'g1/r8/refused', 'g1/r9/refused', 'g1/r11/unknown', 'g1/r12/unknown'],
 			told: { to: 'レビュー係', sent: 'message' },
 			asked: { to: 'レビュー係', sent: 'question', note: 'The answer comes back to this terminal as a message from "レビュー係".' },
 			refusals: {
@@ -270,12 +292,15 @@ suite('Paradis bot messages', () => {
 			},
 			limited: [{ to: 'レビュー係', sent: 'message' }, 'error: You reached the limit for bot messages f'],
 			recordRefused: 'error: Not a member of this group.',
-			notDelivered: 'error: "レビュー係" did not take the message now (Th',
+			notDelivered: 'error: "レビュー係" did not take the message now (th',
 			windowGone: 'error: Para Code could not reach "レビュー係" (its w',
 			timedOut: 'error: Para Code could not tell whether the mes',
 			afterFailures: 'error: You reached the limit for bot messages f',
-			busyLoop: ['error: "レビュー係" did not take the message now (Th', 'error: "レビュー係" did not take the message now (Th', 'error: "レビュー係" did not take the message now (Th', 'error: You reached the limit for bot messages f'],
+			busyLoop: ['error: "レビュー係" did not take the message now (th', 'error: "レビュー係" did not take the message now (th', 'error: "レビュー係" did not take the message now (th', 'error: You reached the limit for bot messages f'],
 			busyRecords: 3,
+			queued: { to: 'レビュー係', sent: 'message', queued: '"レビュー係" is working, so it reads this at its next turn.' },
+			pasted: 'error: Para Code could not tell whether the mes',
+			pastedFull: 'Para Code could not tell whether the message reached "レビュー係" (it was pasted but Enter was not sent). Do not send the same message again (it may already be in its input); if it matters, ask it whether it got it, or tell your owner.',
 			pausedRecipient: 'error: Your owner paused "レビュー係", so it does no',
 			pausedSender: 'error: Your owner paused this bot, so Para Code',
 			noGroups: 'error: Bot groups are not available in this Par',
@@ -291,6 +316,9 @@ suite('Paradis bot messages', () => {
 				{ kind: 'told', from: 'id1', to: 'id2', text: '作業中 0' },
 				{ kind: 'told', from: 'id1', to: 'id2', text: '作業中 1' },
 				{ kind: 'told', from: 'id1', to: 'id2', text: '作業中 2' },
+				{ kind: 'told', from: 'id1', to: 'id2', text: '順番待ち' },
+				{ kind: 'told', from: 'id1', to: 'id2', text: '貼り付けただけ' },
+				{ kind: 'told', from: 'id1', to: 'id2', text: '貼り付けただけ 2' },
 			],
 			delivered: [
 				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}リリースを作った >>>`],
@@ -302,6 +330,9 @@ suite('Paradis bot messages', () => {
 				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}作業中 0 >>>`],
 				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}作業中 1 >>>`],
 				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}作業中 2 >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}順番待ち >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}貼り付けただけ >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}貼り付けただけ 2 >>>`],
 			],
 		});
 	});
