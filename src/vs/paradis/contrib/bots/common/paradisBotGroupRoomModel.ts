@@ -22,9 +22,14 @@ export function paradisBotGroupRecordHead(record: Pick<IParadisBotGroupRecord, '
 	}
 }
 
-/** 記録の 1 行に添える印（Bot 同士の伝言を届けられなかったとき）。無ければ undefined。 */
+/** 記録の 1 行に添える印（Bot 同士の伝言が届かなかったとき、その理由）。無ければ undefined。 */
 export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'undelivered'>): string | undefined {
-	return record.undelivered === true ? localize('paradis.botGroups.record.undelivered', "届けられなかった") : undefined;
+	switch (record.undelivered) {
+		case 'refused': return localize('paradis.botGroups.record.refused', "宛先が受け取らなかった");
+		case 'unreachable': return localize('paradis.botGroups.record.unreachable', "届けられなかった");
+		case 'unknown': return localize('paradis.botGroups.record.unknown', "届いたか分からない");
+		case undefined: return undefined;
+	}
 }
 
 /** 名指しを読めなかったときの文。読めたら undefined。 */
