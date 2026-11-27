@@ -19,7 +19,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from '../common/paradisBots.js';
-import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotsService, IParadisBotsSnapshot, PARADIS_BOTS_CHANNEL, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
+import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 
 const UNAVAILABLE: ParadisBotsServiceResult<never> = { ok: false, code: 'unavailable', message: 'Para Code could not reach the bot service.' };
 
@@ -32,7 +32,8 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
-	readonly onDidRequestStop: Event<{ readonly botId: string }>;
+	readonly onDidRequestStop: Event<IParadisBotStopRequest>;
+	readonly onDidRequestReveal: Event<IParadisBotRevealRequest>;
 
 	private _snapshot: IParadisBotsSnapshot = EMPTY_PARADIS_BOTS_SNAPSHOT;
 
@@ -43,7 +44,8 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 	) {
 		super();
 		this.channel = sharedProcessService.getChannel(PARADIS_BOTS_CHANNEL);
-		this.onDidRequestStop = this.channel.listen<{ readonly botId: string }>('onDidRequestStop');
+		this.onDidRequestStop = this.channel.listen<IParadisBotStopRequest>('onDidRequestStop');
+		this.onDidRequestReveal = this.channel.listen<IParadisBotRevealRequest>('onDidRequestReveal');
 		this._register(this.channel.listen<IParadisBotsSnapshot>('onDidChange')(snapshot => this.apply(snapshot)));
 		this.channel.call<IParadisBotsSnapshot>('getSnapshot').then(
 			snapshot => this.apply(snapshot),
@@ -108,8 +110,20 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		await this.value('cancelLaunch', [launchId], undefined);
 	}
 
+	requestReveal(botId: string): Promise<boolean> {
+		return this.value('requestReveal', [botId], false);
+	}
+
+	async ackReveal(revealId: string): Promise<void> {
+		await this.value('ackReveal', [revealId], undefined);
+	}
+
 	requestStop(botId: string): Promise<boolean> {
 		return this.value('requestStop', [botId], false);
+	}
+
+	paneHashesOf(botId: string): Promise<readonly string[]> {
+		return this.value<readonly string[]>('paneHashesOf', [botId], []);
 	}
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>> {

@@ -456,6 +456,12 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 	readonly preserveFocus?: boolean;
 	/** `side` なら今のエディタグループの横（右）に開いて前に出す（ターミナルの右クリックの「別の Agent に引き継ぐ」）。`preserveFocus` とは併用しない。 */
 	readonly placement?: 'side';
+	/**
+	 * ターミナルができてトークンが決まった後、エージェントのコマンドを送る前に呼ぶ。false を返すとコマンドを送らずに
+	 * ターミナルを閉じ、起動をやめる（例外を投げる）。Bot の起動が、エージェントの MCP の接続より先にペインを
+	 * Bot として知らせるのに使う（接続のときの道具の一覧に Bot の道具を載せるため）。
+	 */
+	readonly beforeCommand?: (terminal: IParadisLaunchedAgentTerminal) => Promise<boolean>;
 }
 
 /**
@@ -535,6 +541,24 @@ async function paradisPlaceEditorTerminalInSpace(
  * そのために開いたターミナルを閉じてから投げる（何も起動していない空のシェルを残さない）。
  * シェルの種類は開いた後でないと分からないので、先に確かめることはできない。
  */
+/** {@link IParadisAgentLaunchInWorkspaceRequest.beforeCommand} を呼ぶ。断られたらターミナルを閉じて投げる。 */
+async function paradisRunBeforeCommand(paneTokenService: IParadisPaneTokenService, instance: ITerminalInstance, beforeCommand: IParadisAgentLaunchInWorkspaceRequest['beforeCommand']): Promise<void> {
+	if (beforeCommand === undefined) {
+		return;
+	}
+	let proceed = false;
+	try {
+		proceed = await beforeCommand(paradisDescribeLaunchedAgent(paneTokenService, instance));
+	} finally {
+		if (!proceed) {
+			instance.dispose();
+		}
+	}
+	if (!proceed) {
+		throw new Error('the launch was cancelled before the agent started');
+	}
+}
+
 function paradisBuildCommandOrClose(instance: ITerminalInstance, build: () => string): string {
 	try {
 		return build();
@@ -590,6 +614,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 			permissionId: request.permissionId,
 			extraFlags: request.extraFlags,
 		}));
+		await paradisRunBeforeCommand(paneTokenService, background, request.beforeCommand);
 		await background.sendText(backgroundCommand, true);
 		return paradisDescribeLaunchedAgent(paneTokenService, background);
 	}
@@ -621,6 +646,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		permissionId: request.permissionId,
 		extraFlags: request.extraFlags,
 	}));
+	await paradisRunBeforeCommand(paneTokenService, instance, request.beforeCommand);
 	await instance.sendText(command, true);
 	return paradisDescribeLaunchedAgent(paneTokenService, instance);
 }
