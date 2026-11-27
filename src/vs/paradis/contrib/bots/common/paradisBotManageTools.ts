@@ -15,15 +15,16 @@
 //   プロセスのときだけ
 // - Bot のペインからは、書く道具を全部断る（Bot が自分や他の Bot を作り変え、権限を広げる穴を塞ぐ）
 // - 作るときは権限（permission）を受けない。作った Bot は利用者の既定の権限で動く（launch_agent と同じ上限）
-// - 変えるときのエージェントの種類・権限・役割（SOUL.md）と、削除は、利用者の確認のダイアログを通す。ダイアログには
-//   どの Bot の何を何から何へ変えるか（役割は新しい本文の全文、権限は広がるかどうか）を出す。確認は同時に 1 件で、
-//   確認を待たずに返す（remove_space と同じ）
+// - 変えるときのエージェントの種類・権限・役割（SOUL.md）・名前（常設の指示文に入る）と、一時停止を解くこと、削除は、
+//   利用者の確認のダイアログを通す（止めるのは確認なし）。ダイアログには権限が広がるかどうかを先頭に、どの Bot の何を
+//   何から何へ変えるか、役割は新しい本文の全文を最後に出す。確認はウィンドウごとに同時に 1 件で、確認を待たずに返す
+//   （remove_space と同じ）
 // - 顔の色と形は、選べる名前だけ
 
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_AGENT_KINDS, ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES, PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape } from './paradisBots.js';
+import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES, PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape, paradisSanitizeBotName } from './paradisBots.js';
 import { IParadisBotsService, IParadisBotSummary, ParadisBotsServiceResult } from './paradisBotsApi.js';
 
 export const PARADIS_BOT_LIST_TOOL = 'list_bots';
@@ -78,7 +79,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	},
 	{
 		name: PARADIS_BOT_UPDATE_TOOL,
-		description: `Change a bot: its name, model, effort, face, pin, or pause it (a paused bot does not start and its questions leave the user's turn). Changing the agent, the permission mode or the role (SOUL.md) asks the user first: Para Code shows them the change in a dialog and applies the whole call only if they agree, so such a call returns before anything changes (one request at a time). ${ACTIONS_NOTE}`,
+		description: `Change a bot: its model, effort, face, pin, or pause it (a paused bot does not start and its questions leave the user's turn). Changing the agent, the permission mode, the role (SOUL.md) or the name, and resuming a paused bot, ask the user first: Para Code shows them the change in a dialog and applies the whole call only if they agree, so such a call returns before anything changes (one request at a time per window). ${ACTIONS_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -121,7 +122,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 export const PARADIS_BOT_MANAGE_TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_BOT_MANAGE_TOOLS.map(tool => tool.name));
 
 /** MCP の `initialize` の説明と `para help ide` の手引きに足す 1 段。 */
-export const PARADIS_BOT_MANAGE_INSTRUCTIONS = 'Bot management tools (list_bots, create_bot, update_bot, start_bot, stop_bot, remove_bot): manage the user\'s Para Code bots when the user asks you to. Bots are experimental: the tools work only while the user\'s setting paradis.bots.enabled is on. Changing anything needs the same user setting as the other IDE actions (paradis.agentIde.allowActions); a bot\'s own terminal cannot use them. A new bot runs with the user\'s default permission mode. Changing a bot\'s agent, permission mode or role, and remove_bot, only ask the user, who confirms in a dialog.';
+export const PARADIS_BOT_MANAGE_INSTRUCTIONS = 'Bot management tools (list_bots, create_bot, update_bot, start_bot, stop_bot, remove_bot): manage the user\'s Para Code bots when the user asks you to. Bots are experimental: the tools work only while the user\'s setting paradis.bots.enabled is on. Changing anything needs the same user setting as the other IDE actions (paradis.agentIde.allowActions); a bot\'s own terminal cannot use them. A new bot runs with the user\'s default permission mode. Changing a bot\'s agent, permission mode, role or name, resuming a paused bot, and remove_bot, only ask the user, who confirms in a dialog.';
 
 export type ParadisBotManageArgs<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
 
@@ -213,7 +214,7 @@ export interface IParadisBotUpdateArgs {
 	readonly patch: IParadisBotPatch;
 	/** 人格メモ（SOUL.md）の新しい全文。 */
 	readonly role?: string;
-	/** 利用者の確認が要る変更（エージェント・権限・役割）を含む。 */
+	/** 今の Bot を見なくても利用者の確認が要るとわかる変更（エージェント・権限・役割）を含む。 */
 	readonly needsConfirmation: boolean;
 }
 
@@ -237,10 +238,18 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
 	if ((value.agent !== undefined && agent === undefined) || role === false || (value.permission !== undefined && value.permission !== null && typeof value.permission !== 'string')) {
 		return refuse(`"agent" is one of ${PARADIS_AGENT_KINDS.join(', ')}; "permission" is a permission mode id or null; "role" is up to ${PARADIS_BOT_ROLE_LIMIT} characters.`);
 	}
+	// 名前は確認のダイアログと常設の指示文に出るので、ここで検める（空・長すぎ・改行入りは断る）
+	const name = value.name === undefined ? undefined : paradisSanitizeBotName(value.name);
+	if (value.name !== undefined && name === undefined) {
+		return refuse(`"name" is up to ${PARADIS_BOT_LIMITS.name} characters on one line.`);
+	}
+	if ((value.pinned !== undefined && typeof value.pinned !== 'boolean') || (value.paused !== undefined && typeof value.paused !== 'boolean')) {
+		return refuse('"pinned" and "paused" are true or false.');
+	}
 	const patch: IParadisBotPatch = {
 		...(agent !== undefined ? { agent } : {}),
 		...(value.permission !== undefined ? { permissionId: value.permission } : {}),
-		...(value.name !== undefined ? { name: value.name } : {}),
+		...(name !== undefined ? { name } : {}),
 		...(value.model !== undefined ? { modelId: value.model } : {}),
 		...(value.effort !== undefined ? { effortId: value.effort } : {}),
 		...looks,
@@ -251,6 +260,17 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
 		return refuse('update_bot needs at least one change.');
 	}
 	return { ok: true, value: { botId: value.bot, patch, ...(role !== undefined ? { role } : {}), needsConfirmation: agent !== undefined || value.permission !== undefined || role !== undefined } };
+}
+
+/**
+ * この変更を利用者に確かめるか。引数だけでわかるもの（{@link IParadisBotUpdateArgs.needsConfirmation}）に加えて、
+ * 名前を変えること（常設の指示文の「You are …」に入る）と、止めてある Bot の一時停止を解くこと。止める（false → true）
+ * のは安全側なので確かめない。今と同じ値を渡しただけなら確かめない。
+ */
+export function paradisBotUpdateNeedsConfirmation(bot: { readonly name: string; readonly paused: boolean }, args: Pick<IParadisBotUpdateArgs, 'patch' | 'needsConfirmation'>): boolean {
+	const renames = args.patch.name !== undefined && args.patch.name !== bot.name;
+	const resumes = bot.paused && args.patch.paused === false;
+	return args.needsConfirmation || renames || resumes;
 }
 
 /** 権限の広さの順（同じ種類のエージェントの中で）。知らない id は undefined。 */
