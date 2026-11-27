@@ -464,12 +464,24 @@ export function paradisAddCodexToolApproval(text: string, gatewayPort: number, t
 	if (infos.length > 0 && infos[infos.length - 1].continued) {
 		return undefined;
 	}
-	const eol = text.includes('\r\n') ? '\r\n' : '\n';
-	const kept = [...lines];
-	while (kept.length > 0 && kept[kept.length - 1].trim().length === 0) {
-		kept.pop();
+	// 元の行の改行はそのまま残し（CRLF と LF が混ざっていてもそろえない）、足す行だけファイルの主な改行に合わせる
+	const crlf = text.match(/\r\n/g)?.length ?? 0;
+	const lf = (text.match(/\n/g)?.length ?? 0) - crlf;
+	const eol = crlf > 0 && crlf >= lf ? '\r\n' : '\n';
+	let keptCount = lines.length;
+	while (keptCount > 0 && lines[keptCount - 1].trim().length === 0) {
+		keptCount--;
 	}
-	return [...kept, '', `[mcp_servers.${PARADIS_MCP_SERVER_NAME}.tools.${tool}]`, 'approval_mode = "approve"', ''].join(eol);
+	// 残す最後の行の改行まで（行の改行は元のまま。最後の行に改行が無ければ主な改行を足す）
+	let end = 0;
+	for (let index = 0; index < keptCount; index++) {
+		end += lines[index].length;
+		if (index < lines.length - 1) {
+			end += text.startsWith('\r\n', end) ? 2 : 1;
+		}
+	}
+	const kept = keptCount === 0 ? '' : keptCount < lines.length ? text.slice(0, end) : `${text}${eol}`;
+	return `${kept}${eol}[mcp_servers.${PARADIS_MCP_SERVER_NAME}.tools.${tool}]${eol}approval_mode = "approve"${eol}`;
 }
 
 /** Antigravity CLI の mcp_config.json の判定結果。 */

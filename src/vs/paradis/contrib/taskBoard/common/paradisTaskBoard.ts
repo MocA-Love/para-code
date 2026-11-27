@@ -385,6 +385,8 @@ export interface ITaskBoardRuntime {
 	readonly speed: number;
 	/** 作業場所の git 操作を実際に行うか。 */
 	readonly realWorkspaces: boolean;
+	/** クローンの作業場所を画面から足せるか（Para Code が開いた、手元のリポジトリのボード。フォルダの選択を Para Code に頼む）。 */
+	readonly canAddClone?: boolean;
 	readonly repoPath?: string;
 	readonly repoLabel?: string;
 }
@@ -580,6 +582,8 @@ export interface ITaskBoardRpc {
 	/** Codex の設定に、ボードへの報告のツールを常に許可する設定を書き足す。 */
 	approveCodexTools: { params: Record<string, never>; result: { path: string } };
 	approveLaunchTools: { params: Record<string, never>; result: void };
+	/** クローンの作業場所を足す（フォルダは Para Code の選択のダイアログで選ぶ）。選ばずに閉じたら `added` なし。 */
+	addClone: { params: Record<string, never>; result: { readonly added?: string } };
 	approveClaudeTools: { params: Record<string, never>; result: { path: string } };
 }
 
