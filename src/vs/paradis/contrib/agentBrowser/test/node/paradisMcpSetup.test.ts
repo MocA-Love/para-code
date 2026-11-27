@@ -583,6 +583,39 @@ suite('Para Browser MCP setup', () => {
 		}
 	});
 
+	test('the ask_human table added by the setup button is not put back at the next start after the user removes it', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-approve-'));
+		try {
+			const codexHome = join(directory, 'codex');
+			await fs.mkdir(codexHome);
+			const configPath = join(codexHome, 'config.toml');
+			const create = () => new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => undefined,
+				runCommand: async (): Promise<IParadisMcpSetupCommandResult> => ({ kind: 'failure', output: '' }),
+				codexHome,
+				claudeConfigJsonPath: join(directory, '.claude.json'),
+				upgradeMarkerPath: join(directory, 'marker.json'),
+				log: () => undefined,
+			});
+			const outcome = (await create().setup('codex', PORT)).servers[0]?.outcome;
+			const afterButton = await fs.readFile(configPath, 'utf8');
+			// The user takes the ask_human table out; the next start must leave it out.
+			const removed = afterButton.replace('\n[mcp_servers.para-browser.tools.ask_human]\napproval_mode = "approve"\n', '');
+			await fs.writeFile(configPath, removed);
+			await create().upgradeToolTimeouts(PORT);
+			assert.deepStrictEqual({ outcome, added: afterButton.includes('[mcp_servers.para-browser.tools.ask_human]'), removedApplied: removed !== afterButton, afterStart: await fs.readFile(configPath, 'utf8') === removed }, {
+				outcome: 'success',
+				added: true,
+				removedApplied: true,
+				afterStart: true,
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	test('a Claude entry is upgraded only when it has no timeout at all', () => {
 		const entry = (extra: object) => JSON.stringify({ mcpServers: { 'para-browser': { type: 'http', url: `http://127.0.0.1:${PORT}/`, ...extra } } });
 		assert.deepStrictEqual({
