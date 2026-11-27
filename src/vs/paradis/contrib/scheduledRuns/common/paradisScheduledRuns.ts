@@ -41,6 +41,12 @@ export const PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT = 24;
 export const PARADIS_SCHEDULED_RUN_MAX_CONCURRENT = 3;
 /** 全体で 1 日に自動で始める回数の上限。 */
 export const PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL = 30;
+/**
+ * Bot の見回りの同時実行と 1 日の回数の上限。利用者の定期実行とは別の枠で数える（Bot が多いと見回りだけで利用者の
+ * 定期実行の枠を使い切り、利用者の定期実行が見送られるため）。1 日の回数は Bot 1 つにつき最大 24 回。
+ */
+export const PARADIS_BOT_PATROL_MAX_CONCURRENT = 3;
+export const PARADIS_BOT_PATROL_MAX_DAILY_TOTAL = 100;
 /** 遅れて作った開始待ちにも、少なくともこれだけは拾われる猶予を残す。 */
 export const PARADIS_SCHEDULED_RUN_MIN_PENDING_MS = 60 * PARADIS_MINUTE_MS;
 /** 毎回新しいスペースを作るとき、片付け候補にせず残す件数。 */
@@ -263,7 +269,13 @@ export type ParadisScheduledRunReason =
 	/** Bot の見回り: 起動できるウィンドウ（この PC のウィンドウ）がしばらく無かった。 */
 	| 'botNoWindow'
 	/** Bot の見回り: 前の見回りのエージェントがまだ動いている。 */
-	| 'botBusy';
+	| 'botBusy'
+	/** Bot の見回り: ほかの Bot の見回りが同時実行の上限まで動いていて、起動を待つ間に期限が来た・枠が空かなかった。 */
+	| 'botConcurrency'
+	/** Bot の見回り: 見回り全体の 1 日の上限に達した。 */
+	| 'botDailyLimit'
+	/** Bot の見回り: 動いている間に Bot の機能（`paradis.bots.enabled`）がオフになったので止めた。 */
+	| 'botsTurnedOff';
 
 /** 毎回新しいスペースを作ったときの、そのスペース。 */
 export interface IParadisScheduledRunSpace {
@@ -369,6 +381,31 @@ export function paradisIsActiveRunStatus(status: ParadisScheduledRunStatus): boo
 /** 実際に動いている（ウィンドウが受け持った）実行の数。開始待ちは数えない。 */
 export function paradisCountRunningRuns(runs: readonly IParadisScheduledRunRecord[]): number {
 	return runs.filter(run => run.status === 'starting' || run.status === 'running' || run.status === 'needsAttention').length;
+}
+
+/**
+ * 上限を数える枠（Bot の見回りか、利用者の定期実行か）。`isBotPatrol` は定義の id が見回りのものか。渡さなければ
+ * 全部を 1 つの枠で数える。
+ */
+export interface IParadisScheduledRunPool {
+	readonly runs: readonly IParadisScheduledRunRecord[];
+	readonly maxConcurrent: number;
+	readonly maxDailyTotal: number;
+	readonly botPatrol: boolean;
+}
+
+/** その定義の回を数える枠（同じ枠の記録と上限）。 */
+export function paradisScheduledRunPool(definitionId: string, runs: readonly IParadisScheduledRunRecord[], isBotPatrol?: (definitionId: string) => boolean): IParadisScheduledRunPool {
+	if (isBotPatrol === undefined) {
+		return { runs, maxConcurrent: PARADIS_SCHEDULED_RUN_MAX_CONCURRENT, maxDailyTotal: PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL, botPatrol: false };
+	}
+	const botPatrol = isBotPatrol(definitionId);
+	return {
+		runs: runs.filter(run => isBotPatrol(run.definitionId) === botPatrol),
+		maxConcurrent: botPatrol ? PARADIS_BOT_PATROL_MAX_CONCURRENT : PARADIS_SCHEDULED_RUN_MAX_CONCURRENT,
+		maxDailyTotal: botPatrol ? PARADIS_BOT_PATROL_MAX_DAILY_TOTAL : PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL,
+		botPatrol,
+	};
 }
 
 export function paradisIsFinishedRunStatus(status: ParadisScheduledRunStatus): boolean {
@@ -586,16 +623,19 @@ export function paradisCheckRunGuards(
 	trigger: ParadisScheduledRunTrigger,
 	now: number,
 	scheduledFor?: number,
+	isBotPatrol?: (definitionId: string) => boolean,
 ): ParadisScheduledRunReason | undefined {
 	const own = runs.filter(run => run.definitionId === definition.id);
+	// 同時実行と 1 日の回数は、Bot の見回りと利用者の定期実行で別の枠に数える
+	const pool = paradisScheduledRunPool(definition.id, runs, isBotPatrol);
 	// 同じものは同時に1つ（手動でも同じ）
 	if (own.some(run => paradisIsActiveRunStatus(run.status))) {
 		return 'overlap';
 	}
 	// 全体で同時に動かす数の上限（手動でも同じ）。開始待ちは数えない（どのウィンドウも開いていない
 	// リポジトリの回が、拾われるまでの最大 12 時間ほかの回を止めないように。拾う側の claim で数える）
-	if (paradisCountRunningRuns(runs) >= PARADIS_SCHEDULED_RUN_MAX_CONCURRENT) {
-		return 'globalConcurrency';
+	if (paradisCountRunningRuns(pool.runs) >= pool.maxConcurrent) {
+		return pool.botPatrol ? 'botConcurrency' : 'globalConcurrency';
 	}
 	if (trigger === 'manual') {
 		// 手動の実行は利用者が今ボタンを押したものなので、回数と間隔では止めない（回数には数える）
@@ -609,8 +649,8 @@ export function paradisCheckRunGuards(
 		return 'dailyLimit';
 	}
 	// 全体の 1 日の上限は自動の回だけで数える（手動の回は数えない）
-	if (runs.filter(run => run.trigger !== 'manual' && sameDay(run)).length >= PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL) {
-		return 'globalDailyLimit';
+	if (pool.runs.filter(run => run.trigger !== 'manual' && sameDay(run)).length >= pool.maxDailyTotal) {
+		return pool.botPatrol ? 'botDailyLimit' : 'globalDailyLimit';
 	}
 	const minGap = PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES * PARADIS_MINUTE_MS;
 	const tooSoon = own.some(run => {
@@ -704,5 +744,8 @@ export function paradisScheduledRunReasonLabel(reason: ParadisScheduledRunReason
 		case 'botMissed': return localize('paradis.scheduledRuns.reason.botMissed', "スリープ中・終了中に過ぎた見回り {0} 回分は実行しませんでした（次の時刻から見回ります）", run?.skippedCount ?? 1);
 		case 'botNoWindow': return localize('paradis.scheduledRuns.reason.botNoWindow', "見回りを起動できるウィンドウ（この PC のウィンドウ）が開いていませんでした");
 		case 'botBusy': return localize('paradis.scheduledRuns.reason.botBusy', "前の見回りがまだ動いていたため見回りませんでした");
+		case 'botConcurrency': return localize('paradis.scheduledRuns.reason.botConcurrency', "ほかの Bot の見回りが {0} つ動いていたため見回りませんでした", PARADIS_BOT_PATROL_MAX_CONCURRENT);
+		case 'botDailyLimit': return localize('paradis.scheduledRuns.reason.botDailyLimit', "見回り全体の 1 日の上限（{0} 回）に達したため見回りませんでした", PARADIS_BOT_PATROL_MAX_DAILY_TOTAL);
+		case 'botsTurnedOff': return localize('paradis.scheduledRuns.reason.botsTurnedOff', "Bot の機能がオフになったため見回りを止めました");
 	}
 }

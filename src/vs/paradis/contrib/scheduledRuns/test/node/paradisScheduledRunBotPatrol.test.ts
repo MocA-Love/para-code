@@ -179,6 +179,48 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 		});
 	});
 
+	test('同じ時刻に 4 つの Bot が重なると、4 つ目は同時実行の上限で見送ったと記録する（ウィンドウが無かったとは記録しない）', async () => {
+		const { state, gate, service, requests, statuses } = setup(at(2026, 11, 27, 7, 0));
+		await service.whenReady();
+		for (const botId of ['b1', 'b2', 'b3', 'b4']) {
+			gate.bots.set(botId, botId);
+			await service.setBotPatrol(botId, PATROL);
+		}
+		state.now = at(2026, 11, 27, 8, 0) + 20_000;
+		service.tick();
+		const claims: boolean[] = [];
+		for (const request of requests) {
+			claims.push((await service.claim('window:1', request.run.id)) !== undefined);
+		}
+		state.now = at(2026, 11, 27, 8, 11);
+		service.tick();
+		assert.deepStrictEqual({ claims, runs: (await statuses()).map(([status, reason]) => `${status}:${reason}`) }, {
+			claims: [true, true, true, false],
+			runs: ['starting:', 'starting:', 'starting:', 'skipped:botConcurrency'],
+		});
+	});
+
+	test('動いている間に Bot の機能をオフにすると、見回りを止めて「オフになったため止めた」と記録する', async () => {
+		const { state, gate, service, statuses } = setup(at(2026, 11, 27, 7, 0));
+		await service.whenReady();
+		await service.setBotPatrol('b1', PATROL);
+		const manual = await service.runBotPatrolNow('b1');
+		await service.claim('window:1', manual.run!.id);
+		await service.report('window:1', { runId: manual.run!.id, status: 'running' });
+		const stops: string[] = [];
+		disposables.add(service.onDidRequestStop(request => stops.push(`${request.runId === manual.run!.id}:${request.claimedBy}`)));
+		gate.state = 'off';
+		state.now += 60_000;
+		service.tick();
+		// 受け持ちのウィンドウが止めた後に送ってくる報告は、記録を変えない
+		const late = await service.report('window:1', { runId: manual.run!.id, status: 'cancelled', reason: 'userStopped' });
+		assert.deepStrictEqual({ stops, late, runs: await statuses() }, {
+			stops: ['true:window:1'],
+			late: false,
+			runs: [['cancelled', 'botsTurnedOff', 'manual']],
+		});
+	});
+
 	test('Bot を消したら定義と記録も消し、動いている回は止める', async () => {
 		const { state, service } = setup(at(2026, 11, 27, 7, 0));
 		await service.whenReady();
