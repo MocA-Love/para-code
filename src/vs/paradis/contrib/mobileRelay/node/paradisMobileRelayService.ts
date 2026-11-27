@@ -1597,10 +1597,21 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/**
 	 * 「人が答えるもの」の台帳の書き手へ渡す、ペインの今の待ちの読むだけの口（shared process の中だけ。中身は関数なので
-	 * IPC には載らない）。新しい購読・読み取りは始めない。
+	 * IPC には載らない）。読む側がいる間は、見られていないペインの質問・承認の hook も tailer へ入れる（retainHumanAskTailing）。
 	 */
 	humanAskPaneSource(): IParadisHumanAskPaneSource {
-		return { onDidChange: listener => this.agentChat.onDidCheckDesktopPanes(listener), read: () => this.agentChat.humanAskPanes() };
+		return {
+			onDidChange: listener => {
+				// 読む側ごとに数える（先にやめた側が、まだ読んでいる側の分まで下ろさない）
+				const reading = this.agentChat.retainHumanAskTailing();
+				const subscription = this.agentChat.onDidCheckDesktopPanes(listener);
+				return toDisposable(() => {
+					subscription.dispose();
+					reading.dispose();
+				});
+			},
+			read: () => this.agentChat.humanAskPanes(),
+		};
 	}
 
 	/** デスクトップ UI 向けの読み取り口。モバイル連携が無効でも動く（送信は一切しない）。 */
@@ -1664,6 +1675,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async getAgentChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {
 		return paradisIsAgentChatToken(token) ? this.agentChat.getDesktopChatCommands(token) : [];
+	}
+
+	/** デスクトップのチャット表示の「ターミナルで続けます」の帯が聞く（PC の Claude Code で画面が開いているか）。 */
+	async isAgentChatDialogOpen(token: string): Promise<boolean | undefined> {
+		return paradisIsAgentChatToken(token) ? this.agentChat.isDesktopDialogOpen(token) : undefined;
 	}
 
 	async claimAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string): Promise<boolean> {

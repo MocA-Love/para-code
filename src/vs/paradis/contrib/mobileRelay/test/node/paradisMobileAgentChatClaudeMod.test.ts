@@ -1205,6 +1205,46 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('answers the desktop chat whether a screen like /model is open only when the mod can tell and the pane waits for input', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		await waitForIdle(harness);
+		const noMod = await harness.chat.isDesktopDialogOpen(harness.token);
+		const features = ['commands.list', 'command.run', 'prompt.dialog'];
+		const openPoll = () => harness.mod('commands', { busy: false, features });
+		const handed: string[] = [];
+		let poll = openPoll();
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const ask = async (dialog: boolean) => {
+			const asked = harness.chat.isDesktopDialogOpen(harness.token);
+			const [command] = (await poll).commands as Record<string, unknown>[];
+			handed.push(String(command.kind));
+			poll = openPoll();
+			await new Promise<void>(resolve => setTimeout(resolve, 20));
+			await harness.mod('ack', { id: command.id, ok: true, dialog });
+			return asked;
+		};
+		const open = await ask(true);
+		const closed = await ask(false);
+		// 作業中は聞かない（mod へ何も渡さない）
+		harness.hook('UserPromptSubmit');
+		const internals = harness.chat as unknown as { readonly activeTurnTokens: Set<string> };
+		await waitFor(() => internals.activeTurnTokens.has(harness.token), 'the turn did not start');
+		const busy = await harness.chat.isDesktopDialogOpen(harness.token);
+		assert.deepStrictEqual({ noMod, open, closed, busy, handed }, { noMod: undefined, open: true, closed: false, busy: undefined, handed: ['dialogCheck', 'dialogCheck'] });
+	}));
+
+	test('does not ask an old mod without the dialog check for the desktop chat', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		await waitForIdle(harness);
+		const poll = harness.mod('commands', { busy: false, features: ['commands.list', 'command.run'] });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		assert.strictEqual(await harness.chat.isDesktopDialogOpen(harness.token), undefined);
+		void poll;
+	}));
+
 	test('asks the mod whether a screen holds the keys before typing, and does not retry by keys what the mod refused', () => withHarness(async harness => {
 		harness.hook('Stop');
 		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });

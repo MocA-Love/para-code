@@ -54,6 +54,7 @@ import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/par
 import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
 import { paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
 import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
+import { PARADIS_BOTS_ENABLED_SETTING } from '../../bots/common/paradisBotsApi.js';
 import { PARADIS_AGENT_HIBERNATION_ENABLED_SETTING, PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import {
 	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
@@ -417,6 +418,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.rowMetaDesc', "行を右クリックした「表示する情報」からも変えられます。"),
 		keywords: 'workspaces view row meta pull request issue diff notes order prompt cache',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		group: GROUP_SPACE_LIST,
+		experimental: true,
+		key: PARADIS_BOTS_ENABLED_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.botsEnabled', "Bot の帯を出す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.botsEnabledDesc', "スペースの一覧の「プロジェクト」の上に Bot の帯を出し、名前と役割を持って動き続ける Bot を作れるようにします。試験中です。"),
+		keywords: 'bot bots band agent create pin',
 	},
 	{
 		sectionId: 'psd-sec-space',
@@ -1623,7 +1635,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.inboxTitleBar', "タイトルバーに通知の受信箱（ベル）を表示"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はまだ確認していないペインの数です。"),
+		description: localize('paradis.settings.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はあなたの番（答えを待っている質問・許可）の数で、未読の通知は点で知らせます。"),
 		keywords: 'notification inbox bell title bar unread',
 	},
 	// --- メニューバー ---

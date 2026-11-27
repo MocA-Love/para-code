@@ -59,6 +59,7 @@ import { ICreatingSpaceElement, isCreating, isPinnedKeep, isRepository, isSectio
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisWorkspacesNav } from './paradisWorkspacesNav.js';
+import { IParadisWorkspacesBand, paradisWorkspacesBands } from './paradisWorkspacesBands.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
 import { paradisGithubTargetsFingerprint, ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { IParadisDiffStatsTarget, ParadisWorkspacesDiffStatsTracker } from './paradisWorkspacesDiffStatsTracker.js';
@@ -1592,6 +1593,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	private nav: ParadisWorkspacesNav | undefined;
 	/** ナビの高さ。レイアウトのたびに測らないよう控え、行を隠した・戻したときだけ捨てる */
 	private navHeight: number | undefined;
+	/** 「プロジェクト」の見出しの上の帯（Bot の帯など。高さはナビの高さに含まれる） */
+	private bands: readonly IParadisWorkspacesBand[] = [];
 	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
@@ -1735,6 +1738,13 @@ export class ParadisWorkspacesView extends ViewPane {
 			this.navHeight = undefined;
 			this.relayout();
 		});
+		this.bands = paradisWorkspacesBands().map(ctor => this._register(this.instantiationService.createInstance(ctor, nav.bandsContainer)));
+		for (const band of this.bands) {
+			this._register(band.onDidChangeHeight(() => {
+				this.navHeight = undefined;
+				this.relayout();
+			}));
+		}
 		const treeContainer = this.treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list.paradis-focus-subtle-list'));
 		// 明滅の位相合わせ。個々のドットではなくルート1箇所で受ける (行は使い回されるので、
 		// 要素ごとに張ると付け外しの管理が要る)。詳細は syncStatusBlinkPhase を参照。
@@ -2022,6 +2032,11 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	/** ビューの高さをメモ欄とツリーへ配分する (layoutBody とメモ欄の高さ変更の共通処理)。 */
 	private layoutContents(height: number, width: number): void {
+		for (const band of this.bands) {
+			if (band.layout(height)) {
+				this.navHeight = undefined;
+			}
+		}
 		if (this.navHeight === undefined && this.nav) {
 			// 見えていない間は 0 になるので控えない（次のレイアウトで測り直す）
 			const measured = this.nav.element.offsetHeight;
