@@ -6,11 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Bot 同士の伝言の道具（bot_tell・bot_ask）の定義と、引数の検め・届ける文の形（副作用なし）。
+// Bot 同士の伝言の道具（bot_tell・bot_ask・bot_inbox）の定義と、引数の検め・受け箱の伝言の見せ方（副作用なし）。
 //
-// 宛先は同じ Bot のグループのメンバーだけ。グループの台帳と、ペインへ届ける窓口はグループの機能が持つ
-// （{@link IParadisBotGroupsPort}・ウィンドウのチャネル {@link PARADIS_BOT_GROUPS_WINDOW_CHANNEL} の `deliver`）。
-// 伝言はペインへ打ち込む 1 行になるので、制御文字と改行を落とし、囲いの印を崩してから渡す。
+// 宛先は同じ Bot のグループのメンバーだけ。伝言はターミナルへ打ち込まず、グループの台帳に記録して宛先の受け箱に入れる
+// （台帳と受け箱はグループの機能が持つ。{@link IParadisBotGroupsPort}）。宛先は bot_inbox で読む。本文は送るときと
+// 読むときに、制御文字・改行・見えない文字を落とし、囲いの印を崩す。
 
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
@@ -21,12 +21,6 @@ export const PARADIS_BOT_ASK_TOOL = 'bot_ask';
 export const PARADIS_BOT_INBOX_TOOL = 'bot_inbox';
 /** 伝言を送る道具（会話のペインだけ）。 */
 export const PARADIS_BOT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set([PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL]);
-
-/**
- * 伝言のウィンドウのチャネル（グループの機能が登録する）。道具は使わない（伝言はターミナルへ打ち込まず、宛先の
- * 受け箱に入れる）。グループの機能の中の約束として名前と戻り値の型だけをここに置く。
- */
-export const PARADIS_BOT_GROUPS_WINDOW_CHANNEL = 'paradisBotGroupsWindow';
 
 export const PARADIS_BOT_MESSAGE_LIMITS = {
 	/** 伝言の本文（整えた後）。 */
@@ -67,14 +61,6 @@ export interface IParadisBotInboxEntry {
 	readonly at: number;
 }
 
-/** 届かなかった伝言の記録の印の理由（{@link IParadisBotGroupsPort.markUndelivered}。打ち込み方式のときのもの）。 */
-export type ParadisBotMessageUndeliveredReason = 'refused' | 'unreachable' | 'unknown';
-
-/** ウィンドウの `deliver` の戻り値（グループの機能の中の約束。伝言の道具は呼ばない）。 */
-export type ParadisBotGroupDeliverResult =
-	| { readonly kind: 'queued' }
-	| { readonly kind: 'refused'; readonly reason: string };
-
 /** shared process のグループの機能の口（グループのレーンが差し込む）。 */
 export interface IParadisBotGroupsPort {
 	/** その Bot が入っているグループ。 */
@@ -88,13 +74,6 @@ export interface IParadisBotGroupsPort {
 	inboxOf(botId: string): Promise<readonly IParadisBotInboxEntry[]>;
 	/** その Bot が読んだ伝言を既読にする（その Bot の受け箱にある伝言だけ）。 */
 	markRead(botId: string, recordIds: readonly string[]): Promise<void>;
-	/**
-	 * 記録した伝言が届かなかった、と記録の印を直す（打ち込み方式のときの口。伝言の道具はもう呼ばないが、グループの
-	 * 機能が持っているので型だけ残す。省略できる）。
-	 */
-	markUndelivered?(groupId: string, recordId: string, reason?: ParadisBotMessageUndeliveredReason): Promise<void>;
-	/** 記録した伝言を順番待ちに入れた、と記録の印を付ける（同上。伝言の道具は呼ばない。省略できる）。 */
-	markQueued?(groupId: string, recordId: string): Promise<void>;
 }
 
 export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
