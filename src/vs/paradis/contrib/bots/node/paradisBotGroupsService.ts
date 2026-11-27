@@ -25,7 +25,7 @@ import {
 	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupMarkUndelivered, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
 } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsSnapshot } from '../common/paradisBotGroupsApi.js';
-import { IParadisBotGroupsPort } from '../common/paradisBotMessages.js';
+import { IParadisBotGroupsPort, ParadisBotMessageUndeliveredReason } from '../common/paradisBotMessages.js';
 import { ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 import { paradisBotsDataFolder } from './paradisBotsStore.js';
 
@@ -145,10 +145,10 @@ export class ParadisBotGroupsService extends Disposable {
 		return this.apply(paradisBotGroupAppendRecord(this.state, groupId, input, this.now()));
 	}
 
-	/** Bot 同士の伝言の記録に「届けられなかった」の印を付ける（伝言の道具が届けに失敗した後）。 */
-	async markUndelivered(groupId: string, recordId: string): Promise<ParadisBotsServiceResult<IParadisBotGroupRecord>> {
+	/** Bot 同士の伝言の記録に、届かなかった理由の印を付ける（伝言の道具が届けに失敗した後）。 */
+	async markUndelivered(groupId: string, recordId: string, reason?: ParadisBotMessageUndeliveredReason): Promise<ParadisBotsServiceResult<IParadisBotGroupRecord>> {
 		await this.ready;
-		return this.apply(paradisBotGroupMarkUndelivered(this.state, groupId, recordId));
+		return this.apply(paradisBotGroupMarkUndelivered(this.state, groupId, recordId, reason));
 	}
 
 	private async apply<T>(result: ParadisBotGroupsResult<T>): Promise<ParadisBotsServiceResult<T>> {
@@ -175,7 +175,7 @@ export class ParadisBotGroupsService extends Disposable {
 
 /**
  * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返し、
- * `markUndelivered` で同じ文字列を受ける。
+ * `markUndelivered` で同じ文字列と届かなかった理由を受ける。
  */
 export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered'>): IParadisBotGroupsPort {
 	return {
@@ -184,8 +184,8 @@ export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsServic
 			const result = await service.appendRecord(groupId, { kind: record.kind, from: record.from, to: [record.to], text: record.text });
 			return result.ok ? { ok: true, recordId: String(result.value.id) } : { ok: false, message: result.message };
 		},
-		markUndelivered: async (groupId, recordId) => {
-			await service.markUndelivered(groupId, recordId);
+		markUndelivered: async (groupId, recordId, reason) => {
+			await service.markUndelivered(groupId, recordId, reason);
 		},
 	};
 }

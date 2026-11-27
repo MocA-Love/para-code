@@ -14,6 +14,7 @@
 // 上の 1 行から名指しで送る）で始め、後で部屋のページ（案 A）でも同じ台帳と記録を使う。
 
 import { isRecord } from '../../../common/paradisGuards.js';
+import type { ParadisBotMessageUndeliveredReason } from './paradisBotMessages.js';
 
 /** 保存の版。今より大きい版のファイルは読み取り専用で開く。 */
 export const PARADIS_BOT_GROUPS_VERSION = 1;
@@ -65,13 +66,17 @@ export interface IParadisBotGroupRecord {
 	readonly from: string;
 	/**
 	 * 宛先の Bot の id。あなたの `sent` は実際に届いた Bot だけを入れる。Bot 同士の伝言（`asked`・`told`）は道具が届ける前に
-	 * 書くので宛先を入れ、届けられなかったら {@link undelivered} が付く。
+	 * 書くので宛先を入れ、届かなかったら {@link undelivered} にその理由が付く。
 	 */
 	readonly to: readonly string[];
 	readonly text: string;
 	readonly at: number;
-	/** Bot 同士の伝言を届けられなかった（伝言の道具が届けに失敗した後に {@link paradisBotGroupMarkUndelivered} で付ける）。 */
-	readonly undelivered?: true;
+	/**
+	 * Bot 同士の伝言が届かなかった理由（伝言の道具が届けに失敗した後に {@link paradisBotGroupMarkUndelivered} で付ける）。
+	 * `refused` は宛先が受け取らなかった（作業中など）、`unreachable` は宛先のウィンドウにつながらず届けられなかった、
+	 * `unknown` は時間切れ・中断で届いたか分からない。
+	 */
+	readonly undelivered?: ParadisBotMessageUndeliveredReason;
 }
 
 export interface IParadisBotGroupsState {
@@ -212,20 +217,22 @@ export function paradisBotGroupAppendRecord(state: IParadisBotGroupsState, group
 	return { ok: true, state: { ...state, records: records.slice(Math.max(0, records.length - PARADIS_BOT_GROUP_LIMITS.records)), nextRecordId: state.nextRecordId + 1 }, value: record };
 }
 
+export const PARADIS_BOT_GROUP_UNDELIVERED_REASONS: readonly ParadisBotMessageUndeliveredReason[] = ['refused', 'unreachable', 'unknown'];
+
 /**
- * Bot 同士の伝言の記録に「届けられなかった」の印を付ける。記録の id は伝言の道具の口では文字列なので、整数に戻せない値・
+ * Bot 同士の伝言の記録に、届かなかった理由の印を付ける（理由が無ければ `unreachable`）。記録の id は伝言の道具の口では文字列なので、整数に戻せない値・
  * 見つからない記録（上限で既に捨てた分を含む）・別のグループの記録・あなたの `sent`・既に印のある記録は、変えずに断る。
  */
-export function paradisBotGroupMarkUndelivered(state: IParadisBotGroupsState, groupId: string, recordId: string): ParadisBotGroupsResult<IParadisBotGroupRecord> {
+export function paradisBotGroupMarkUndelivered(state: IParadisBotGroupsState, groupId: string, recordId: string, reason: ParadisBotMessageUndeliveredReason = 'unreachable'): ParadisBotGroupsResult<IParadisBotGroupRecord> {
 	if (!writable(state)) {
 		return refuse('read_only', READ_ONLY);
 	}
 	const id = /^[1-9]\d{0,15}$/u.test(recordId) ? Number(recordId) : undefined;
 	const record = id !== undefined && Number.isSafeInteger(id) ? state.records.find(existing => existing.id === id && existing.groupId === groupId) : undefined;
-	if (record === undefined || record.kind === 'sent' || record.undelivered === true) {
+	if (record === undefined || record.kind === 'sent' || record.undelivered !== undefined || !PARADIS_BOT_GROUP_UNDELIVERED_REASONS.includes(reason)) {
 		return refuse('not_found', 'There is no such message.');
 	}
-	const marked: IParadisBotGroupRecord = { ...record, undelivered: true };
+	const marked: IParadisBotGroupRecord = { ...record, undelivered: reason };
 	return { ok: true, state: { ...state, records: state.records.map(existing => existing === record ? marked : existing) }, value: marked };
 }
 
@@ -366,14 +373,18 @@ export function paradisBotGroupDeliverRefusal(input: {
 	return input.takeRate() ? undefined : 'rate_limited';
 }
 
-/** 伝言の道具へ返す、断った理由の英文（エージェントが読む）。 */
+/**
+ * 伝言の道具へ返す、断った理由の英文（エージェントが読む）。道具は `"…" did not take the message now (理由). Send it again
+ * later if it still matters; each try counts toward your limit.` の括弧に入れるので、理由だけを小文字で始めて書く
+ * （「後で送る」は道具の文が言う。上限だけは止まって利用者に伝えるよう重ねて言う）。
+ */
 export function paradisBotGroupDeliverRefusalMessage(refusal: ParadisBotGroupDeliverRefusal): string {
 	switch (refusal) {
-		case 'not_a_member': return 'You can only send messages to other bots in a group you are in.';
-		case 'self': return 'You cannot send a message to yourself.';
-		case 'not_running': return 'That bot is not running, or its chat is no longer open in the Para Code window it was in. Send the message again after a while, or tell your owner.';
-		case 'busy': return 'That bot is busy now. Send the message again after a while.';
-		case 'rate_limited': return `The limit has been reached: that bot takes up to ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} messages a minute. Do not keep the exchange going: stop, and tell your owner what you wanted to say.`;
+		case 'not_a_member': return 'you can only send messages to other bots in a group you are in';
+		case 'self': return 'you cannot send a message to yourself';
+		case 'not_running': return 'that bot is not running, or its chat is no longer open in this Para Code window';
+		case 'busy': return 'that bot is busy now';
+		case 'rate_limited': return `you reached the limit: that bot takes up to ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} bot messages a minute. Do not keep the exchange going: stop, and tell your owner what you wanted to say`;
 	}
 }
 
@@ -405,7 +416,8 @@ function storedRecord(value: unknown, groups: ReadonlySet<string>): IParadisBotG
 		return undefined;
 	}
 	const record: IParadisBotGroupRecord = { id: value.id, groupId: value.groupId, kind, from: value.from, to: value.to, text: value.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: value.at };
-	return value.undelivered === true && kind !== 'sent' ? { ...record, undelivered: true } : record;
+	const undelivered = PARADIS_BOT_GROUP_UNDELIVERED_REASONS.find(candidate => candidate === value.undelivered);
+	return undelivered !== undefined && kind !== 'sent' ? { ...record, undelivered } : record;
 }
 
 /**
