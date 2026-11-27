@@ -587,9 +587,7 @@ export class ParadisAgentChatView extends Disposable {
 		const answeredHere = interaction?.kind === 'approval' && this.approvalStates.get(interaction.id)?.sent === true;
 		const codexQuestion = state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
 		this.composer.setBlockedReason(state === undefined
-			? this.guide() !== undefined
-				? localize('paradisAgentChat.blockedWaitingSession', "会話が始まると話しかけられます")
-				: localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません")
+			? this.noSessionBlockedReason()
 			: state.agentExited
 				? localize('paradisAgentChat.blockedExited', "エージェントは終了しました。ターミナルに戻って確かめてください")
 				: codexQuestion
@@ -1810,6 +1808,17 @@ export class ParadisAgentChatView extends Disposable {
 			return { title: localize('paradisAgentChat.exitedBand', "エージェントは終了しました"), detail: localize('paradisAgentChat.exitedBandDetail', "ターミナルで確かめてください") };
 		}
 		return codexQuestion ? { title: localize('paradisAgentChat.codexQuestionBand', "Codex が質問しています"), detail: localize('paradisAgentChat.codexQuestionBandDetail', "ターミナルで答えてください") } : undefined;
+	}
+
+	/** 会話が無いときに送れない理由（呼ぶ側の案内が送れると言えば、送れる）。 */
+	private noSessionBlockedReason(): string | undefined {
+		const guide = this.guide();
+		if (guide?.sendable === true) {
+			return undefined;
+		}
+		return guide !== undefined
+			? localize('paradisAgentChat.blockedWaitingSession', "会話が始まると話しかけられます")
+			: localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません");
 	}
 
 	private guide(): IParadisAgentChatGuide | undefined {

@@ -169,7 +169,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly watcherId = generateUuid();
 	private readonly sessions = this._register(new DisposableMap<string, ParadisAgentChatSession>());
 	/** 会話の写しごとの、見出しの変化の見張り。 */
-	private readonly headerWatches = this._register(new DisposableMap<string, ParadisAgentChatHeaderWatch>());
+	private readonly headerWatches = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly _onDidChangeHeader = this._register(new Emitter<number>());
 	readonly onDidChangeHeader = this._onDidChangeHeader.event;
 	/** 見出しを畳んだ側の台帳（ペインが閉じた・チャット表示が閉じた・会話が替わったら戻す）。 */
@@ -559,13 +559,15 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		if (session === undefined) {
 			session = new ParadisAgentChatSession(token, this.source, this.logService);
 			this.sessions.set(token, session);
-			const watch = new ParadisAgentChatHeaderWatch(session);
-			watch.onDidChange(() => {
+			const watch = new DisposableStore();
+			const header = watch.add(new ParadisAgentChatHeaderWatch(session));
+			// 購読も見張りと一緒に捨てる（捨てないと会話の写しを捨てた後も残る）
+			watch.add(header.onDidChange(() => {
 				const instanceId = this.paneTokenService.getInstanceForToken(token);
 				if (instanceId !== undefined) {
 					this._onDidChangeHeader.fire(instanceId);
 				}
-			});
+			}));
 			this.headerWatches.set(token, watch);
 		}
 		return session;

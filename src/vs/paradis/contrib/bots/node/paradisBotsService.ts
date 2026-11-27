@@ -51,7 +51,7 @@ import {
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
 import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
-import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotSleepingChat, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisAgentCommandTemplate, paradisResolveAgentLaunchFlags } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotResumeArgs, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
@@ -65,6 +65,8 @@ import { PARADIS_BOT_AGENTS_FILE, PARADIS_BOT_MEMORY_FILE, PARADIS_BOT_SOUL_FILE
 import { IParadisBotMemorySnapshot, IParadisBotMemoryUndo, ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
 import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, PARADIS_BOT_SETUP_STALL_MS, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
 import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
+import { IParadisBotTranscriptRoots, paradisReadBotSleepingChat } from './paradisBotSleepingChat.js';
+import { paradisClaudeConfigDir, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 
 /** 連続した変更をまとめてから知らせる間隔。 */
 const CHANGE_DELAY = 50;
@@ -794,6 +796,21 @@ export class ParadisBotsService extends Disposable {
 		}
 		this._onDidRequestStop.fire({ botId, paneHashes });
 		return true;
+	}
+
+	/** 眠っている Bot の前の会話を、会話の記録のファイルから読む（エージェントは起こさない）。ペインがある・続けられる会話が無ければ undefined。 */
+	async sleepingChat(botId: string): Promise<IParadisBotSleepingChat | undefined> {
+		const bot = this.getBot(botId);
+		const record = this.panes.chatSessionOf(botId);
+		if (bot === undefined || record === undefined || record.agent !== bot.agent || this.paneHashesOf(botId, 'chat').length > 0) {
+			return undefined;
+		}
+		return paradisReadBotSleepingChat(record, this.transcriptRoots());
+	}
+
+	/** 会話の記録の置き場（テストで差し替える）。 */
+	protected transcriptRoots(): IParadisBotTranscriptRoots {
+		return { claudeConfigDir: paradisClaudeConfigDir(), codexHomes: paradisCodexHomes() };
 	}
 
 	/** その Bot のペインのトークンの SHA-256（結び付いているものと、保存してまだ現れていないもの）。`purpose` を渡せばその用途だけ。 */

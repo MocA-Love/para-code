@@ -50,6 +50,8 @@ import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browse
 import { isEqualOrParent } from '../../../../base/common/extpath.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
+import { ParadisBotSleepingChatEditorInput } from '../browser/paradisBotSleepingChatEditor.js';
+import '../browser/paradisBotSleepingChatEditor.contribution.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { paradisBotFirstPrompt } from '../common/paradisBotTools.js';
 import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
@@ -67,7 +69,7 @@ const opening = new Set<string>();
 
 /** 開いた結果。`running` はもうこのウィンドウで動いていた（前に出したかは `focused`）。 */
 export type ParadisOpenBotResult =
-	| { readonly ok: true; readonly state: 'running' | 'started'; readonly focused: boolean }
+	| { readonly ok: true; readonly state: 'running' | 'started' | 'sleeping'; readonly focused: boolean }
 	| { readonly ok: false; readonly error: string };
 
 /** 終わったエージェントのペインを閉じてから、結び付けが外れるのを待つ上限。 */
@@ -90,6 +92,10 @@ async function paradisRevealBotPane(
 export interface IParadisOpenBotOptions {
 	/** 作った直後の Bot。起こして、最初の挨拶をさせる（眠った会話があれば渡さない）。 */
 	readonly greet?: boolean;
+	/** 利用者が帯・グループの画面から開いた。眠っていれば起こさず、前の会話を読むだけの吹き出しで見せる。 */
+	readonly read?: boolean;
+	/** 眠った会話の入力欄から話しかけた文。続けて起こした会話の最初の指示にする。 */
+	readonly prompt?: string;
 }
 
 /**
@@ -108,6 +114,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const hostService = accessor.get(IHostService);
 	const environmentService = accessor.get(IWorkbenchEnvironmentService);
 	const agentChatService = accessor.get(IParadisAgentChatService);
+	const editorService = accessor.get(IEditorService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -137,6 +144,11 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		// 専用フォルダはこの PC にある。SSH のウィンドウで開くと、接続先のシェルでそのパスを cwd にしてしまう
 		if (environmentService.remoteAuthority !== undefined) {
 			return { ok: false, error: 'remote' };
+		}
+		// 眠っている Bot を開いた: 起こさずに前の会話を読むだけの吹き出しで見せる（話しかけたときだけ起こす）
+		if (existing === undefined && options.read === true && !fromAgent && summary?.sleeping === true) {
+			await editorService.openEditor(ParadisBotSleepingChatEditorInput.getOrCreate(instantiationService, botId), { pinned: true });
+			return { ok: true, state: 'sleeping', focused: true };
 		}
 		let launch = await botsService.requestLaunch(botId, 'chat');
 		// 会話は 1 つの Bot に 1 つだけ。利用者が開いたときは、開いているウィンドウに前へ出してもらう。どのウィンドウも
@@ -190,22 +202,26 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({ id: PARADIS_BOTS_OPEN_COMMAND, title: localize2('paradisBots.open', "Open Bot"), f1: false });
 	}
-	async run(accessor: ServicesAccessor, botId: unknown, options?: unknown): Promise<void> {
+	async run(accessor: ServicesAccessor, botId: unknown, options?: unknown): Promise<boolean> {
 		if (typeof botId !== 'string' || botId.length === 0) {
-			return;
+			return false;
 		}
 		const notificationService = accessor.get(INotificationService);
-		const greet = typeof options === 'object' && options !== null && (options as IParadisOpenBotOptions).greet === true;
-		const result = await paradisOpenBot(accessor, botId, false, greet ? { greet } : {});
+		const given = typeof options === 'object' && options !== null ? options as IParadisOpenBotOptions : {};
+		const result = await paradisOpenBot(accessor, botId, false, {
+			...(given.greet === true ? { greet: true } : {}),
+			...(given.read === true ? { read: true } : {}),
+			...(typeof given.prompt === 'string' ? { prompt: given.prompt } : {}),
+		});
 		if (!result.ok && result.error === 'already_open') {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.alreadyOpen', "この Bot は別のウィンドウで開いています。そのウィンドウに出しました。"));
-			return;
+			return false;
 		}
 		if (!result.ok && result.error === 'launching') {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.launching', "この Bot は起動しているところです。"));
-			return;
+			return false;
 		}
 		if (!result.ok) {
 			notificationService.warn(result.error === 'remote'
@@ -214,6 +230,8 @@ registerAction2(class extends Action2 {
 				// allow-any-unicode-next-line
 				: localize('paradisBots.openFailed', "Bot を起動できませんでした。もう一度試してください。"));
 		}
+		// 開けたか（眠った会話のタブは、起こせたときだけ閉じる）
+		return result.ok;
 	}
 });
 

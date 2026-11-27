@@ -75,7 +75,10 @@ suite('Paradis bot pane hide on close', () => {
 			paradisBotFirstPrompt({ greet: true }, false),
 			paradisBotFirstPrompt({ greet: true }, true),
 			paradisBotFirstPrompt({}, false),
-		], [PARADIS_BOT_GREETING_PROMPT, undefined, undefined]);
+			// 眠った会話の入力欄から話しかけた文は、続けて起こした会話の最初の指示にする（空白だけなら渡さない）
+			paradisBotFirstPrompt({ prompt: '今夜は雨降る？' }, true),
+			paradisBotFirstPrompt({ prompt: '  ' }, true),
+		], [PARADIS_BOT_GREETING_PROMPT, undefined, undefined, '今夜は雨降る？', undefined]);
 	});
 
 	test('何もしない 30 分の停止は、見えている・フォーカスがある・打ちかけがある・最近出力のあったペインを止めない。数え始めは見えなくなった時刻と最後の出力の遅い方', () => {
