@@ -254,6 +254,11 @@ export class ParadisBotsService extends Disposable {
 		return botId !== undefined ? this.getBot(botId) : undefined;
 	}
 
+	/** Bot の機能がオンで、そのペインが Bot のペインか（ほかの道具が Bot のペインを見分けるため）。 */
+	isBotPane(paneToken: string): boolean {
+		return this.enabled() && paneToken.length > 0 && this.botOfPane(paneToken) !== undefined;
+	}
+
 	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
 	private restorePane(paneToken: string): boolean {
 		if (!this.loaded || this.panes.botOf(paneToken) !== undefined) {

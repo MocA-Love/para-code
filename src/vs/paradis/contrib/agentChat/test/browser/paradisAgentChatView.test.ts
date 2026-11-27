@@ -344,6 +344,14 @@ suite('ParadisAgentChatView', () => {
 		});
 	}));
 
+	test('folds the header when asked, keeping the conversation and the input', async () => {
+		const { view, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const chat = container.querySelector<HTMLElement>('.paradis-agent-chat')!;
+		view.setHeaderHidden(true);
+		const hidden = chat.classList.contains('header-hidden');
+		view.setHeaderHidden(false);
+		assert.deepStrictEqual({ hidden, shownAgain: !chat.classList.contains('header-hidden'), header: container.querySelector('.paradis-agent-chat-header-agent')?.textContent }, { hidden: true, shownAgain: true, header: 'Claude Code' });
+	});
 	test('asks Claude Code whether a screen like /model is open, shows the band while it is, and shows nothing when the mod cannot tell', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		let open: boolean | undefined = true;
 		const asked: string[] = [];

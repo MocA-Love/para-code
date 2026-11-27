@@ -17,7 +17,8 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAntigravityMcpServerEntry, IParadisMcpStdioBridgeLocation, inspectParadisMcpTomlSection, paradisAntigravityMcpServerEntry, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertAntigravityMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAntigravityMcpEntryToRelocate, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
+import { PARADIS_ASK_HUMAN_TOOL } from '../../humanAsk/common/paradisAskHumanTool.js';
+import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAddCodexToolApproval, paradisAntigravityMcpEntryToRelocate, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -720,9 +721,11 @@ export class ParadisMcpSetupController {
 			if (tried.includes(key)) {
 				return;
 			}
-			// 試す前に印を残す（途中で落ちても、次の起動で同じことを繰り返さない）。
+			// 試す前に印を残す（途中で落ちても、次の起動で同じことを繰り返さない）。その間にボタンの経路が残した印を
+			// 消さないよう、書く前に読み直して合わせる
 			tried.push(key);
-			await this.writeUpgradeMarker(tried);
+			const latest = await this.readUpgradeMarker();
+			await this.writeUpgradeMarker([...latest.filter(item => !tried.includes(item)), ...tried]);
 			await run();
 		};
 		try {
@@ -767,6 +770,30 @@ export class ParadisMcpSetupController {
 			} catch {
 				this.options.log('Codex MCP tool timeout upgrade failed');
 			}
+			try {
+				// セットアップ済みの人に、人に聞く道具の許可を 1 回だけ足す（後で利用者が消したら足し直さない）
+				const configPath = join(codexHome, 'config.toml');
+				const snapshot = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
+				const approved = snapshot.exists ? paradisAddCodexToolApproval(snapshot.text, gatewayPort, PARADIS_ASK_HUMAN_TOOL) : undefined;
+				if (approved !== undefined) {
+					await attempt(this.codexApprovalMarker(configPath), () => writeConfigAtomic(configPath, snapshot, approved, this.options.configReadFileSystem));
+				}
+			} catch {
+				this.options.log('Codex MCP tool approval upgrade failed');
+			}
+		}
+	}
+
+	/** 人に聞く道具の許可を Codex の設定へ足した（足そうとした）印。起動時の入れ直しとボタンの経路で同じものを使う。 */
+	private codexApprovalMarker(configPath: string): string {
+		return `codex:${configPath}:approve:${PARADIS_ASK_HUMAN_TOOL}`;
+	}
+
+	/** 印を 1 つ足す（もうあれば何もしない）。書けなくても登録そのものは成功のまま返す（書けないことは writeUpgradeMarker が記録する）。 */
+	private async rememberUpgradeAttempt(key: string): Promise<void> {
+		const tried = await this.readUpgradeMarker();
+		if (!tried.includes(key)) {
+			await this.writeUpgradeMarker([...tried, key]);
 		}
 	}
 
@@ -1083,12 +1110,21 @@ export class ParadisMcpSetupController {
 				if (inspectParadisMcpTomlSection(original.text) === 'ambiguous') {
 					throw new ParadisCodexConfigError('ambiguous', 'Ambiguous Codex MCP configuration');
 				}
-				const content = paradisUpsertCodexMcpToml(original.text, gatewayPort);
+				const upserted = paradisUpsertCodexMcpToml(original.text, gatewayPort);
+				// 人に聞く道具（ask_human）だけは Codex の許可のメニューを出さない（既にその道具の表があれば触らない）。足すのは
+				// 利用者がボタンで頼んだ既定のホームだけ。裏で動く切り替え先のホームへの反映（アカウントの追加・ログインのたび）
+				// では足さず、起動時の入れ直し（upgradeToolTimeouts、ホームごとに 1 回だけ）に任せる（利用者が消した表を足し直さない）
+				const approved = home === 'primary' ? paradisAddCodexToolApproval(upserted, gatewayPort, PARADIS_ASK_HUMAN_TOOL) : undefined;
+				const content = approved ?? upserted;
 				if (content === original.text) {
 					return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
 				}
 				stage = 'write';
 				await writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem);
+				if (approved !== undefined) {
+					// 起動時の入れ直しと同じ印を残す（ボタンで足した表を利用者が消したら、次の起動で足し直さない）
+					await this.rememberUpgradeAttempt(this.codexApprovalMarker(configPath));
+				}
 				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'success' }] };
 			} catch (error) {
 				const kind = codexConfigFailureKind(stage, error);
