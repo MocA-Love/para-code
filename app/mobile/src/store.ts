@@ -31,6 +31,8 @@ import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgent
 import { agentHasModelControl, agentHasPanel, agentInterruptsViaApi } from './agentKind.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 import { parsePcDoNotDisturb, type PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
+import { parseHumanAskSummary, type HumanAskSummary } from './features/humanAsks/humanAsks.js';
+import { parseMobileBots, parseTerminalBotId, type MobileBot } from './features/bots/bots.js';
 import { VoiceUsageUnsupportedError, parseVoiceUsageResult, type VoiceUsageResult } from './features/usage/voiceUsageWire.js';
 import { PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, paradisParseAgentApprovalRequest, paradisSanitizeApprovalInstruction, paradisParseApprovalSuggestionScope, type IParadisAgentApprovalRequest, type ParadisAgentApprovalSuggestionScope } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalRequest.js';
 import { paradisClampVoiceGainDb, paradisDecodeVoiceStreamChunk, paradisIsVoiceStreamChunk, paradisParseVoiceStreamEnd, paradisParseVoiceStreamStart } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
@@ -84,7 +86,8 @@ export interface WorkspaceState {
 	workspaces: { id: string; sourceId: string; windowId: number; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus; note?: WorkspaceNoteSummary; pinned?: boolean }[];
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
-	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
+	// botId: そのペインが Bot のペインなら Bot の id（`bots.page.v1` の PC で、PC の設定で Bot がオンの間だけ）。
+	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number; botId?: string }[];
 	// PC本体のバッテリー（旧PCでは未配信）。Live Activityのバッテリーピル表示に使う。levelは0〜100。
 	battery?: { level: number; charging: boolean };
 	// PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。ドロワーのPCカードに出す。
@@ -105,6 +108,10 @@ export interface WorkspaceState {
 	 * PC で切り替えても、スマホから切り替えても、期限が来ても、PC が送り直す。
 	 */
 	doNotDisturb?: PcDoNotDisturb;
+	/** 要対応に出す「人が答えるもの」の台帳の件数と印（`human-ask.v1` の PC だけ。0 件のときは届かない）。 */
+	humanAsks?: HumanAskSummary;
+	/** Bot の一覧（`bots.page.v1` の PC で、PC の設定で Bot がオンの間だけ。並びは PC の台帳のまま）。 */
+	bots?: MobileBot[];
 }
 
 /** PC が `id` を付けずに scm / fs で送ってくるメッセージ（`MobileController.onPcMessage`）。 */
@@ -1029,6 +1036,8 @@ export interface AgentChatMessage {
 	options?: AgentQuestionOption[];
 	/** kind==='question': 複数選択可能な質問か（TUIではトグル選択 + Enter確定）。 */
 	multiSelect?: boolean;
+	/** kind==='question': false なら自分で書いて答えられない（「その他」を出さない）。要対応の台帳の質問だけが付ける。 */
+	allowFreeText?: boolean;
 	/** kind==='question' | 'tool_result': 対応付け用ID。同IDの tool_result が後続にあれば回答済み。 */
 	toolUseId?: string;
 	/** kind==='question': 同一 AskUserQuestion 呼び出しのグループキー（複数質問の集約表示用）。 */
@@ -5334,6 +5343,25 @@ export class MobileController {
 					incoming.doNotDisturb = doNotDisturb;
 				} else {
 					delete incoming.doNotDisturb;
+				}
+				// 台帳の件数と印も後から足した任意項目。形が合わなければ「0 件」と同じにする。
+				const humanAsks = parseHumanAskSummary((incoming as { humanAsks?: unknown }).humanAsks);
+				if (humanAsks !== undefined) {
+					incoming.humanAsks = humanAsks;
+				} else {
+					delete incoming.humanAsks;
+				}
+				// Bot の一覧とペインの Bot も後から足した任意項目。形の合わない Bot・botId は捨てる。
+				const bots = parseMobileBots((incoming as { bots?: unknown }).bots);
+				if (bots !== undefined) {
+					incoming.bots = bots;
+				} else {
+					delete incoming.bots;
+				}
+				for (const terminal of incoming.terminals) {
+					if (terminal.botId !== undefined && parseTerminalBotId(terminal.botId) === undefined) {
+						delete terminal.botId;
+					}
 				}
 				this.liveFsUploadEncoding = incoming.fsUploadEncoding === FS_BINARY_UPLOAD_ENCODING ? FS_BINARY_UPLOAD_ENCODING : undefined;
 				// 有効なv3 Stateそのものがpresenceより強い生存証拠。同一revisionでも

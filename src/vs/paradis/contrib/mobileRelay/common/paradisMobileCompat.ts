@@ -192,6 +192,12 @@ export const ParadisMobileCapability = {
 	 */
 	AgentQueuedSendConfirm: 'agent.queued-send-confirm.v1',
 	/**
+	 * 「人が答えるもの」の台帳の 1 件をスマホの要対応に出す（`paradisMobileHumanAsks.ts`。PC だけが広告する）。Desktop State の
+	 * 任意項目 `humanAsks`（件数と印だけ）と、fs の `humanAsks`（一覧）・`humanAskAnswer`（opId 付きで答える）。中身は要求した
+	 * アプリにだけ返るので、古いアプリには届かない。アプリは広告している PC にだけ要求し、件数を要対応に足す。
+	 */
+	HumanAsk: 'human-ask.v1',
+	/**
 	 * fs の `voiceUsage`（読み上げの Aivis・ElevenLabs の使用量。キーは送らず、キーの印 `keyId` だけを付ける。
 	 * `paradisMobileVoiceUsage.ts`）。
 	 */
@@ -370,7 +376,16 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsFindDir,
 	ParadisMobileCapability.AgentLiveAppendV2,
 	ParadisMobileCapability.BotsPage,
+	ParadisMobileCapability.HumanAsk,
 ];
+
+/**
+ * State で広告する capability。設定でオン・オフする機能（`bots.page.v1` は `paradis.bots.enabled`）は、オンの間だけ
+ * 広告する（オフの PC に Bot の画面を出させない。設定が変わると State が送り直され、広告も変わる）。
+ */
+export function paradisMobilePcCapabilities(options: { readonly botsPage: boolean }): readonly string[] {
+	return options.botsPage ? PARADIS_MOBILE_PC_CAPABILITIES : PARADIS_MOBILE_PC_CAPABILITIES.filter(capability => capability !== ParadisMobileCapability.BotsPage);
+}
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
 export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [

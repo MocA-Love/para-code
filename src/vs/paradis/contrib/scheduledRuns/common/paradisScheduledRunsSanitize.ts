@@ -24,7 +24,7 @@ const REASONS: ReadonlySet<string> = new Set<ParadisScheduledRunReason>([
 	'dailyLimit', 'overlap', 'globalConcurrency', 'globalDailyLimit', 'tooSoon', 'missedTooOld', 'noWindowTooOld', 'disabled', 'deleted', 'appRestarted',
 	'timeoutWhileWaiting', 'timeoutNoStatus', 'timeout', 'terminalClosed', 'windowClosed', 'userStopped',
 	'repositoryMissing', 'launchFailed', 'heartbeatLost', 'precheckFailed', 'precheckUntrusted',
-	'botsOff', 'botPaused', 'botUnsupported', 'botMissed', 'botNoWindow', 'botBusy',
+	'botsOff', 'botPaused', 'botUnsupported', 'botMissed', 'botNoWindow', 'botBusy', 'botConcurrency', 'botDailyLimit', 'botsTurnedOff',
 ]);
 
 /** 記録に残す詳細文の上限。 */
