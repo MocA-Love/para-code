@@ -17,7 +17,7 @@
 
 import { localize } from '../../../../nls.js';
 import { isRecord } from '../../../common/paradisGuards.js';
-import { paradisNextCronOccurrence, paradisParseCron } from './paradisScheduleCron.js';
+import { IParadisScheduleFields, paradisCronToSchedulePreset, paradisNextCronOccurrence, paradisParseCron, paradisScheduleFieldsFromCron, paradisScheduleFieldsToCron, paradisSchedulePresetToCron, PARADIS_SCHEDULE_EVERY_HOURS } from './paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
 	IParadisScheduledRunRecord,
@@ -64,23 +64,31 @@ export function paradisBotPatrolGateReason(state: ParadisBotPatrolGateState): Pa
 
 // ---------- 時刻の形 ----------
 
-/** 見回りの間隔（時間）として選べる値。 */
-export const PARADIS_BOT_PATROL_INTERVAL_HOURS: readonly number[] = [1, 2, 3, 4, 6, 8, 12];
+/** 見回りの間隔（時間）として選べる値（汎用の定期実行の「数時間ごと」と同じ）。 */
+export const PARADIS_BOT_PATROL_INTERVAL_HOURS: readonly number[] = PARADIS_SCHEDULE_EVERY_HOURS;
 
-/** 画面で決める見回りの時刻（「4 時間ごと（8〜20 時）・平日だけ」の形）。 */
+/**
+ * 「時間帯の中で n 時間ごと」の形（「4 時間ごと（8〜20 時）・平日だけ」）。分の指定ができる前の見回りの画面が
+ * 作っていた形で、台帳に残っている式（`0 8-20/4 * * 1-5`）を読み替えて画面に戻すのに使う。
+ */
 export interface IParadisBotPatrolSchedule {
 	/** 何時間ごとか（{@link PARADIS_BOT_PATROL_INTERVAL_HOURS} のどれか）。 */
 	readonly everyHours: number;
-	/** 時間帯の始め（0〜23 時。この時刻ちょうどに 1 回目）。 */
+	/** 時間帯の始め（0〜23 時。この時刻の `minute` 分に 1 回目）。 */
 	readonly fromHour: number;
-	/** 時間帯の終わり（`fromHour`〜23 時。この時刻ちょうども含む）。 */
+	/** 時間帯の終わり（`fromHour`〜23 時。この時刻も含む）。 */
 	readonly toHour: number;
 	readonly weekdaysOnly: boolean;
+	/** 各回の分（0〜59）。無ければ 0（分を持たない前の形）。 */
+	readonly minute?: number;
 }
 
-/** Bot のページから見回りを作る・変えるときに送る値。 */
+/**
+ * Bot のページから見回りを作る・変えるときに送る値。`schedule` は cron 式（汎用の定期実行と同じ型の欄から作る）。
+ * 前の形（{@link IParadisBotPatrolSchedule}）も受け、cron 式に直して扱う。
+ */
 export interface IParadisBotPatrolInput {
-	readonly schedule: IParadisBotPatrolSchedule;
+	readonly schedule: string | IParadisBotPatrolSchedule;
 	/** 探すもの（無ければ空）。 */
 	readonly lookFor: string;
 	readonly enabled: boolean;
@@ -89,40 +97,107 @@ export interface IParadisBotPatrolInput {
 /** 新しい見回りの既定（設計のモックの「4 時間ごと（8〜20 時）・平日だけ」）。 */
 export const PARADIS_BOT_PATROL_DEFAULT_SCHEDULE: IParadisBotPatrolSchedule = { everyHours: 4, fromHour: 8, toHour: 20, weekdaysOnly: true };
 
+/** cron 式の長さの上限（チャネル越しに届いた式を確かめる）。 */
+const MAX_CRON_LENGTH = 200;
+
 function isHour(value: unknown): value is number {
 	return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 23;
 }
 
-/** チャネル越しに届いた時刻の形を確かめる。違えば undefined。 */
+function isMinute(value: unknown): value is number {
+	return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 59;
+}
+
+/** チャネル越しに届いた時間帯の形を確かめる。違えば undefined。 */
 export function paradisSanitizeBotPatrolSchedule(value: unknown): IParadisBotPatrolSchedule | undefined {
 	if (!isRecord(value)) {
 		return undefined;
 	}
-	const { everyHours, fromHour, toHour, weekdaysOnly } = value;
+	const { everyHours, fromHour, toHour, weekdaysOnly, minute } = value;
 	if (typeof everyHours !== 'number' || !PARADIS_BOT_PATROL_INTERVAL_HOURS.includes(everyHours)
 		|| !isHour(fromHour) || !isHour(toHour) || toHour < fromHour
-		|| typeof weekdaysOnly !== 'boolean') {
+		|| typeof weekdaysOnly !== 'boolean'
+		|| (minute !== undefined && !isMinute(minute))) {
 		return undefined;
 	}
-	return { everyHours, fromHour, toHour, weekdaysOnly };
+	return { everyHours, fromHour, toHour, weekdaysOnly, ...(minute !== undefined && minute !== 0 ? { minute } : {}) };
 }
 
-/** 時刻の形を cron 式にする（`0 8-20/4 * * 1-5`）。 */
+/**
+ * チャネル越しに届いた見回りの時刻を cron 式にする（式はそのまま、前の形は {@link paradisBotPatrolCron} で直す）。
+ * 読めなければ undefined。式が正しいか・間隔が短すぎないかは定義の検証（`paradisValidateScheduledRunDraft`）が見る。
+ */
+export function paradisBotPatrolScheduleInput(value: unknown): string | undefined {
+	if (typeof value === 'string') {
+		const expression = paradisSchedulePresetToCron({ kind: 'cron', expression: value });
+		return expression.length > 0 && expression.length <= MAX_CRON_LENGTH ? expression : undefined;
+	}
+	const schedule = paradisSanitizeBotPatrolSchedule(value);
+	return schedule !== undefined ? paradisBotPatrolCron(schedule) : undefined;
+}
+
+/** 時間帯の形を cron 式にする（`0 8-20/4 * * 1-5`）。 */
 export function paradisBotPatrolCron(schedule: IParadisBotPatrolSchedule): string {
 	const hours = schedule.fromHour === schedule.toHour ? `${schedule.fromHour}` : `${schedule.fromHour}-${schedule.toHour}/${schedule.everyHours}`;
-	return `0 ${hours} * * ${schedule.weekdaysOnly ? '1-5' : '*'}`;
+	return `${schedule.minute ?? 0} ${hours} * * ${schedule.weekdaysOnly ? '1-5' : '*'}`;
 }
 
-/** cron 式を時刻の形へ戻す（{@link paradisBotPatrolCron} が作った形だけ。ほかは undefined）。 */
+/** cron 式を時間帯の形へ戻す（{@link paradisBotPatrolCron} が作った形だけ。ほかは undefined）。 */
 export function paradisBotPatrolScheduleFromCron(expression: string): IParadisBotPatrolSchedule | undefined {
-	const match = /^0 (?<from>\d{1,2})(?:-(?<to>\d{1,2})\/(?<every>\d{1,2}))? \* \* (?<days>\*|1-5)$/.exec(expression);
+	const match = /^(?<minute>\d{1,2}) (?<from>\d{1,2})(?:-(?<to>\d{1,2})\/(?<every>\d{1,2}))? \* \* (?<days>\*|1-5)$/.exec(expression.trim().replace(/\s+/g, ' '));
 	if (!match?.groups) {
 		return undefined;
 	}
 	const fromHour = Number(match.groups.from);
 	const toHour = match.groups.to !== undefined ? Number(match.groups.to) : fromHour;
 	const everyHours = match.groups.every !== undefined ? Number(match.groups.every) : PARADIS_BOT_PATROL_DEFAULT_SCHEDULE.everyHours;
-	return paradisSanitizeBotPatrolSchedule({ everyHours, fromHour, toHour, weekdaysOnly: match.groups.days === '1-5' });
+	return paradisSanitizeBotPatrolSchedule({ everyHours, fromHour, toHour, weekdaysOnly: match.groups.days === '1-5', minute: Number(match.groups.minute) });
+}
+
+/** 見回りの時刻の欄の種類（汎用の定期実行の種類に、前の画面の「時間帯の中で n 時間ごと」を足したもの）。 */
+export type ParadisBotPatrolScheduleKind = IParadisScheduleFields['scheduleKind'] | 'window';
+
+/** 見回りの時刻の欄の値（Bot のページの設定のタブが持つ）。 */
+export interface IParadisBotPatrolScheduleFields extends Omit<IParadisScheduleFields, 'scheduleKind'> {
+	readonly scheduleKind: ParadisBotPatrolScheduleKind;
+	readonly fromHour: number;
+	readonly toHour: number;
+	readonly weekdaysOnly: boolean;
+}
+
+/**
+ * cron 式を見回りの欄の値へ戻す。読む順は「汎用の型 → 時間帯の形 → cron 式」（`0 8 * * 1-5` は「平日 8:00」と
+ * 「平日 8 時だけの時間帯」の両方に当たるので、汎用を先にする）。
+ */
+export function paradisBotPatrolFieldsFromCron(expression: string | undefined): IParadisBotPatrolScheduleFields {
+	const window = PARADIS_BOT_PATROL_DEFAULT_SCHEDULE;
+	const defaults: IParadisBotPatrolScheduleFields = {
+		scheduleKind: 'window', time: '09:00', dayOfWeek: 1, everyHours: window.everyHours, minute: 0, cron: paradisBotPatrolCron(window),
+		fromHour: window.fromHour, toHour: window.toHour, weekdaysOnly: window.weekdaysOnly,
+	};
+	if (expression === undefined) {
+		return defaults;
+	}
+	const generic = paradisScheduleFieldsFromCron(expression, { ...defaults, scheduleKind: 'cron' });
+	if (generic.scheduleKind !== 'cron') {
+		return { ...defaults, ...generic };
+	}
+	const range = paradisBotPatrolScheduleFromCron(expression);
+	if (range !== undefined) {
+		return { ...defaults, scheduleKind: 'window', everyHours: range.everyHours, minute: range.minute ?? 0, fromHour: range.fromHour, toHour: range.toHour, weekdaysOnly: range.weekdaysOnly, cron: generic.cron };
+	}
+	return { ...defaults, scheduleKind: 'cron', cron: generic.cron };
+}
+
+/** 見回りの欄の値を cron 式にする。時間帯の始めと終わりが逆なら undefined。 */
+export function paradisBotPatrolFieldsToCron(fields: IParadisBotPatrolScheduleFields): string | undefined {
+	if (fields.scheduleKind === 'window') {
+		if (fields.toHour < fields.fromHour) {
+			return undefined;
+		}
+		return paradisBotPatrolCron({ everyHours: fields.everyHours, fromHour: fields.fromHour, toHour: fields.toHour, weekdaysOnly: fields.weekdaysOnly, minute: Math.min(59, Math.max(0, Math.trunc(fields.minute) || 0)) });
+	}
+	return paradisScheduleFieldsToCron({ ...fields, scheduleKind: fields.scheduleKind });
 }
 
 /** 「探すもの」を保存する形にする（制御文字を落とし、前後の空白を除く）。長すぎれば undefined。 */
@@ -190,7 +265,7 @@ export interface IParadisBotPatrolView {
 	/** 見回りの定義（まだ作っていなければ無し）。 */
 	readonly definitionId?: string;
 	readonly enabled: boolean;
-	/** 時刻（画面で作った形でなければ無し。そのときは `schedule` の式を見せる）。 */
+	/** 時間帯の形（{@link paradisBotPatrolScheduleFromCron} に当たる式のときだけ）。画面の欄は `cron` から作る。 */
 	readonly schedule?: IParadisBotPatrolSchedule;
 	readonly cron?: string;
 	readonly lookFor: string;
@@ -229,7 +304,8 @@ export function paradisBotPatrolView(definition: IParadisScheduledRunDefinition 
 	const last = own.filter(run => !paradisIsActiveRunStatus(run.status)).sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt))[0];
 	const parsed = paradisParseCron(definition.schedule);
 	const nextRunAt = definition.enabled && gate === 'ok' && parsed.schedule ? paradisNextCronOccurrence(parsed.schedule, now) : undefined;
-	const schedule = paradisBotPatrolScheduleFromCron(definition.schedule);
+	// 汎用の型に当たる式（`30 9 * * 1-5` など）は時間帯の形にしない（読む順は paradisBotPatrolFieldsFromCron と同じ）
+	const schedule = paradisCronToSchedulePreset(definition.schedule).kind === 'cron' ? paradisBotPatrolScheduleFromCron(definition.schedule) : undefined;
 	return {
 		definitionId: definition.id,
 		enabled: definition.enabled,

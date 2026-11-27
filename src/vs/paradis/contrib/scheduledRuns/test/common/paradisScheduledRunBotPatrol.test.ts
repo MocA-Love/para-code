@@ -12,7 +12,10 @@ import { IParadisScheduledRunDefinition, IParadisScheduledRunRecord, paradisVali
 import {
 	paradisBotPatrolCron,
 	paradisBotPatrolDue,
+	paradisBotPatrolFieldsFromCron,
+	paradisBotPatrolFieldsToCron,
 	paradisBotPatrolPrompt,
+	paradisBotPatrolScheduleInput,
 	paradisBotPatrolScheduleFromCron,
 	paradisBotPatrolView,
 	paradisSanitizeBotPatrolLookFor,
@@ -66,6 +69,51 @@ suite('Paradis bot patrol schedule', () => {
 			],
 			foreign: [undefined, undefined],
 			bad: [undefined, undefined, undefined, undefined, undefined],
+		});
+	});
+
+	test('分を持つ時間帯の形と、汎用の型・cron 式の欄への読み替え（触らずに保存したら式は変わらない）', () => {
+		const stored = ['0 8-20/4 * * 1-5', '30 8-20/4 * * *', '0 8 * * 1-5', '45 9 * * *', '15 18 * * 3', '15 */3 * * *', '0 * * * *', '*/30 9-17 * * 1-5'];
+		const fields = stored.map(expression => paradisBotPatrolFieldsFromCron(expression));
+		assert.deepStrictEqual({
+			kinds: fields.map(field => field.scheduleKind),
+			window: [fields[0], fields[1]].map(field => [field.everyHours, field.fromHour, field.toHour, field.weekdaysOnly, field.minute]),
+			times: [fields[2].time, fields[3].time, [fields[4].time, fields[4].dayOfWeek], [fields[5].everyHours, fields[5].minute]],
+			unchanged: fields.map(field => paradisBotPatrolFieldsToCron(field)),
+			defaults: paradisBotPatrolFieldsToCron(paradisBotPatrolFieldsFromCron(undefined)),
+			reversed: paradisBotPatrolFieldsToCron({ ...fields[0], fromHour: 20, toHour: 8 }),
+			minuteInWindow: paradisBotPatrolFieldsToCron({ ...fields[0], minute: 30 }),
+			input: [
+				paradisBotPatrolScheduleInput('  30   9 * * 1-5 '),
+				paradisBotPatrolScheduleInput(PARADIS_BOT_PATROL_DEFAULT_SCHEDULE),
+				paradisBotPatrolScheduleInput({ ...PARADIS_BOT_PATROL_DEFAULT_SCHEDULE, minute: 15 }),
+				paradisBotPatrolScheduleInput({ ...PARADIS_BOT_PATROL_DEFAULT_SCHEDULE, minute: 60 }),
+				paradisBotPatrolScheduleInput('x'.repeat(201)),
+				paradisBotPatrolScheduleInput('   '),
+				paradisBotPatrolScheduleInput(7),
+			],
+		}, {
+			kinds: ['window', 'window', 'weekdays', 'daily', 'weekly', 'hourly', 'hourly', 'cron'],
+			window: [[4, 8, 20, true, 0], [4, 8, 20, false, 30]],
+			times: ['08:00', '09:45', ['18:15', 3], [3, 15]],
+			unchanged: stored,
+			defaults: '0 8-20/4 * * 1-5',
+			reversed: undefined,
+			minuteInWindow: '30 8-20/4 * * 1-5',
+			input: ['30 9 * * 1-5', '0 8-20/4 * * 1-5', '15 8-20/4 * * 1-5', undefined, undefined, undefined, undefined],
+		});
+	});
+
+	test('検証: 見回りの間隔は 60 分以上（利用者の定期実行は 15 分のまま）', () => {
+		const { id: _id, enabled: _enabled, createdAt: _c, updatedAt: _u, ...draft } = DEFINITION;
+		const user = { ...draft, target: { kind: 'repository' as const, repositoryUri: 'file:///repo', repositoryName: 'repo' }, agentId: 'claude', prompt: 'x', dailyLimit: 3 };
+		const check = (schedule: string) => paradisValidateScheduledRunDraft({ ...draft, dailyLimit: 24, schedule }) ?? 'ok';
+		assert.deepStrictEqual({
+			patrol: ['0 * * * *', '30 9 * * 1-5', '15 */2 * * *', '*/30 * * * *', '0,50 9 * * *', '*/5 * * * *', '0 9 * *'].map(check),
+			user: paradisValidateScheduledRunDraft({ ...user, schedule: '*/30 * * * *' }) ?? 'ok',
+		}, {
+			patrol: ['ok', 'ok', 'ok', '見回りの間隔は 60 分以上あけてください。', '見回りの間隔は 60 分以上あけてください。', '見回りの間隔は 60 分以上あけてください。', '時刻の式は「分 時 日 月 曜日」の 5 項目で書いてください。'],
+			user: 'ok',
 		});
 	});
 

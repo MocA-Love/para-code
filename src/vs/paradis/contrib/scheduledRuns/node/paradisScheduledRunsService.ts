@@ -65,14 +65,13 @@ import {
 	IParadisBotPatrolGate,
 	IParadisBotPatrolView,
 	ParadisBotPatrolGateState,
-	paradisBotPatrolCron,
 	paradisBotPatrolDue,
 	paradisBotPatrolGateReason,
 	paradisBotPatrolName,
+	paradisBotPatrolScheduleInput,
 	paradisBotPatrolView,
 	paradisIsBotPatrolDefinition,
 	paradisSanitizeBotPatrolLookFor,
-	paradisSanitizeBotPatrolSchedule,
 } from '../common/paradisScheduledRunBotPatrol.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport, paradisSanitizeScheduledRunSpace } from '../common/paradisScheduledRunsSanitize.js';
 import { ParadisScheduledRunPrecheckRunner } from './paradisScheduledRunPrecheck.js';
@@ -279,13 +278,15 @@ export class ParadisScheduledRunsService extends Disposable {
 	}
 
 	/**
-	 * Bot の見回りを作る・変える（Bot のページから。1 つの Bot に 1 つ）。`value` は `{ schedule, lookFor, enabled }`。
+	 * Bot の見回りを作る・変える（Bot のページから。1 つの Bot に 1 つ）。`value` は `{ schedule, lookFor, enabled }`
+	 * （`schedule` は cron 式か、前の時間帯の形）。式の正しさと間隔の下限は定義の検証で見る。
 	 * 時刻を変えたとき・有効にしたときは、それより前の時刻を拾わない。
 	 */
 	async setBotPatrol(botId: string, value: unknown): Promise<IParadisScheduledRunsResult> {
 		await this.ready;
 		const input = isRecord(value) ? value : undefined;
-		const schedule = paradisSanitizeBotPatrolSchedule(input?.schedule);
+		// 時刻は cron 式（汎用の定期実行と同じ型の欄から作る）。前の形（時間帯）も読み替えて受ける
+		const schedule = paradisBotPatrolScheduleInput(input?.schedule);
 		const lookFor = paradisSanitizeBotPatrolLookFor(input?.lookFor);
 		const enabled = input?.enabled;
 		if (!schedule || lookFor === undefined || typeof enabled !== 'boolean') {
@@ -306,7 +307,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		const id = existing?.id ?? generateUuid();
 		const fields = {
 			name: paradisBotPatrolName(botName),
-			schedule: paradisBotPatrolCron(schedule),
+			schedule,
 			target: { kind: 'bot' as const, repositoryUri: '', repositoryName: botName.slice(0, 200), botId },
 			agentId: '',
 			prompt: lookFor,

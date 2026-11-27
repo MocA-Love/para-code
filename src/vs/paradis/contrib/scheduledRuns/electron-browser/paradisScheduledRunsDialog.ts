@@ -45,7 +45,8 @@ import {
 	paradisNextCronOccurrence,
 	paradisParseCron,
 	ParadisSchedulePreset,
-	paradisSchedulePresetToCron,
+	paradisScheduleFieldsToCron,
+	PARADIS_SCHEDULE_EVERY_HOURS,
 } from '../common/paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
@@ -213,18 +214,9 @@ function precheckResultText(result: IParadisScheduledRunPrecheckResult): string 
 	return result.output ? `${summary}\n${result.output}` : summary;
 }
 
-/** フォームの時刻の欄から cron 式を作る。 */
+/** フォームの時刻の欄から cron 式を作る（Bot の見回りの欄と同じ決まり）。 */
 export function paradisFormScheduleToCron(values: Pick<IFormValues, 'scheduleKind' | 'time' | 'dayOfWeek' | 'everyHours' | 'minute' | 'cron'>): string {
-	const match = /^(?<hour>\d{1,2}):(?<minute>\d{2})$/.exec(values.time.trim());
-	const hour = Math.min(23, Number(match?.groups?.hour ?? 9));
-	const minute = Math.min(59, Number(match?.groups?.minute ?? 0));
-	switch (values.scheduleKind) {
-		case 'daily': return paradisSchedulePresetToCron({ kind: 'daily', hour, minute });
-		case 'weekdays': return paradisSchedulePresetToCron({ kind: 'weekdays', hour, minute });
-		case 'weekly': return paradisSchedulePresetToCron({ kind: 'weekly', dayOfWeek: values.dayOfWeek, hour, minute });
-		case 'hourly': return paradisSchedulePresetToCron({ kind: 'hourly', everyHours: values.everyHours, minute: Math.min(59, Math.max(0, values.minute)) });
-		case 'cron': return paradisSchedulePresetToCron({ kind: 'cron', expression: values.cron });
-	}
+	return paradisScheduleFieldsToCron(values);
 }
 
 /**
@@ -921,7 +913,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const dayOfWeek = this.select(scheduleLine, [1, 2, 3, 4, 5, 6, 0].map(day => [String(day), paradisDayOfWeekLabel(day)] as [string, string]), String(values.dayOfWeek), localize('paradis.scheduledRuns.aria.dayOfWeek', "曜日"));
 		const time = this.input(scheduleLine, values.time);
 		time.type = 'time';
-		const everyHours = this.select(scheduleLine, [1, 2, 3, 4, 6, 8, 12].map(hours => [String(hours), hours === 1
+		const everyHours = this.select(scheduleLine, PARADIS_SCHEDULE_EVERY_HOURS.map(hours => [String(hours), hours === 1
 			? localize('paradis.scheduledRuns.everyHour', "1 時間ごと")
 			: localize('paradis.scheduledRuns.everyHours', "{0} 時間ごと", hours)] as [string, string]), String(values.everyHours), localize('paradis.scheduledRuns.aria.everyHours', "間隔"));
 		const minuteLabel = dom.append(scheduleLine, $('span.psr-muted'));

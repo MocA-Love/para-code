@@ -258,6 +258,51 @@ export function paradisSchedulePresetToCron(preset: ParadisSchedulePreset): stri
 	}
 }
 
+/** 「数時間ごと」で選べる間隔（時間）。 */
+export const PARADIS_SCHEDULE_EVERY_HOURS: readonly number[] = [1, 2, 3, 4, 6, 8, 12];
+
+/** 画面の時刻の欄の値（定期実行の画面と Bot の見回りの欄が同じ形で持つ）。 */
+export interface IParadisScheduleFields {
+	readonly scheduleKind: ParadisSchedulePreset['kind'];
+	/** `HH:MM`（毎日・平日・毎週）。 */
+	readonly time: string;
+	readonly dayOfWeek: number;
+	readonly everyHours: number;
+	/** 数時間ごとの「の n 分」。 */
+	readonly minute: number;
+	readonly cron: string;
+}
+
+/** 時刻の欄の値から cron 式を作る。 */
+export function paradisScheduleFieldsToCron(values: IParadisScheduleFields): string {
+	const match = /^(?<hour>\d{1,2}):(?<minute>\d{2})$/.exec(values.time.trim());
+	const hour = Math.min(23, Number(match?.groups?.hour ?? 9));
+	const minute = Math.min(59, Number(match?.groups?.minute ?? 0));
+	switch (values.scheduleKind) {
+		case 'daily': return paradisSchedulePresetToCron({ kind: 'daily', hour, minute });
+		case 'weekdays': return paradisSchedulePresetToCron({ kind: 'weekdays', hour, minute });
+		case 'weekly': return paradisSchedulePresetToCron({ kind: 'weekly', dayOfWeek: values.dayOfWeek, hour, minute });
+		case 'hourly': return paradisSchedulePresetToCron({ kind: 'hourly', everyHours: values.everyHours, minute: Math.min(59, Math.max(0, values.minute)) });
+		case 'cron': return paradisSchedulePresetToCron({ kind: 'cron', expression: values.cron });
+	}
+}
+
+/** cron 式を時刻の欄の値へ戻す（当たらない欄は `defaults` のまま）。 */
+export function paradisScheduleFieldsFromCron(expression: string, defaults: IParadisScheduleFields): IParadisScheduleFields {
+	const preset = paradisCronToSchedulePreset(expression);
+	switch (preset.kind) {
+		case 'daily':
+		case 'weekdays':
+			return { ...defaults, scheduleKind: preset.kind, time: `${String(preset.hour).padStart(2, '0')}:${String(preset.minute).padStart(2, '0')}`, cron: expression };
+		case 'weekly':
+			return { ...defaults, scheduleKind: 'weekly', time: `${String(preset.hour).padStart(2, '0')}:${String(preset.minute).padStart(2, '0')}`, dayOfWeek: preset.dayOfWeek, cron: expression };
+		case 'hourly':
+			return { ...defaults, scheduleKind: 'hourly', everyHours: preset.everyHours, minute: preset.minute, cron: expression };
+		case 'cron':
+			return { ...defaults, scheduleKind: 'cron', cron: preset.expression };
+	}
+}
+
 /** cron 式を画面の選択肢へ戻す。どの型にも当たらなければ `cron`。 */
 export function paradisCronToSchedulePreset(expression: string): ParadisSchedulePreset {
 	const source = expression.trim().replace(/\s+/g, ' ');

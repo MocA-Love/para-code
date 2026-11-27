@@ -47,6 +47,11 @@ export const PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL = 30;
  */
 export const PARADIS_BOT_PATROL_MAX_CONCURRENT = 3;
 export const PARADIS_BOT_PATROL_MAX_DAILY_TOTAL = 100;
+/**
+ * Bot の見回りの間隔の下限（分）。見回りの定義の 1 日の回数は {@link PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT}（24 回）
+ * なので、1 時間より短い式は数の上限で黙って見送られる回が出る。式の段階で断る。
+ */
+export const PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES = 60;
 /** 遅れて作った開始待ちにも、少なくともこれだけは拾われる猶予を残す。 */
 export const PARADIS_SCHEDULED_RUN_MIN_PENDING_MS = 60 * PARADIS_MINUTE_MS;
 /** 毎回新しいスペースを作るとき、片付け候補にせず残す件数。 */
@@ -431,11 +436,11 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 	if (parsed.error !== undefined) {
 		return parsed.error;
 	}
-	if (paradisCronMinimumGapMinutes(parsed.schedule) < PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES) {
+	if (draft.target.kind !== 'bot' && paradisCronMinimumGapMinutes(parsed.schedule) < PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES) {
 		return localize('paradis.scheduledRuns.validate.interval', "実行の間隔は {0} 分以上あけてください。", PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES);
 	}
 	if (draft.target.kind === 'bot') {
-		return validateBotPatrolDraft(draft);
+		return paradisValidateBotPatrolScheduleGap(parsed.schedule) ?? validateBotPatrolDraft(draft);
 	}
 	if (draft.prompt.trim().length === 0) {
 		return localize('paradis.scheduledRuns.validate.prompt', "エージェントへの指示を入れてください。");
@@ -459,6 +464,13 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 		return paradisValidateScheduledRunPrecheck(draft.precheck, draft.target.repositoryUri);
 	}
 	return undefined;
+}
+
+/** Bot の見回りの時刻の間隔が下限（{@link PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES}）より短ければ、表示用の文を返す。 */
+export function paradisValidateBotPatrolScheduleGap(schedule: IParadisCronSchedule): string | undefined {
+	return paradisCronMinimumGapMinutes(schedule) < PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES
+		? localize('paradis.scheduledRuns.validate.patrolInterval', "見回りの間隔は {0} 分以上あけてください。", PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES)
+		: undefined;
 }
 
 /** Bot の見回りの定義の検証（指示・エージェント・リポジトリは定義に持たないので見ない）。 */

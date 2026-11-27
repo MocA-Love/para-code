@@ -57,6 +57,8 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			view: await service.getBotPatrol('b1'),
 			unknownBot: (await service.setBotPatrol('nobody', PATROL)).ok,
 			badInput: [(await service.setBotPatrol('b1', { ...PATROL, schedule: { everyHours: 5, fromHour: 8, toHour: 20, weekdaysOnly: true } })).ok, (await service.setBotPatrol('b1', 'x')).ok],
+			// 見回りの間隔の下限（60 分）より短い式は断る
+			tooShort: await service.setBotPatrol('b1', { ...PATROL, schedule: '*/30 * * * *' }),
 			// 汎用の保存（定期実行の画面・エージェントの道具）は Bot の見回りを作れず、変えられない
 			genericCreate: (await service.save({ ...draft })).ok,
 			genericOverwrite: (await service.save({ ...draft, id: definition.id, target: { kind: 'repository', repositoryUri: 'file:///repo', repositoryName: 'repo' }, agentId: 'claude', prompt: 'x' })).ok,
@@ -75,8 +77,31 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			},
 			unknownBot: false,
 			badInput: [false, false],
+			tooShort: { ok: false, error: '見回りの間隔は 60 分以上あけてください。' },
 			genericCreate: false,
 			genericOverwrite: false,
+		});
+	});
+
+	test('分まで決めた時刻（cron 式）で保存し、その分に開始待ちを作る。前の形で保存した式は同じ形で送り直しても変わらない', async () => {
+		const { service, requests } = setup(at(2026, 11, 27, 9, 0));
+		await service.whenReady();
+		const legacy = (await service.setBotPatrol('b1', PATROL)).definition!;
+		const resent = (await service.setBotPatrol('b1', { ...PATROL, schedule: '0 8-20/4 * * 1-5' })).definition!;
+		const minutes = (await service.setBotPatrol('b1', { ...PATROL, schedule: '30 9 * * 1-5' })).definition!;
+		const view = await service.getBotPatrol('b1');
+		assert.deepStrictEqual({
+			legacy: legacy.schedule,
+			resentSame: resent.schedule === legacy.schedule,
+			minutes: minutes.schedule,
+			view: [view.cron, view.schedule, view.nextRunAt],
+			requests: requests.length,
+		}, {
+			legacy: '0 8-20/4 * * 1-5',
+			resentSame: true,
+			minutes: '30 9 * * 1-5',
+			view: ['30 9 * * 1-5', undefined, at(2026, 11, 27, 9, 30)],
+			requests: 0,
 		});
 	});
 
