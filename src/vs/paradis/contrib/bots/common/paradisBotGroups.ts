@@ -77,6 +77,8 @@ export interface IParadisBotGroupRecord {
 	 * `unknown` は時間切れ・中断で届いたか分からない。
 	 */
 	readonly undelivered?: ParadisBotMessageUndeliveredReason;
+	/** Bot 同士の伝言を、宛先が作業中だったので順番待ちに入れた（次の番に読まれる。{@link paradisBotGroupMarkQueued}）。 */
+	readonly queued?: true;
 }
 
 export interface IParadisBotGroupsState {
@@ -224,15 +226,24 @@ export const PARADIS_BOT_GROUP_UNDELIVERED_REASONS: readonly ParadisBotMessageUn
  * 見つからない記録（上限で既に捨てた分を含む）・別のグループの記録・あなたの `sent`・既に印のある記録は、変えずに断る。
  */
 export function paradisBotGroupMarkUndelivered(state: IParadisBotGroupsState, groupId: string, recordId: string, reason: ParadisBotMessageUndeliveredReason = 'unreachable'): ParadisBotGroupsResult<IParadisBotGroupRecord> {
+	return PARADIS_BOT_GROUP_UNDELIVERED_REASONS.includes(reason) ? markBotMessage(state, groupId, recordId, { undelivered: reason }) : refuse('not_found', 'There is no such message.');
+}
+
+/** Bot 同士の伝言の記録に「順番待ちに入れた」の印を付ける（断る場合は {@link paradisBotGroupMarkUndelivered} と同じ）。 */
+export function paradisBotGroupMarkQueued(state: IParadisBotGroupsState, groupId: string, recordId: string): ParadisBotGroupsResult<IParadisBotGroupRecord> {
+	return markBotMessage(state, groupId, recordId, { queued: true });
+}
+
+function markBotMessage(state: IParadisBotGroupsState, groupId: string, recordId: string, mark: Pick<IParadisBotGroupRecord, 'undelivered' | 'queued'>): ParadisBotGroupsResult<IParadisBotGroupRecord> {
 	if (!writable(state)) {
 		return refuse('read_only', READ_ONLY);
 	}
 	const id = /^[1-9]\d{0,15}$/u.test(recordId) ? Number(recordId) : undefined;
 	const record = id !== undefined && Number.isSafeInteger(id) ? state.records.find(existing => existing.id === id && existing.groupId === groupId) : undefined;
-	if (record === undefined || record.kind === 'sent' || record.undelivered !== undefined || !PARADIS_BOT_GROUP_UNDELIVERED_REASONS.includes(reason)) {
+	if (record === undefined || record.kind === 'sent' || record.undelivered !== undefined || record.queued !== undefined) {
 		return refuse('not_found', 'There is no such message.');
 	}
-	const marked: IParadisBotGroupRecord = { ...record, undelivered: reason };
+	const marked: IParadisBotGroupRecord = { ...record, ...mark };
 	return { ok: true, state: { ...state, records: state.records.map(existing => existing === record ? marked : existing) }, value: marked };
 }
 
@@ -328,6 +339,11 @@ export class ParadisBotGroupRelayLimiter {
 		this.sent.set(target, recent);
 		return true;
 	}
+
+	/** 数えた 1 回を戻す（宛先がペインへ何も書かずに断ったとき）。 */
+	refund(target: string): void {
+		this.sent.get(target)?.pop();
+	}
 }
 
 /**
@@ -340,13 +356,14 @@ export function paradisBotGroupNeutralizeCommand(text: string): string {
 	return text.replace(/^(?<space>\s*)(?<mark>[/!])/u, (_match, space: string, mark: string) => `${space}${mark === '/' ? '\uFF0F' : '\uFF01'}`);
 }
 
-/** 伝言を断る理由。`busy` と `rate_limited` は「後で」送り直せる。 */
-export type ParadisBotGroupDeliverRefusal = 'not_a_member' | 'self' | 'not_running' | 'busy' | 'rate_limited';
+/** 伝言を断る理由（どれもペインへ何も書く前に断る）。 */
+export type ParadisBotGroupDeliverRefusal = 'not_a_member' | 'self' | 'not_running' | 'rate_limited';
 
 /**
- * Bot 同士の伝言を届けてよいか。送り手と宛先が同じグループのメンバーで、宛先がこのウィンドウで動いていて、
- * 作業中（`working`・`patrolling`）でないときだけ届ける（勝手に割り込まない）。許可・質問の画面が出ているときは、
- * 届ける口（チャット表示の送信と同じ確認）が断る。回数の上限は最後に数える（断った伝言を数えない）。
+ * Bot 同士の伝言を届けてよいか。送り手と宛先が同じグループのメンバーで、宛先がこのウィンドウで動いているときだけ届ける。
+ * 宛先が作業中でも断らない（届ける口がエージェントの順番待ちに入れ、今のターンを止めない。順番待ちの無いエージェントと、
+ * 許可・質問の画面が出ているときは届ける口が断る）。回数の上限は最後に数える（ここで断った伝言を数えない。届ける口が
+ * 何も書かずに断ったら呼ぶ側が {@link ParadisBotGroupRelayLimiter.refund} で戻す）。
  */
 export function paradisBotGroupDeliverRefusal(input: {
 	readonly group: Pick<IParadisBotGroup, 'members'> | undefined;
@@ -367,24 +384,20 @@ export function paradisBotGroupDeliverRefusal(input: {
 	if (!input.toRunningHere || input.toActivity === undefined || input.toActivity === 'stopped') {
 		return 'not_running';
 	}
-	if (input.toActivity === 'working' || input.toActivity === 'patrolling') {
-		return 'busy';
-	}
 	return input.takeRate() ? undefined : 'rate_limited';
 }
 
 /**
- * 伝言の道具へ返す、断った理由の英文（エージェントが読む）。道具は `"…" did not take the message now (理由). Send it again
- * later if it still matters; each try counts toward your limit.` の括弧に入れるので、理由だけを小文字で始めて書く
- * （「後で送る」は道具の文が言う。上限だけは止まって利用者に伝えるよう重ねて言う）。
+ * 伝言の道具へ返す、断った理由の英文（エージェントが読む。`refused` の `reason`）。道具は `"…" did not take the message now
+ * (理由). Send it again later if it still matters; each try counts toward your limit.` の括弧に入れるので、理由だけを小文字で
+ * 始めて書く。送り直しても通らないもの（メンバーでない・自分宛て・上限）は、送り直さないよう重ねて言う。
  */
 export function paradisBotGroupDeliverRefusalMessage(refusal: ParadisBotGroupDeliverRefusal): string {
 	switch (refusal) {
-		case 'not_a_member': return 'you can only send messages to other bots in a group you are in';
-		case 'self': return 'you cannot send a message to yourself';
+		case 'not_a_member': return 'you and that bot are not in the same group, so do not send it again';
+		case 'self': return 'it was addressed to yourself, so do not send it again';
 		case 'not_running': return 'that bot is not running, or its chat is no longer open in this Para Code window';
-		case 'busy': return 'that bot is busy now';
-		case 'rate_limited': return `you reached the limit: that bot takes up to ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} bot messages a minute. Do not keep the exchange going: stop, and tell your owner what you wanted to say`;
+		case 'rate_limited': return `the limit was reached: that bot takes up to ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} bot messages a minute from all bots. Do not keep the exchange going: stop, and tell your owner what you wanted to say`;
 	}
 }
 
@@ -417,7 +430,10 @@ function storedRecord(value: unknown, groups: ReadonlySet<string>): IParadisBotG
 	}
 	const record: IParadisBotGroupRecord = { id: value.id, groupId: value.groupId, kind, from: value.from, to: value.to, text: value.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: value.at };
 	const undelivered = PARADIS_BOT_GROUP_UNDELIVERED_REASONS.find(candidate => candidate === value.undelivered);
-	return undelivered !== undefined && kind !== 'sent' ? { ...record, undelivered } : record;
+	if (kind === 'sent') {
+		return record;
+	}
+	return undelivered !== undefined ? { ...record, undelivered } : value.queued === true ? { ...record, queued: true } : record;
 }
 
 /**

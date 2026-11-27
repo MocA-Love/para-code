@@ -22,8 +22,11 @@ export function paradisBotGroupRecordHead(record: Pick<IParadisBotGroupRecord, '
 	}
 }
 
-/** 記録の 1 行に添える印（Bot 同士の伝言が届かなかったとき、その理由）。無ければ undefined。 */
-export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'undelivered'>): string | undefined {
+/** 記録の 1 行に添える印（Bot 同士の伝言を順番待ちに入れた・届かなかった理由）。無ければ undefined。 */
+export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'undelivered' | 'queued'>): string | undefined {
+	if (record.queued === true) {
+		return localize('paradis.botGroups.record.queued', "順番待ちに入れました");
+	}
 	switch (record.undelivered) {
 		case 'refused': return localize('paradis.botGroups.record.refused', "宛先が受け取らなかった");
 		case 'unreachable': return localize('paradis.botGroups.record.unreachable', "届けられなかった");

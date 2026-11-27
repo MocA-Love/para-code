@@ -77,19 +77,22 @@ suite('Paradis bot groups service', () => {
 		await port.markUndelivered!('g1', told.recordId!, 'refused');
 		await port.markUndelivered!('g1', told.recordId!, 'unknown');
 		await port.markUndelivered!('g1', asked.recordId!, 'unknown');
+		const queued = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'b', text: 'あとで読んで' });
+		await port.markQueued('g1', queued.recordId!);
+		await port.markUndelivered!('g1', queued.recordId!, 'refused');
 		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(file.written.at(-1))));
 		assert.deepStrictEqual({
 			told,
 			refused: refused.ok,
 			writes: file.written.length - writesBefore,
-			records: groups.getSnapshot().records.map(record => [record.id, record.kind, record.undelivered ?? false]),
-			reread: reread?.records.map(record => [record.id, record.undelivered ?? false]),
+			records: groups.getSnapshot().records.map(record => [record.id, record.kind, record.undelivered ?? false, record.queued ?? false]),
+			reread: reread?.records.map(record => [record.id, record.undelivered ?? false, record.queued ?? false]),
 		}, {
 			told: { ok: true, recordId: '2' },
 			refused: false,
-			writes: 2,
-			records: [[1, 'sent', false], [2, 'told', 'refused'], [3, 'asked', 'unknown']],
-			reread: [[1, false], [2, 'refused'], [3, 'unknown']],
+			writes: 4,
+			records: [[1, 'sent', false, false], [2, 'told', 'refused', false], [3, 'asked', 'unknown', false], [4, 'told', false, true]],
+			reread: [[1, false, false], [2, 'refused', false], [3, 'unknown', false], [4, false, true]],
 		});
 	});
 
