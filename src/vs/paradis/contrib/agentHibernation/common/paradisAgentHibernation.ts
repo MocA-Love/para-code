@@ -48,6 +48,8 @@ export interface IParadisHibernationPaneFacts {
 	readonly remote: boolean;
 	/** タスクボードが受け持つターミナル。 */
 	readonly taskBoard: boolean;
+	/** Bot の会話のペイン（Bot は自分で何もしない 30 分で止め、眠った会話として続ける。休止は触らない）。 */
+	readonly bot?: boolean;
 	/** すでに休止している。 */
 	readonly hibernated: boolean;
 	/** 止めている最中・再開している最中。 */
@@ -84,7 +86,7 @@ export interface IParadisHibernationPaneFacts {
 
 /** 休止しない理由（ログに出す）。 */
 export type ParadisHibernationSkipReason =
-	| 'not-editor-area' | 'remote' | 'task-board' | 'hibernated' | 'busy'
+	| 'not-editor-area' | 'remote' | 'task-board' | 'bot' | 'hibernated' | 'busy'
 	| 'working' | 'permission' | 'question' | 'quiet' | 'awaiting-user' | 'replayed-prompt'
 	| 'no-session' | 'completion-unknown' | 'visible' | 'remote-viewing' | 'draft' | 'composer-text' | 'composer-unknown' | 'retry-later';
 
@@ -107,6 +109,9 @@ export function paradisHibernationVerdict(facts: IParadisHibernationPaneFacts, n
 	}
 	if (facts.taskBoard) {
 		return skip('task-board');
+	}
+	if (facts.bot === true) {
+		return skip('bot');
 	}
 	if (facts.hibernated) {
 		return skip('hibernated');

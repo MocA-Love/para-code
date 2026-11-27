@@ -16,6 +16,7 @@ import { getColorClass, getUriClasses } from './terminalIcon.js';
 // PARA-PATCH: editor terminals need the same 'keep it running on the remote' decision
 import { paradisJoinKeptDetaches, paradisShouldKeepTerminalProcessAlive } from '../../../../paradis/contrib/ptyDaemon/browser/paradisTerminalShutdownPolicy.js';
 import { paradisGetTerminalTabIcon, paradisOnDidChangeTerminalTabIcon } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalTabIconRegistry.js'; // PARA-PATCH: agent state icons on editor terminal tabs
+import { paradisTerminalEditorsHideOnClose } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalHideOnClose.js'; // PARA-PATCH: a bot's terminal is hidden, not ended, when its tab closes
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalExitReason, TerminalLocation, TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
@@ -109,6 +110,7 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 	}
 
 	async confirm(terminals: ReadonlyArray<IEditorIdentifier>): Promise<ConfirmResult> {
+		if (paradisTerminalEditorsHideOnClose(terminals.map(terminal => terminal.editor as { readonly terminalInstance?: ITerminalInstance }))) { return ConfirmResult.DONT_SAVE; } // PARA-PATCH: closing a bot's tab hides its terminal (paradisTerminalHideOnClose.ts), so there is nothing to confirm
 		const { confirmed } = await this._dialogService.confirm({
 			type: Severity.Warning,
 			message: localize('confirmDirtyTerminal.message', "Do you want to terminate running processes?"),
