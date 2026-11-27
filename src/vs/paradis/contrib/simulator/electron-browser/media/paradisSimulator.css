@@ -18,7 +18,9 @@
 	justify-content: space-between;
 	gap: 8px;
 	padding: 6px 12px;
-	border-bottom: 1px solid var(--vscode-panel-border);
+	/* The kit's line between surfaces: panel.border is the editor's own color in some themes (Houston), which hid the
+		line under the header. */
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 	flex: 0 0 auto;
 }
 
@@ -54,8 +56,74 @@
 
 .paradis-simulator-actions {
 	display: flex;
+	align-items: center;
 	gap: 4px;
 	flex: 0 0 auto;
+}
+
+/* "Give to a pane" (paradisSimulatorShareButton.ts): the browser toolbar's share button (plug, count, chevron), sized to
+	the small kit buttons next to it (24px high, control radius). */
+.paradis-simulator-share {
+	position: relative;
+	display: flex;
+	align-items: stretch;
+	height: var(--paradis-height-sm);
+	margin-right: 4px;
+	border-radius: var(--paradis-radius-control);
+	cursor: pointer;
+}
+
+.paradis-simulator-share[hidden] {
+	display: none;
+}
+
+.paradis-simulator-share-main {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--paradis-height-sm);
+	color: var(--vscode-icon-foreground);
+	border-radius: var(--paradis-radius-control);
+}
+
+/* The count lies over the edge of the chevron: let clicks there reach the chevron. */
+.paradis-simulator-share-main .paradis-count {
+	pointer-events: none;
+}
+
+.paradis-simulator-share-list {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	font-size: var(--vscode-codiconFontSize-compact);
+	color: var(--vscode-icon-foreground);
+	border-radius: 0 var(--paradis-radius-control) var(--paradis-radius-control) 0;
+}
+
+.paradis-simulator-share-list[hidden] {
+	display: none;
+}
+
+.paradis-simulator-share:not(.checked) .paradis-simulator-share-main:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+/* Shared: the toggled look of the browser's button, one background over both parts. */
+.paradis-simulator-share.checked .paradis-simulator-share-main,
+.paradis-simulator-share.checked .paradis-simulator-share-list {
+	background-color: var(--vscode-actionBar-toggledBackground);
+}
+
+.paradis-simulator-share.checked .paradis-simulator-share-main {
+	border-radius: var(--paradis-radius-control) 0 0 var(--paradis-radius-control);
+}
+
+.paradis-simulator-share.checked .paradis-simulator-share-main:hover,
+.paradis-simulator-share.checked .paradis-simulator-share-list:hover,
+.paradis-simulator-share-list[aria-expanded="true"] {
+	box-shadow: inset 0 0 0 100px var(--vscode-toolbar-hoverBackground);
 }
 
 .paradis-simulator-notice,
@@ -124,7 +192,7 @@ img.paradis-simulator-frame:not([src]) {
 	flex-direction: column;
 	gap: 6px;
 	padding: 6px 12px;
-	border-bottom: 1px solid var(--vscode-panel-border);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 	flex: 0 0 auto;
 }
 
