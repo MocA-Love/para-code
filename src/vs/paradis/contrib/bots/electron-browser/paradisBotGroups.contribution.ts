@@ -252,7 +252,7 @@ class ParadisBotGroupsDeliverer {
 		// 先頭の / と ! はコマンド・シェルとして動くので崩してから届ける（利用者が部屋から送る文はそのまま）
 		const error = await this.sender.send(to, paradisBotGroupNeutralizeCommand(text));
 		// 許可・質問の画面が出ている・エージェントが前面にいないなど。割り込まずに「作業中、しばらくしてから」で断る（#1231 の道具の文とそろえる）
-		return error === undefined ? undefined : `That bot is busy now (${error}). Send the message again after a while.`;
+		return error === undefined ? undefined : `that bot is busy now: ${error}`;
 	}
 }
 
