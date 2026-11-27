@@ -128,6 +128,12 @@ export interface IParadisMcpToolCallContext {
 	/** 呼び出し元ペインを所有するウィンドウの IPC チャネルを1回呼ぶ。 */
 	callOwningWindow<T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>>;
 	/**
+	 * 別のペイン（トークン）を所有するこの PC のウィンドウの IPC チャネルを1回呼ぶ（Bot 同士の伝言を宛先のペインの
+	 * ウィンドウへ届けるため）。トークンは呼び出し元が持っているもの（shared process の台帳）に限ること。
+	 * 古い呼び出し側（テストの代わりなど）は持たないので省略できる。
+	 */
+	callPaneWindow?<T>(paneToken: string, request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>>;
+	/**
 	 * 任意のペイン（トークン）のエージェントの状態。hook が状態を報告していなければ undefined。
 	 * 画面側の表示は 2 秒ごとの取り直しで遅れるので、送ってよいかの判断はこちらで行う。
 	 */
@@ -190,6 +196,32 @@ const registeredProviders = new Set<IParadisMcpToolProvider>();
 export function paradisRegisterMcpToolProvider(provider: IParadisMcpToolProvider): IDisposable {
 	registeredProviders.add(provider);
 	return toDisposable(() => registeredProviders.delete(provider));
+}
+
+/**
+ * ほかの機能が、呼び出し元のペインごとに para-browser の道具の呼び出しを断る口（ブラウザの道具・プロバイダの道具・内蔵の
+ * chrome-devtools-mcp の道具の全部に効く）。理由の文を返すと断る。Bot の見回りのペインを読むだけの道具に限るのに使う
+ * （利用者がエージェントの側で常に許可した書く道具も、サーバーの側で断る）。
+ */
+export type ParadisMcpCallRefusal = (paneToken: string, toolName: string) => Promise<string | undefined>;
+
+const callRefusals = new Set<ParadisMcpCallRefusal>();
+
+/** {@link ParadisMcpCallRefusal} を登録する。 */
+export function paradisRegisterMcpCallRefusal(refusal: ParadisMcpCallRefusal): IDisposable {
+	callRefusals.add(refusal);
+	return toDisposable(() => callRefusals.delete(refusal));
+}
+
+/** 登録された口に順に聞き、最初に返った断る理由（無ければ undefined）。 */
+export async function paradisMcpCallRefusalFor(paneToken: string, toolName: string): Promise<string | undefined> {
+	for (const refusal of [...callRefusals]) {
+		const reason = await refusal(paneToken, toolName);
+		if (reason !== undefined) {
+			return reason;
+		}
+	}
+	return undefined;
 }
 
 /** 登録口から足されたプロバイダを登録順に返す。 */

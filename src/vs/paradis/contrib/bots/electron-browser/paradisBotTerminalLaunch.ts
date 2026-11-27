@@ -19,7 +19,11 @@ import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-br
 import { IParadisBotLaunchedTerminal, paradisBotTabTitle, paradisRunBotLaunch } from '../common/paradisBotLaunchSteps.js';
 import { IParadisBotLaunch, IParadisBotsService } from '../common/paradisBotsApi.js';
 
-/** タブ名を Bot の名前にする（雛形で付ける。固定の名前にするとエージェントのタイトルの購読が止まるため）。 */
+/**
+ * タブ名の雛形を Bot の名前にする（固定の名前にするとエージェントのタイトルの購読が止まるため、雛形で付ける）。
+ * terminalInstance.ts の PARA-PATCH でエージェントの CLI のタイトルが雛形より先に立つので、エージェントが動いている間は
+ * エージェントの出すタイトルが、動いていない間（起動の直後・終わった後）は Bot の名前がタブに出る。
+ */
 export function paradisNameBotTab(instance: ITerminalInstance | undefined, name: string): void {
 	if (instance === undefined || instance.isDisposed) {
 		return;
