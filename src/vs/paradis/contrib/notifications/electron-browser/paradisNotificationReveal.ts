@@ -18,6 +18,7 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisShowHiddenBotPane } from '../../bots/browser/paradisBotPaneHide.js';
+import { paradisIsTerminalSpaceFree } from '../../workspaceSwitch/browser/paradisSpaceFreeTerminals.js';
 
 export interface IParadisNotificationRevealServices {
 	readonly hostService: Pick<IHostService, 'focus'>;
@@ -43,8 +44,10 @@ function windowOf(instance: ITerminalInstance | undefined): Window {
  * 切り替えを待っている間に別の切り替えが割り込んで、ペインのスペースに居ないまま戻ってくることが
  * ある。そのときは開かない（開くと、ペインが今のスペースのタブになって紛れ込む）。
  */
-export async function paradisRevealNotifiedPane(services: IParadisNotificationRevealServices, stateKey: string | undefined, instanceId: number): Promise<void> {
+export async function paradisRevealNotifiedPane(services: IParadisNotificationRevealServices, paneStateKey: string | undefined, instanceId: number): Promise<void> {
 	const { hostService, terminalService, workspaceSwitchService } = services;
+	// どのスペースにも属さないペイン（Bot の会話）は、今のスペースのまま出す（通知を出したときのスペースへ戻さない）
+	const stateKey = paradisIsTerminalSpaceFree(instanceId) ? undefined : paneStateKey;
 	const initialWindow = windowOf(terminalService.getInstanceFromId(instanceId));
 	await hostService.focus(initialWindow, { mode: FocusMode.Force });
 

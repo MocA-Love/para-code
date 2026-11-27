@@ -10,6 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FocusMode } from '../../../../../platform/native/common/native.js';
 import { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisNotificationRevealServices, paradisRevealNotifiedPane } from '../../electron-browser/paradisNotificationReveal.js';
+import { paradisMarkTerminalSpaceFree, paradisResetSpaceFreeTerminalsForTest } from '../../../workspaceSwitch/browser/paradisSpaceFreeTerminals.js';
 
 /**
  * `landOn` を渡すと、切り替えはそのスペースに着いて終わる (待っている間に別の切り替えが割り込んだ)。
@@ -66,6 +67,20 @@ suite('ParadisNotificationReveal', () => {
 			'focus:main:force', 'focusInstance:7',
 			'focus:main:force', 'switch:repo-b',
 		]);
+	});
+
+	test('opens a pane that belongs to no space (a bot) in the current space without switching', async () => {
+		const calls: string[] = [];
+		const instances = new Map([[9, fakeInstance(9)]]);
+		paradisMarkTerminalSpaceFree(9);
+		try {
+			// 通知を出したときは repo-b にいた Bot のペイン。今は repo-a にいるので、repo-a のまま出す
+			await paradisRevealNotifiedPane(createServices('repo-a', instances, calls), 'repo-b', 9);
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
+		}
+
+		assert.deepStrictEqual(calls, ['focus:main:force', 'focusInstance:9']);
 	});
 
 	test('switches back to the pane space when a switch away from it is in progress', async () => {
