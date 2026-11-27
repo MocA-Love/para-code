@@ -149,15 +149,18 @@ suite('Paradis bots service', () => {
 			chat: [h.service.isBotPane('pane-会話係'), (await ideRefusal('pane-会話係', 'launch_agent')) !== undefined],
 			patrol: [h.service.isBotPane('pane-patrol'), h.service.purposeOfPane('pane-patrol'), (await ideRefusal('pane-patrol', 'send_terminal_input')) !== undefined, (await patrolRefusal('pane-patrol', 'click')) !== undefined],
 		});
-		// エージェントが自分のトークンで送った TerminalExit（hook のバスには observedExit の無いイベントとして流れる）
+		h.hooks.fire({ token: 'pane-patrol', event: 'UserPromptSubmit' });
+		const working = h.service.getSnapshot().bots[0].activity;
+		// エージェントが自分のトークンで送った TerminalExit（hook のバスには observedExit の無いイベントとして流れる）。
+		// 結び付けは残し、表示だけ作業中ではなくする
 		h.hooks.fire({ token: 'pane-会話係', event: 'TerminalExit' });
 		h.hooks.fire({ token: 'pane-patrol', event: 'TerminalExit' });
-		const forged = await state();
+		const forged = { ...await state(), activity: [working, h.service.getSnapshot().bots[0].activity] };
 		// ウィンドウが終了を知らせたもの（notifyTerminalExit だけが observedExit を付ける）
 		h.hooks.fire({ token: 'pane-会話係', event: 'TerminalExit', observedExit: true });
 		h.hooks.fire({ token: 'pane-patrol', event: 'TerminalExit', observedExit: true });
 		assert.deepStrictEqual({ forged, observed: await state() }, {
-			forged: { chat: [true, true], patrol: [true, 'patrol', true, true] },
+			forged: { chat: [true, true], patrol: [true, 'patrol', true, true], activity: ['patrolling', 'idle'] },
 			observed: { chat: [false, false], patrol: [false, undefined, false, false] },
 		});
 	});

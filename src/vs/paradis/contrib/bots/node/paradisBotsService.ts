@@ -204,11 +204,11 @@ export class ParadisBotsService extends Disposable {
 			this._register(options.hookEvents(event => {
 				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す。
 				// 外すのは Para Code が終了を見たもの（observedExit）だけ。agent-hook の HTTP の TerminalExit は、Bot の
-				// エージェントが自分のトークンで送れる（結び付けを外して、IDE の操作や見回りの読むだけの制限を外せてしまう）
-				if (event.event === 'TerminalExit') {
-					if (event.observedExit === true) {
-						this.releasePane(event.token);
-					}
+				// エージェントが自分のトークンで送れる（結び付けを外して、IDE の操作や見回りの読むだけの制限を外せてしまう）。
+				// HTTP の TerminalExit（OpenCode のブリッジの CLI が終わるときに送る）は、下の noteHook で「作業中ではない」に
+				// するだけにする（偽の Stop でもできることなので、偽れることは増えない）
+				if (event.event === 'TerminalExit' && event.observedExit === true) {
+					this.releasePane(event.token);
 					return;
 				}
 				// 起動し直した後に現れた Bot のペインなら、保存した結び付けを戻す
