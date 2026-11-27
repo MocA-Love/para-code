@@ -21,7 +21,7 @@ import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescri
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
 import { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from '../common/paradisBots.js';
-import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
+import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotSleepingChat, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 
 const UNAVAILABLE: ParadisBotsServiceResult<never> = { ok: false, code: 'unavailable', message: 'Para Code could not reach the bot service.' };
 
@@ -174,6 +174,10 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 
 	requestStop(botId: string): Promise<boolean> {
 		return this.value('requestStop', [botId], false);
+	}
+
+	sleepingChat(botId: string): Promise<IParadisBotSleepingChat | undefined> {
+		return this.value<IParadisBotSleepingChat | undefined>('sleepingChat', [botId], undefined);
 	}
 
 	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]> {

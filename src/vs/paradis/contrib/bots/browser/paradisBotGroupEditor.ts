@@ -364,7 +364,7 @@ export class ParadisBotGroupEditor extends EditorPane {
 			dom.append(row, dom.$('span.pbgr-item-tag')).textContent = localize('paradis.botGroups.yourTurn', "あなたの番");
 		}
 		// 項目は Bot のページで読む（その Bot を開く）
-		const open = () => void this.commandService.executeCommand(PARADIS_BOTS_OPEN_COMMAND, item.botId);
+		const open = () => void this.commandService.executeCommand(PARADIS_BOTS_OPEN_COMMAND, item.botId, { read: true });
 		this.itemDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, open));
 		this.itemDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);

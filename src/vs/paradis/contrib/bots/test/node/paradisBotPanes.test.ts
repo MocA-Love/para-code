@@ -33,6 +33,22 @@ suite('Paradis bot panes', () => {
 		};
 	}
 
+	test('見回りのペインが動いていても、会話のペインが無ければ眠ったまま（眠った会話のタブを閉じず、帯から開くと読むだけにする）', () => {
+		const bot = { id: 'b1', name: 'b', folder: 'b', agent: 'claude', paused: false, pinned: false, faceColor: 'blue', faceShape: 'drop', createdAt: 0, updatedAt: 0 } as IParadisBot;
+		const patrol = { purpose: 'patrol' as const, working: true, lastSeenAt: 1 };
+		const chat = { purpose: 'chat' as const, working: false, lastSeenAt: 1 };
+		const look = (panes: Parameters<typeof paradisBotSummary>[2], paused = false) => {
+			const summary = paradisBotSummary({ ...bot, paused }, EMPTY_PARADIS_BOT_ITEMS_STATE, panes, 2, 0, true);
+			return [summary.activity, summary.sleeping ?? false];
+		};
+		assert.deepStrictEqual([look([]), look([patrol]), look([patrol, chat]), look([], true)], [
+			['stopped', true],
+			['patrolling', true],
+			['patrolling', false],
+			['stopped', false],
+		]);
+	});
+
 	test('エージェントのコマンドが見つからない・終わったときは「待機中」ではなく、その理由を出す。起動し直せば外れる', () => {
 		const { panes, view } = bound('claude');
 		const seen: unknown[] = [view(1)];

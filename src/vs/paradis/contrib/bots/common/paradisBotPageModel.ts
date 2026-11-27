@@ -11,6 +11,8 @@
 
 import { localize } from '../../../../nls.js';
 import type { IParadisAgentChatHeaderState } from '../../agentChat/common/paradisAgentChatHeader.js';
+import type { IParadisAgentChatGuide } from '../../agentChat/common/paradisAgentChat.js';
+import { paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
 import type { IParadisBotSummary } from './paradisBotsApi.js';
 import type { IParadisBotGithubView } from './paradisBotGithub.js';
 import { paradisBotStatusLine } from './paradisBotsBandModel.js';
@@ -103,6 +105,32 @@ export function paradisBotStripHeader(bot: IParadisBotSummary, header: Pick<IPar
 		return { status: line, attention: false, busy: false, model: '' };
 	}
 	return { status: header.status || line, attention: header.attention, busy: header.busy && !header.attention, model: header.model };
+}
+
+/**
+ * Bot の会話のペインで、会話がまだ見つからない間にチャット表示へ出す案内（会話はいつも吹き出しで見せ、ターミナルは勝手に開かない）。
+ * 止まっている理由（`halt`）があれば「ターミナルを開く」の帯を出す。`waitedLong` は、チャット表示にしてからしばらく会話が
+ * 見つからない（会話の記録を読めないエージェント・起動の画面で止まっていて hook も出ない）とき。
+ */
+export function paradisBotChatGuide(bot: Pick<IParadisBotSummary, 'agent' | 'halt'>, waitedLong: boolean): IParadisAgentChatGuide {
+	const empty = localize('paradis.botPage.chat.empty', "まだ会話はありません");
+	const inTerminal = localize('paradis.botPage.chat.checkInTerminal', "ターミナルで確かめてください");
+	switch (bot.halt?.kind) {
+		case 'notFound':
+			return { notice: empty, band: { title: localize('paradis.botPage.chat.notFound', "{0} が見つかりません", paradisAgentDescriptor(bot.agent)?.displayName ?? bot.agent), detail: inTerminal } };
+		case 'exited':
+			return { notice: empty, band: { title: localize('paradis.botPage.chat.exited', "エージェントは終了しました"), detail: inTerminal } };
+		case 'needsUser':
+			return { notice: empty, band: { title: localize('paradis.botPage.chat.needsUser', "ターミナルで操作が要ります"), detail: localize('paradis.botPage.chat.needsUserDetail', "初回設定・ログイン・許可の画面で止まっています") } };
+	}
+	// Claude Code は起動の hook が来なければ止まっている理由（needsUser）が付くので、ここでは出さない。Codex は起動の hook が無い
+	// ので、しばらく会話が見つからなければ帯を出す（更新の案内・信頼の確認で止まっていることがある）。最初の発言まで会話の記録を
+	// 作らないだけのこともあるので、入力欄は止めない（送る文は、入力欄が受け付ける状態になってから渡す）
+	if (waitedLong && bot.agent !== 'claude') {
+		return { notice: empty, band: { title: localize('paradis.botPage.chat.needsUser', "ターミナルで操作が要ります"), detail: localize('paradis.botPage.chat.unreadable', "会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください") }, ...(bot.agent === 'codex' ? { sendable: true } : {}) };
+	}
+	// 会話が見つかる前でも入力欄から最初の 1 文を送れる（エージェントの入力欄の準備ができてから送る）
+	return { notice: localize('paradis.botPage.chat.waking', "起こしています…"), sendable: true };
 }
 
 /**
