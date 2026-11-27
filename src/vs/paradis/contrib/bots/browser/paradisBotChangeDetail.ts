@@ -33,6 +33,8 @@ export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, '
 		pinned: localize('paradisBots.field.pinned', "ピン留め"),
 		// allow-any-unicode-next-line
 		paused: localize('paradisBots.field.paused', "一時停止"),
+		// allow-any-unicode-next-line
+		watch_github: localize('paradisBots.field.watchGithub', "GitHub の見張り"),
 	};
 	// allow-any-unicode-next-line
 	const unset = localize('paradisBots.field.default', "（既定）");
@@ -57,6 +59,10 @@ export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, '
 		if (change.field !== 'role') {
 			lines.push(`${labels[change.field] ?? change.field}: ${change.from ?? unset} → ${change.to ?? unset}`);
 		}
+	}
+	if (request.changes.some(change => change.field === 'watch_github' && change.to === 'true')) {
+		// allow-any-unicode-next-line
+		lines.push('', localize('paradisBots.watchGithubOn', "5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。gh でログインしているアカウントのすべてのリポジトリ（非公開・組織のものを含む）が対象で、その題とリポジトリ名をこの Bot に渡します。"));
 	}
 	for (const change of request.changes) {
 		if (change.field === 'role') {

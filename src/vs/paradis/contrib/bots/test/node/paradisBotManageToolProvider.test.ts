@@ -148,6 +148,24 @@ suite('Paradis bot manage tools', () => {
 		});
 	});
 
+	test('GitHub の見張りの入り切りも利用者の確認を通す（確認の前は変わらない）', async () => {
+		const h = harness();
+		await h.call('create_bot', { name: 'A', agent: 'claude' });
+		const asked = await h.call('update_bot', { bot: 'id1', watch_github: true });
+		const wrongType = await h.call('update_bot', { bot: 'id1', watch_github: 'yes' });
+		assert.deepStrictEqual({
+			asked,
+			request: h.windowArgs[0][1],
+			wrongType,
+			unchanged: h.service.getBot('id1')?.watchGithub,
+		}, {
+			asked: { bot: 'id1', requested: true, note: 'Para Code asked the user to confirm the change. It is applied only if they agree; call list_bots later to see the result.' },
+			request: { botId: 'id1', botName: 'A', changes: [{ field: 'watch_github', from: 'false', to: 'true' }], patch: { watchGithub: true } },
+			wrongType: { error: '"watch_github" is true or false.' },
+			unchanged: undefined,
+		});
+	});
+
 	test('名前を変えることと一時停止を解くことは確認を通す。止めること・同じ値はそのまま当てる', async () => {
 		const h = harness();
 		await h.call('create_bot', { name: 'A', agent: 'codex' });
@@ -247,12 +265,12 @@ suite('Paradis bot manage tools', () => {
 		const chat = h.service.issueLaunch('id1', 'chat');
 		assert.ok(patrol !== undefined && chat !== undefined && h.service.reportLaunch(patrol, 'pane-patrol') && h.service.reportLaunch(chat, 'pane-chat'));
 		const registration = paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(h.service));
-		const tools = ['get_text', 'take_snapshot', 'list_browser_tabs', 'bot_suggest', 'bot_item_list', 'click_by', 'fill_by', 'navigate_page', 'evaluate_script', 'run_steps', 'write_space_note', 'send_terminal_input', 'create_scheduled_run', 'update_bot', 'computer_click'];
+		const tools = ['get_text', 'take_snapshot', 'list_browser_tabs', 'bot_suggest', 'bot_item_list', 'bot_github_news', 'click_by', 'fill_by', 'navigate_page', 'evaluate_script', 'run_steps', 'write_space_note', 'send_terminal_input', 'create_scheduled_run', 'update_bot', 'computer_click'];
 		const answers = async (pane: string) => Object.fromEntries(await Promise.all(tools.map(async tool => [tool, await paradisMcpCallRefusalFor(pane, tool) === undefined ? 'ok' : 'refused'])));
 		const result = { patrol: await answers('pane-patrol'), chat: await answers('pane-chat'), user: await answers('pane-user') };
 		registration.dispose();
 		const afterDispose = await paradisMcpCallRefusalFor('pane-patrol', 'click_by');
-		const allowed = { get_text: 'ok', take_snapshot: 'ok', list_browser_tabs: 'ok', bot_suggest: 'ok', bot_item_list: 'ok' };
+		const allowed = { get_text: 'ok', take_snapshot: 'ok', list_browser_tabs: 'ok', bot_suggest: 'ok', bot_item_list: 'ok', bot_github_news: 'ok' };
 		const everything = { ...allowed, click_by: 'ok', fill_by: 'ok', navigate_page: 'ok', evaluate_script: 'ok', run_steps: 'ok', write_space_note: 'ok', send_terminal_input: 'ok', create_scheduled_run: 'ok', update_bot: 'ok', computer_click: 'ok' };
 		assert.deepStrictEqual({ ...result, afterDispose, message: await paradisBotPatrolToolRefusal(h.service)('pane-patrol', 'click_by') }, {
 			patrol: { ...allowed, click_by: 'refused', fill_by: 'refused', navigate_page: 'refused', evaluate_script: 'refused', run_steps: 'refused', write_space_note: 'refused', send_terminal_input: 'refused', create_scheduled_run: 'refused', update_bot: 'refused', computer_click: 'refused' },

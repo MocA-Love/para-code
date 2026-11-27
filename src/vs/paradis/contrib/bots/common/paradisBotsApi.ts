@@ -8,6 +8,7 @@
 
 // Bot のサービスが画面（一覧・ページ・スマホ）へ見せる形。台帳そのものではなく、Bot ごとにまとめた値。
 
+import type { IParadisBotGithubView } from './paradisBotGithub.js';
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
@@ -63,6 +64,11 @@ export interface IParadisBotsSnapshot {
 	/** 台帳が新しい版で書かれていて、この版からは変えられない。 */
 	readonly readOnly: boolean;
 	readonly bots: readonly IParadisBotSummary[];
+	/**
+	 * GitHub の見張りの様子（止まっている理由）と、項目に結んだ PR の今の状態（`owner/repo#n` → 状態）。
+	 * 見張っていなければ持たない。
+	 */
+	readonly github?: IParadisBotGithubView;
 }
 
 export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: readonly IParadisBotPaneState[]): ParadisBotActivity {

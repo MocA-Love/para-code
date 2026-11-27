@@ -72,6 +72,11 @@ export interface IParadisBot {
 	/** 顔の色と形。古い保存・選んでいない Bot は名前から決まる既定（{@link paradisBotDefaultFace}）。 */
 	readonly faceColor: ParadisBotFaceColor;
 	readonly faceShape: ParadisBotFaceShape;
+	/**
+	 * GitHub の自分宛ての新着（レビューの依頼・担当の割り当て）で、この Bot の見回りを起こす。オフのときは欄を
+	 * 書かない（古い版がこの Bot を読み取り専用にしないように）。
+	 */
+	readonly watchGithub?: true;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 	/**
@@ -92,7 +97,7 @@ export interface IParadisBotsState {
 }
 
 /** この版が知っている Bot の欄。ほかの欄があれば、その Bot は読み取り専用。 */
-export const PARADIS_BOT_KNOWN_KEYS: ReadonlySet<string> = new Set(['id', 'name', 'folder', 'agent', 'modelId', 'effortId', 'permissionId', 'paused', 'pinned', 'faceColor', 'faceShape', 'createdAt', 'updatedAt']);
+export const PARADIS_BOT_KNOWN_KEYS: ReadonlySet<string> = new Set(['id', 'name', 'folder', 'agent', 'modelId', 'effortId', 'permissionId', 'paused', 'pinned', 'faceColor', 'faceShape', 'watchGithub', 'createdAt', 'updatedAt']);
 
 function unknownFolders(state: IParadisBotsState): string[] {
 	return (state.unknown ?? []).map(value => value.folder).filter((folder): folder is string => typeof folder === 'string');
@@ -214,6 +219,7 @@ export interface IParadisBotPatch {
 	readonly pinned?: unknown;
 	readonly faceColor?: unknown;
 	readonly faceShape?: unknown;
+	readonly watchGithub?: unknown;
 }
 
 function agentKind(value: unknown): ParadisAgentKind | undefined {
@@ -294,17 +300,21 @@ export function paradisBotUpdate(state: IParadisBotsState, id: string, patch: IP
 	const agent = patch.agent === undefined ? current.agent : agentKind(patch.agent);
 	const next = withOptionalIds(current, patch);
 	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean') || (patch.pinned !== undefined && typeof patch.pinned !== 'boolean')
+		|| (patch.watchGithub !== undefined && typeof patch.watchGithub !== 'boolean')
 		|| (patch.faceColor !== undefined && faceColor(patch.faceColor) === undefined) || (patch.faceShape !== undefined && faceShape(patch.faceShape) === undefined)) {
 		return refuse('invalid_argument', 'The change to the bot is not valid.');
 	}
+	const { watchGithub: _watch, ...rest } = next;
+	const watchGithub = typeof patch.watchGithub === 'boolean' ? patch.watchGithub : current.watchGithub === true;
 	const bot: IParadisBot = {
-		...next,
+		...rest,
 		name,
 		agent,
 		paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused,
 		pinned: typeof patch.pinned === 'boolean' ? patch.pinned : current.pinned,
 		faceColor: faceColor(patch.faceColor) ?? current.faceColor,
 		faceShape: faceShape(patch.faceShape) ?? current.faceShape,
+		...(watchGithub ? { watchGithub: true } : {}),
 		updatedAt: now,
 	};
 	return { ok: true, state: { ...state, bots: state.bots.map(existing => existing.id === id ? bot : existing) }, bot };
@@ -353,6 +363,7 @@ function storedBot(value: unknown): { readonly kind: 'bot'; readonly bot: IParad
 		pinned: value.pinned === true,
 		faceColor: faceColor(value.faceColor) ?? face.faceColor,
 		faceShape: faceShape(value.faceShape) ?? face.faceShape,
+		...(value.watchGithub === true ? { watchGithub: true as const } : {}),
 		createdAt,
 		updatedAt,
 	}, {
