@@ -11,6 +11,7 @@
 // 変更は管理の道具 update_bot と同じ形（{@link IParadisBotUpdateArgs}）にする。確かめるかどうか（エージェント・権限・役割）も
 // update_bot と同じ規則で、確かめる本文は同じ {@link paradisBotChangeRequest} から作る（規則を二重に持たない）。
 
+import { localize } from '../../../../nls.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisAgentPermissionOption, PARADIS_DEFAULT_AGENT_COMMANDS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisBotUpdateArgs, PARADIS_BOT_ROLE_LIMIT } from './paradisBotManageTools.js';
@@ -159,6 +160,45 @@ export function paradisBotHomeFileDiff(base: string | undefined, latest: string 
 			lines.push({ kind: 'added', text: after[j] });
 			j++;
 		}
+	}
+	return lines;
+}
+
+/** 記憶の写し（新しい順。種類ごとに最大 5 件）。 */
+export interface IParadisBotMemorySnapshotInfo {
+	readonly takenAt: number;
+	/** 写したファイルの数。 */
+	readonly files: number;
+	/** 記憶のファイルの数（上限で打ち切ったときは `files` より多い）。 */
+	readonly total: number;
+	readonly partial: boolean;
+	/** `auto` は会話の Bot の起動時に本体が取った写し、`manual` は整理の前に取った写し（種類の無い古い写しも manual）。 */
+	readonly kind: 'auto' | 'manual';
+}
+
+/** 写しの一覧の 1 行の件数の文（一部だけなら何件中かを出す）。 */
+export function paradisBotMemorySnapshotCount(snapshot: IParadisBotMemorySnapshotInfo): string {
+	return snapshot.partial
+		? localize('paradis.botPage.snapshots.partial', "{0} 件中 {1} 件だけ写しました", snapshot.total, snapshot.files)
+		: localize('paradis.botPage.snapshots.count', "{0} 件", snapshot.files);
+}
+
+/** 記憶の整理を取り消した結果（`undoMemoryTidy` の値）。 */
+export interface IParadisBotUndoTidyResult {
+	readonly restored: readonly string[];
+	readonly added: readonly string[];
+	readonly takenAt: number;
+	readonly skipped: readonly string[];
+}
+
+/** 取り消しの結果を、写しの一覧の下に出す行にする（`attention` は目立たせる行）。 */
+export function paradisBotUndoTidyLines(result: IParadisBotUndoTidyResult, time: (at: number) => string): readonly { readonly text: string; readonly attention: boolean }[] {
+	const lines = [{ text: localize('paradis.botPage.snapshots.undone', "{0} の写しに戻しました（{1} 件）。", time(result.takenAt), result.restored.length), attention: false }];
+	if (result.added.length > 0) {
+		lines.push({ text: localize('paradis.botPage.snapshots.added', "整理でできたファイルは消さずに残しています: {0}", result.added.join(', ')), attention: false });
+	}
+	if (result.skipped.length > 0) {
+		lines.push({ text: localize('paradis.botPage.snapshots.skipped', "取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: {0}", result.skipped.join(', ')), attention: true });
 	}
 	return lines;
 }

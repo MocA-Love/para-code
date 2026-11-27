@@ -21,7 +21,7 @@ export const PARADIS_BOT_PAGE_TABS: readonly ParadisBotPageTab[] = ['chat', 'ite
 export interface IParadisBotItemGroups {
 	/** あなたの番（Bot が問いを出して待っているもの）。 */
 	readonly you: readonly IParadisBotItem[];
-	/** 進行中（作業中と、問いの無い Needs you）。 */
+	/** 進行中（作業中・外の返事待ち・問いの無い Needs you）。 */
 	readonly working: readonly IParadisBotItem[];
 	readonly planned: readonly IParadisBotItem[];
 	/** 後回し中（期限まで群から外す）。 */
@@ -59,6 +59,7 @@ export function paradisBotItemStatusLabel(item: Pick<IParadisBotItem, 'status'>)
 	switch (paradisBotItemStatus(item)) {
 		case 'planned': return localize('paradis.botPage.status.planned', "予定");
 		case 'working': return localize('paradis.botPage.status.working', "進行中");
+		case 'waiting': return localize('paradis.botPage.status.waiting', "外の返事待ち");
 		case 'needs_you': return localize('paradis.botPage.status.needsYou', "あなたの番");
 		case 'done': return localize('paradis.botPage.status.done', "完了");
 		case 'canceled': return localize('paradis.botPage.status.canceled', "取りやめ");
@@ -86,4 +87,18 @@ export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number
 			: localize('paradis.botPage.event.unsnoozed', "{0}が後回しを解きました", who);
 		default: return localize('paradis.botPage.event.other', "{0}: {1}", who, event.kind);
 	}
+}
+
+/**
+ * 提案の依頼の文を、入力欄・ターミナルへ入れる形にする。端末を操作する制御文字（ESC の列・CR など）は落とす
+ * （`ESC[201~` で貼り付けの囲いを閉じて、残りを打ち込ませない）。`multiline` が false（ターミナルが bracketed paste の
+ * モードでない）なら改行を空白にする（改行が Enter になり、1 行目から実行されるため）。
+ */
+export function paradisBotSuggestionText(text: string, multiline: boolean): string {
+	const plain = text
+		.replace(/\r\n?/g, '\n')
+		// CSI・OSC などのエスケープの列を丸ごと落とし、残りの制御文字（改行とタブは残す）も落とす
+		.replace(/\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])?/g, '')
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+	return multiline ? plain : plain.replace(/\s*\n\s*/g, ' ').trim();
 }
