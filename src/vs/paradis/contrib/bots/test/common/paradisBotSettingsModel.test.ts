@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange } from '../../common/paradisBotSettingsModel.js';
+import { paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange, paradisBotSettingsRebase } from '../../common/paradisBotSettingsModel.js';
 
 const BOT = { id: 'b', name: 'リリース係', agent: 'claude' as const, permissionId: undefined };
 const SAME = { name: 'リリース係', agent: 'claude' as const, permissionId: undefined, role: '# リリース係\n' };
@@ -46,5 +46,21 @@ suite('Paradis bots settings', () => {
 			paradisBotHomeFileConflict(undefined, ''),
 			paradisBotHomeFileConflict('a', 'b'),
 		], [['claude', 'codex'], ['claude', 'codex', 'opencode'], ['default', 'skip-permissions'], false, false, true]);
+	});
+
+	test('台帳がほかで変わったら、手を付けていない欄だけ合わせ、書き換えていた欄は残して挙げる', () => {
+		const base = { name: 'リリース係', agent: 'claude' as const, permissionId: undefined };
+		const bot = { name: '出荷係', agent: 'codex' as const, permissionId: 'auto' };
+		assert.deepStrictEqual([
+			paradisBotSettingsRebase(base, { ...base, role: 'r' }, bot),
+			paradisBotSettingsRebase(base, { ...base, name: '自分の名前', role: 'r' }, bot),
+			paradisBotSettingsRebase(base, { ...base, name: '出荷係', role: 'r' }, bot),
+			paradisBotSettingsRebase(base, { ...base, name: '自分の名前', role: 'r' }, base).changedElsewhere,
+		], [
+			{ base: bot, draft: { ...bot, role: 'r' }, changedElsewhere: [] },
+			{ base: bot, draft: { ...bot, name: '自分の名前', role: 'r' }, changedElsewhere: ['name'] },
+			{ base: bot, draft: { ...bot, role: 'r' }, changedElsewhere: [] },
+			[],
+		]);
 	});
 });
