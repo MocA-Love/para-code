@@ -10,7 +10,6 @@
 // 断りの文をここに集め、単体テストで値を確かめる。
 
 import { localize } from '../../../../nls.js';
-import { paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotGroup, IParadisBotGroupRecord, PARADIS_BOT_GROUP_LIMITS, ParadisBotGroupMentionResult, paradisSanitizeBotGroupName } from './paradisBotGroups.js';
 
 /** 記録の 1 行の頭（誰が誰に）。本文は別の要素に出す。 */
@@ -23,30 +22,23 @@ export function paradisBotGroupRecordHead(record: Pick<IParadisBotGroupRecord, '
 	}
 }
 
-/** 記録の 1 行に添える印（Bot 同士の伝言を順番待ちに入れた・届かなかった理由）。無ければ undefined。 */
-export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'undelivered' | 'queued'>): string | undefined {
-	if (record.queued === true) {
-		return localize('paradis.botGroups.record.queued', "順番待ちに入れました");
-	}
+/**
+ * 記録の 1 行に添える印。Bot 同士の伝言（`asked`・`told`）は受け箱の未読・既読（「まだ読まれていない」「読まれた」）、
+ * 受け付けられなかった伝言はその理由。あなたの `sent` には付けない。
+ */
+export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'kind' | 'undelivered' | 'readAt'>): string | undefined {
 	switch (record.undelivered) {
 		case 'refused': return localize('paradis.botGroups.record.refused', "宛先が受け取らなかった");
 		case 'unreachable': return localize('paradis.botGroups.record.unreachable', "届けられなかった");
 		case 'unknown': return localize('paradis.botGroups.record.unknown', "届いたか分からない");
-		case undefined: return undefined;
+		case undefined: break;
 	}
-}
-
-/**
- * その Bot のエージェントが、ほかの Bot からの伝言を受け取れる種類か（作業中の発言を次の番まで待たせられる。今は
- * Claude Code だけ）。受け取れても、届けるときに入力欄の mod が無ければ断る（ここでは見ない）。
- */
-export function paradisBotCanReceiveBotMessages(agent: string): boolean {
-	return paradisAgentDescriptor(agent)?.queuesWhileWorking === true;
-}
-
-/** 伝言を受け取れない Bot に添える文。 */
-export function paradisBotCannotReceiveLabel(): string {
-	return localize('paradis.botGroups.cannotReceive', "伝言を受け取れません");
+	if (record.kind === 'sent') {
+		return undefined;
+	}
+	return record.readAt !== undefined
+		? localize('paradis.botGroups.record.read', "読まれた")
+		: localize('paradis.botGroups.record.unread', "まだ読まれていない");
 }
 
 /** 名指しを読めなかったときの文。読めたら undefined。 */
