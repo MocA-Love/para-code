@@ -21,6 +21,7 @@ import {
 	ParadisBotMessageRateLimiter,
 	PARADIS_BOT_ASK_TOOL,
 	PARADIS_BOT_INBOX_NOTE,
+	PARADIS_BOT_INBOX_PATROL_NOTE,
 	PARADIS_BOT_INBOX_TOOL,
 	PARADIS_BOT_INBOX_TOOL_DEFINITION,
 	PARADIS_BOT_MESSAGE_LIMITS,
@@ -120,7 +121,9 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 			return toolError(NO_GROUPS_MESSAGE);
 		}
 		if (name === PARADIS_BOT_INBOX_TOOL) {
-			return this.readInbox(bot.id, args, groups);
+			// 見回りは覗くだけで既読にしない（見回りからは返事を送れないので、既読にすると質問が会話に出なくなる。
+			// 見回りは台帳に書かない約束とも揃える）
+			return this.readInbox(bot.id, args, groups, this.service.purposeOfPane(paneToken) !== 'patrol');
 		}
 		if (this.service.purposeOfPane(paneToken) === 'patrol') {
 			return toolError(PATROL_MESSAGE);
@@ -166,8 +169,8 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		});
 	}
 
-	/** 受け箱を読む（古い順に {@link PARADIS_BOT_MESSAGE_LIMITS.read} 通まで）。読んだ分を既読にする。 */
-	private async readInbox(botId: string, args: unknown, groups: IParadisBotGroupsPort): Promise<unknown> {
+	/** 受け箱を読む（古い順に {@link PARADIS_BOT_MESSAGE_LIMITS.read} 通まで）。`markRead` なら読んだ分を既読にする。 */
+	private async readInbox(botId: string, args: unknown, groups: IParadisBotGroupsPort, markRead: boolean): Promise<unknown> {
 		if (args !== undefined && args !== null && (typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0)) {
 			return toolError('bot_inbox takes no arguments.');
 		}
@@ -176,12 +179,14 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (entries.length === 0) {
 			return toolJson({ messages: [], note: 'Your inbox is empty.' });
 		}
-		await groups.markRead(botId, entries.map(entry => entry.recordId));
+		if (markRead) {
+			await groups.markRead(botId, entries.map(entry => entry.recordId));
+		}
 		const left = unread.length - entries.length;
 		return toolJson({
-			note: PARADIS_BOT_INBOX_NOTE,
+			note: markRead ? PARADIS_BOT_INBOX_NOTE : PARADIS_BOT_INBOX_PATROL_NOTE,
 			messages: paradisBotInboxView(entries, id => this.service.getBot(id)?.name),
-			...(left > 0 ? { more: `${left} more unread; call bot_inbox again.` } : {}),
+			...(left > 0 ? { more: markRead ? `${left} more unread; call bot_inbox again.` : `${left} more unread.` } : {}),
 		});
 	}
 }
