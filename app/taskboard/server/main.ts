@@ -8,20 +8,21 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ITaskBoardAddIssuesRequest, ITaskBoardAddTaskRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardAddTaskResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardAddIssuesRequest, ITaskBoardAddTaskRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardManualSession, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardAddTaskResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
 import { TaskBoardError, taskBoardSanitizeAddTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
-import { AskPublisher, askLedgerId } from './asks.js';
+import { TASK_BOARD_PANE_ASK_ANSWER_ROUTE } from '@engine/paradisTaskBoardAsks.js';
+import { AskPublisher, askLedgerId, taskBoardPaneAskAnswer, taskBoardPaneManualSessions } from './asks.js';
 import { buildDemo, demoSlots } from './demo.js';
-import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
+import { embeddedFlows, loadFlows, saveActiveFlow, saveFlow } from './flows.js';
 import { GitHubClient, GitHubError, ghTokenProvider, redactGitHubSecrets } from './github.js';
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
 import { addClaudeApprovals, claudeApprovalStates, ClaudeConfigError } from './claudeApproval.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents, ParaCodeBridgeClient } from './paraCode.js';
 import { RELAY_UNSUPPORTED, RelayClient, RemoteCommandRunner, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from './relay.js';
-import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
+import { boardPlaces, checkCloneFolder, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { listTask, TaskDetailFeed } from './taskDetail.js';
@@ -44,7 +45,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const MAX_BODY = 6 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml']);
-const STRING_LIMITS: Record<string, number> = { owner: 100, fieldName: 100, taskId: 200, to: 100, from: 100, stepId: 100, questionId: 100, sessionId: 200, flowId: 100, key: 20, path: 1000, title: 300, due: 10, reason: 20000, prompt: 20000, note: 20000, text: 20000, body: 20000, message: 2000 };
+const STRING_LIMITS: Record<string, number> = { owner: 100, fieldName: 100, taskId: 200, to: 100, from: 100, stepId: 100, questionId: 100, sessionId: 420, optionId: 400, flowId: 100, key: 20, path: 1000, title: 300, due: 10, reason: 20000, prompt: 20000, note: 20000, text: 20000, body: 20000, message: 2000 };
 
 /** RPC の引数の形を確かめる（型を偽った送信で、エンジンに想定外の値が入らないように）。 */
 /** ボードの画面で人の出番に答える操作（終わると、その 1 件が「あなたの番」から外れる）。 */
@@ -154,7 +155,8 @@ type EmbeddedMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
 	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
 	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult }
-	| { readonly type: 'add-task-result'; readonly requestId: string; readonly result: TaskBoardAddTaskResult };
+	| { readonly type: 'add-task-result'; readonly requestId: string; readonly result: TaskBoardAddTaskResult }
+	| { readonly type: 'pick-folder'; readonly requestId: string };
 
 // Para Code は Electron を Node として動かして（ELECTRON_RUN_AS_NODE）このサーバーを起こす。消さないと、工程のコマンド
 // （Electron を起動するテストなど）にも渡って Node として動いてしまう。Electron は起動のときしかこれを読まない
@@ -175,6 +177,25 @@ let addIssuesCurrent: ((request: ITaskBoardAddIssuesRequest) => Promise<TaskBoar
 
 /** 今動いているボードへ、Para Code の Bot が出したタスクを載せる処理（main() が開くたびに差し替える）。 */
 let addTaskCurrent: ((request: ITaskBoardAddTaskRequest) => TaskBoardAddTaskResult) | undefined;
+
+/** Para Code に頼んだフォルダの選択の、返事の待ち（requestId → 受け取り）。 */
+const folderPicks = new Map<string, (folder: string | undefined) => void>();
+
+/** Para Code のフォルダの選択のダイアログを開いてもらう（`--embedded` のときだけ）。選ばずに閉じたら undefined。 */
+function pickFolder(): Promise<string | undefined> {
+	return new Promise(resolve => {
+		const requestId = randomBytes(12).toString('base64url');
+		// ダイアログは人が閉じるまで開いているので、長めに待つ（Para Code が答えないまま溜まらないように上限は置く）
+		const timer = setTimeout(() => finish(undefined), 10 * 60_000);
+		const finish = (folder: string | undefined) => {
+			clearTimeout(timer);
+			folderPicks.delete(requestId);
+			resolve(folder);
+		};
+		folderPicks.set(requestId, finish);
+		tellParent({ type: 'pick-folder', requestId });
+	});
+}
 
 /** 今動いているボードを止める処理（main() が開くたびに差し替える）。Para Code との IPC が切れたら呼ぶ。 */
 let stopCurrent: (() => void) | undefined;
@@ -360,7 +381,7 @@ async function main(restart?: IRestart): Promise<void> {
 	}
 	const settings: ILocalSettings = (await store.loadSettings()) ?? {};
 	// SSH のボードは clone を使わず、ワークツリーの置き場は窓が決めたもの
-	const clones = relayInfo ? undefined : args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
+	let clones = relayInfo ? undefined : args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
 	const worktreeRoot = relayInfo ? relayInfo.worktreeRoot : (fresh ? args['worktree-root'] : undefined) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
 	if (args.agents !== 'simulated' && args.agents !== 'para-code') {
 		throw new Error('--agents は simulated か para-code');
@@ -417,6 +438,8 @@ async function main(restart?: IRestart): Promise<void> {
 	let bridgeState: { connected: boolean; detail?: string } = { connected: false };
 	// Para Code の「人が答えるもの」の台帳へ、ボードの人の出番を写す（asks.ts）
 	let askPublisher: AskPublisher | undefined;
+	// ボードの外のペインの、人の答えを待っている 1 件（「フロー外のエージェント」の欄。Para Code の台帳の写し）
+	let paneManual: ITaskBoardManualSession[] = [];
 	const paraAgents = paraCodeMode ? new ParaCodeAgents({
 		engine: () => engine,
 		placePath,
@@ -427,8 +450,15 @@ async function main(restart?: IRestart): Promise<void> {
 		readArtifact: relay ? (place, relativePath, maxBytes) => relay!.readFile(place, relativePath, maxBytes) : undefined,
 		onRelayEvent: event => remoteRunner?.onEvent(event),
 		onAskAnswer: event => void askPublisher?.onAskAnswer(event),
+		onPaneAsks: asks => {
+			paneManual = taskBoardPaneManualSessions(asks);
+			broadcastSoon();
+		},
 		onConnection: (connected, detail) => {
 			askPublisher?.onConnection(connected);
+			if (!connected) {
+				paneManual = [];
+			}
 			bridgeState = { connected, detail };
 			log(connected ? 'Para Code につながりました' : `Para Code: ${detail ?? '切断'}`);
 			broadcastSoon();
@@ -524,6 +554,7 @@ async function main(restart?: IRestart): Promise<void> {
 		codexApprovalMissing: paraCodeMode && !relay ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
 		// SSH のボード: 起動のときだけ許可を渡すか（ボードの帯で頼み、SSH の窓でもリポジトリごとに 1 回確かめる）
 		launchApprovals: relay ? launchApprovals : undefined,
+		canAddClone: args.embedded && paraCodeMode && !relay ? true : undefined,
 		codexConfigPaths: paraCodeMode ? codexPending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
 		codexManualConfigs: paraCodeMode ? codexPending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
 		// Claude Code の帯は、ボードが Claude Code の担当を使うときだけ出す（~/.claude は Para Code の hook の設置でも作られるので、有無では決めない）
@@ -543,7 +574,7 @@ async function main(restart?: IRestart): Promise<void> {
 		flows: [...engine.getFlows()],
 		activeFlowId: engine.getActiveFlowId(),
 		slots: engine.getSlots(),
-		manual: [...sim.manual],
+		manual: paraAgents ? [...paneManual] : [...sim.manual],
 		github: sync ? sync.getState() : { mode: 'off' },
 		runtime: runtime(),
 		...(archivedCount !== undefined ? { archivedCount } : {}),
@@ -556,7 +587,8 @@ async function main(restart?: IRestart): Promise<void> {
 	for (const problem of loaded.problems) {
 		log(`flow: ${problem.path}: ${problem.message}`);
 	}
-	engine.setFlows(loaded.flows, loaded.active, true);
+	// Para Code が開くボードにはクローンの場所を渡せないので、組み込みのフローはワークツリーで始める（設定にクローンを残している人は除く）
+	engine.setFlows(args.embedded ? embeddedFlows(loaded.flows, clones) : loaded.flows, loaded.active, true);
 
 	const slots = clones?.length ? await inspectClones(clones) : paraCodeMode ? [] : demoSlots();
 	if (!realWorkspaces) {
@@ -585,9 +617,14 @@ async function main(restart?: IRestart): Promise<void> {
 		sync?.scheduleWriteBack();
 		broadcastSoon();
 	});
-	if (realWorkspaces && clones?.length) {
-		// 作業場所の汚れ（未コミットの変更）は、手で片付けられることもあるので 1 分ごとに調べ直す
-		timers.push(setInterval(() => void inspectClones(clones).then(slots => engine.setPoolSlots(slots)), 60000).unref());
+	if (realWorkspaces) {
+		// 作業場所の汚れ（未コミットの変更）は、手で片付けられることもあるので 1 分ごとに調べ直す（クローンは画面から足せる）
+		timers.push(setInterval(() => {
+			const current = clones;
+			if (current?.length) {
+				void inspectClones(current).then(slots => engine.setPoolSlots(slots));
+			}
+		}, 60000).unref());
 	}
 	engine.onDidNotice(notice => send({ type: 'notice', notice }));
 	sim.onEngineChange();
@@ -683,10 +720,25 @@ async function main(restart?: IRestart): Promise<void> {
 			await restoreFromArchive(engine, archiveFile(store.directory), p.taskId);
 			await recountArchived();
 		},
-		answerManual: p => { sim.answerManual(p.sessionId, p.allow); },
+		answerManual: async p => {
+			const session = paneManual.find(m => m.id === p.sessionId);
+			if (!paraAgents || !session?.ask) {
+				sim.answerManual(p.sessionId, p.allow === true);
+				return;
+			}
+			// 押せるのは、Para Code が流してきた質問の選択肢だけ（Para Code の側でもう一度確かめる）
+			const answer = taskBoardPaneAskAnswer(session.ask, p);
+			if (!answer) {
+				throw new TaskBoardError('invalid-params', 'ここでは答えられません。Para Code の受信箱で答えてください');
+			}
+			const result = await paraAgents.client.request('POST', TASK_BOARD_PANE_ASK_ANSWER_ROUTE, { key: session.ask.key, answer }) as { readonly ok?: boolean; readonly reason?: string } | undefined;
+			if (result?.ok !== true) {
+				throw new TaskBoardError('invalid-state', result?.reason === 'busy' ? 'ほかの場所で答えて届けている最中です' : 'もう待っていないか、答えを届けられませんでした');
+			}
+		},
 		adoptManual: p => {
 			const session = sim.manual.find(m => m.id === p.sessionId);
-			if (!session) {
+			if (!session?.agent) {
 				throw new TaskBoardError('not-found', 'session not found');
 			}
 			const id = engine.adopt({ sessionId: session.id, title: p.title || session.name, agent: session.agent, branch: session.branch, place: session.name });
@@ -829,6 +881,27 @@ async function main(restart?: IRestart): Promise<void> {
 			engine.reportOutput(task.id, [`${cwd} $ git commit -m ${JSON.stringify(message)}`, `  ${sha}`]);
 			engine.retry(task.id, fromStep, fromAttempt);
 			return { sha };
+		},
+		addClone: async () => {
+			if (!args.embedded || !paraCodeMode || relay || !repoPath) {
+				throw new TaskBoardError('invalid-state', 'Para Code から開いた、この PC のリポジトリのボードでだけ足せます');
+			}
+			const picked = await pickFolder();
+			if (!picked) {
+				return {};
+			}
+			const checked = await checkCloneFolder(repoPath, picked);
+			if (!checked.ok) {
+				throw new TaskBoardError('invalid-params', checked.message);
+			}
+			const known = (clones ?? []).map(clone => { try { return realpathSync(clone); } catch { return path.resolve(clone); } });
+			if (!known.includes(checked.path)) {
+				clones = [...(clones ?? []), checked.path];
+				// クローンの場所は人ごとに違うので、リポジトリには書かず、この PC の設定に置く
+				await store.saveSettings({ ...((await store.loadSettings()) ?? {}), clones });
+			}
+			engine.setPoolSlots(await inspectClones(clones ?? []));
+			return { added: checked.path };
 		},
 		restartAgent: async p => {
 			const task = engine.getTask(p.taskId);
@@ -1269,6 +1342,10 @@ async function start(): Promise<void> {
 			}
 			if (type === 'add-task' && typeof requestId === 'string' && requestId.length <= 64) {
 				handleAddTask(requestId, request);
+			}
+			if (type === 'pick-folder-result' && typeof requestId === 'string') {
+				const folder = (message as { path?: unknown }).path;
+				folderPicks.get(requestId)?.(typeof folder === 'string' && path.isAbsolute(folder) ? folder : undefined);
 			}
 		});
 	}

@@ -81,6 +81,14 @@ export function completionRule(step: ITaskBoardStep): string {
 // 文はエンジンの側に置く（Para Code の台帳へ写す前置きと同じ文を使うため）
 export { taskBoardActivityText as taskActivity, errorText };
 
+/** 「あなたの番」が空のときの文。動いているエージェントが居ないのに「進めています」と書かない。 */
+export function emptyInboxText(running: number, todo: number): string {
+	if (running > 0) {
+		return 'エージェントが進めています。質問や承認が来たらここに並びます。';
+	}
+	return todo > 0 ? `動いているエージェントもありません。未着手の ${todo} 件から着手できます。` : '動いているエージェントもありません。タスクを足して着手すると、質問や承認がここに並びます。';
+}
+
 export function rpcErrorText(code: TaskBoardErrorCode | 'network', message: string): string {
 	switch (code) {
 		case 'network':
