@@ -104,14 +104,17 @@ export const PARADIS_MOBILE_BOT_HANDLERS: Readonly<Record<string, Handle>> = {
 	[PARADIS_MOBILE_BOT_KINDS.suggestionAct]: async ({ bots }, request, context) => {
 		const id = paradisMobileBotId(request.id);
 		const opId = paradisMobileBotOpId(request.opId);
-		if (id === undefined || opId === undefined || (request.action !== 'start' && request.action !== 'dismiss')) {
+		if (id === undefined || opId === undefined || (request.action !== 'start' && request.action !== 'started' && request.action !== 'dismiss')) {
 			return refuse(context, 'invalid', 'invalid botSuggestionAct');
 		}
 		if (!claimWrite(context, opId)) {
 			return;
 		}
-		// 「始める」は依頼の文を返すだけ。アプリがその Bot の会話の入力欄へ、送らずに入れる
-		const result = request.action === 'start' ? await bots.startSuggestion(id) : await bots.dismissSuggestion(id);
+		// 「始める」は依頼の文を返すだけ。アプリがその Bot の会話の入力欄へ、送らずに入れ、入れられたら `started` で
+		// 「始めた」にする（入れ損ねた提案は一覧に残る）
+		const result = request.action === 'start' ? await bots.startSuggestion(id)
+			: request.action === 'started' ? await bots.markSuggestionStarted(id)
+				: await bots.dismissSuggestion(id);
 		if (!result.ok) {
 			return refuse(context, result.code, result.message);
 		}

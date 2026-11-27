@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange, paradisBotSettingsRebase } from '../../common/paradisBotSettingsModel.js';
+import { paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange, paradisBotSettingsRebase, paradisBotHomeFileDiff, paradisBotRoleOverflow } from '../../common/paradisBotSettingsModel.js';
 
 const BOT = { id: 'b', name: 'リリース係', agent: 'claude' as const, permissionId: undefined };
 const SAME = { name: 'リリース係', agent: 'claude' as const, permissionId: undefined, role: '# リリース係\n' };
@@ -61,6 +61,20 @@ suite('Paradis bots settings', () => {
 			{ base: bot, draft: { ...bot, name: '自分の名前', role: 'r' }, changedElsewhere: ['name'] },
 			{ base: bot, draft: { ...bot, role: 'r' }, changedElsewhere: [] },
 			[],
+		]);
+	});
+
+	test('開いた後に書き換わった記憶の差分と、役割の上限を超えた文字数', () => {
+		assert.deepStrictEqual([
+			paradisBotHomeFileDiff('# Memory\n- a\n- b', '# Memory\n- b\n- c'),
+			paradisBotRoleOverflow('x'.repeat(4000)),
+			paradisBotRoleOverflow('x'.repeat(4003)),
+			paradisBotRoleOverflow(undefined),
+		], [
+			[{ kind: 'same', text: '# Memory' }, { kind: 'removed', text: '- a' }, { kind: 'same', text: '- b' }, { kind: 'added', text: '- c' }],
+			0,
+			3,
+			0,
 		]);
 	});
 });
