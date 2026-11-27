@@ -6,15 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Bot のページ（paradisBotPage.ts）の、DOM を持たない決まり。項目の群の分け方、状態の名前、問いへの答えの組み立てを
-// ここに集め、単体テストで値を確かめる。
+// Bot のページ（paradisBotPage.ts）の、DOM を持たない決まり。項目の群の分け方、状態と記録の名前を
+// ここに集め、単体テストで値を確かめる（問いのカードは受信箱のカードそのものを使う）。
 
 import { localize } from '../../../../nls.js';
 import type { IParadisAgentChatHeaderState } from '../../agentChat/common/paradisAgentChatHeader.js';
 import type { IParadisBotSummary } from './paradisBotsApi.js';
 import { paradisBotStatusLine } from './paradisBotsBandModel.js';
-import type { ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAsk.js';
-import { IParadisBotItem, IParadisBotItemAsk, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
+import { IParadisBotItem, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
 
 /** ページの上のタブ。`chat` は下にある会話（チャット表示かターミナル）をそのまま見せる。 */
 export type ParadisBotPageTab = 'chat' | 'items' | 'files' | 'settings';
@@ -91,37 +90,6 @@ export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number
 			: localize('paradis.botPage.event.unsnoozed', "{0}が後回しを解きました", who);
 		default: return localize('paradis.botPage.event.other', "{0}: {1}", who, event.kind);
 	}
-}
-
-/** 問いのカードで選んだもの。`options` は問いごとの選んだ選択肢の添字、`texts` は自分で書いた文。 */
-export interface IParadisBotAskSelection {
-	readonly options: readonly (readonly number[])[];
-	readonly texts: readonly string[];
-}
-
-/**
- * 選んだものを「聞く・答える」の台帳の答えにする（受信箱と同じ形。問いの id は `q1`…、選択肢は `o1`…）。
- * 問いが無い（見てほしいだけ）ときは 1 つ目の文を答えにする。何も選ばず何も書いていなければ undefined。
- */
-export function paradisBotAskAnswer(ask: Pick<IParadisBotItemAsk, 'questions'>, selection: IParadisBotAskSelection): ParadisHumanAskAnswer | undefined {
-	const count = Math.max(1, ask.questions.length);
-	const answers = [];
-	for (let index = 0; index < count; index++) {
-		const optionIds = (selection.options[index] ?? []).filter(option => option >= 0 && option < (ask.questions[index]?.options.length ?? 0)).map(option => `o${option + 1}`);
-		const text = selection.texts[index]?.trim() ?? '';
-		if (optionIds.length > 0 || text.length > 0) {
-			answers.push({ questionId: `q${index + 1}`, ...(optionIds.length > 0 ? { optionIds } : {}), ...(text.length > 0 ? { text } : {}) });
-		}
-	}
-	return answers.length > 0 ? { type: 'answers', answers } : undefined;
-}
-
-/** 問いのカードで選択肢を押したときの、次の選び方（1 つだけの問いは置き換え、複数選べる問いは足す・外す）。 */
-export function paradisBotAskToggle(current: readonly number[], option: number, multi: boolean): number[] {
-	if (!multi) {
-		return current.length === 1 && current[0] === option ? [] : [option];
-	}
-	return current.includes(option) ? current.filter(value => value !== option) : [...current, option].sort((a, b) => a - b);
 }
 
 /**

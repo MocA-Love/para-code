@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotAskAnswer, paradisBotAskToggle, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel } from '../../common/paradisBotPageModel.js';
+import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -55,30 +55,5 @@ suite('Paradis bots page', () => {
 			'あなたが答えました: A',
 			'あなたが問いを飛ばしました',
 		]);
-	});
-
-	test('問いの答えの組み立て（受信箱と同じ形）', () => {
-		const two = { questions: [{ prompt: 'p', options: [{ label: 'A' }, { label: 'B' }] }, { prompt: 'q', multi: true, options: [{ label: 'X' }, { label: 'Y' }] }] };
-		assert.deepStrictEqual([
-			paradisBotAskAnswer(two, { options: [[1], [0, 1]], texts: ['', ' メモ '] }),
-			paradisBotAskAnswer(two, { options: [[], []], texts: [] }),
-			paradisBotAskAnswer(two, { options: [[5]], texts: [] }),
-			paradisBotAskAnswer({ questions: [] }, { options: [], texts: ['見ました'] }),
-		], [
-			{ type: 'answers', answers: [{ questionId: 'q1', optionIds: ['o2'] }, { questionId: 'q2', optionIds: ['o1', 'o2'], text: 'メモ' }] },
-			undefined,
-			undefined,
-			{ type: 'answers', answers: [{ questionId: 'q1', text: '見ました' }] },
-		]);
-	});
-
-	test('選択肢の押し方', () => {
-		assert.deepStrictEqual([
-			paradisBotAskToggle([], 1, false),
-			paradisBotAskToggle([1], 0, false),
-			paradisBotAskToggle([1], 1, false),
-			paradisBotAskToggle([2], 0, true),
-			paradisBotAskToggle([0, 2], 2, true),
-		], [[1], [0], [], [0, 2], [0]]);
 	});
 });
