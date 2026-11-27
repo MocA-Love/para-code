@@ -28,11 +28,15 @@ suite('Paradis bots mobile requests', () => {
 	function setup(enabled = true) {
 		const calls: string[] = [];
 		const files = new Map<string, string>([['MEMORY.md', '# Memory\n']]);
+		const failUpdate = { value: false };
 		const bots = {
 			snapshot: { revision: 1, readOnly: false, bots: [BOT] },
 			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
 			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}`); files.set(path, text); return { ok: true, value: undefined }; },
-			updateBot: async (_bot: string, patch: object) => { calls.push(`update ${JSON.stringify(patch)}`); return { ok: true, value: BOT }; },
+			updateBot: async (_bot: string, patch: object) => {
+				calls.push(`update ${JSON.stringify(patch)}`);
+				return failUpdate.value ? { ok: false, code: 'busy', message: 'the ledger is busy' } : { ok: true, value: BOT };
+			},
 			requestStop: async () => { calls.push('stop'); return true; },
 			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'bot-1', title: 't', request: '依頼', run: 'r', state: 'open', createdAt: 1 } }; },
 			markSuggestionStarted: async (id: string) => { calls.push(`started ${id}`); return { ok: true, value: { id, botId: 'bot-1', title: 't', request: '依頼', run: 'r', state: 'started', createdAt: 1 } }; },
@@ -48,7 +52,7 @@ suite('Paradis bots mobile requests', () => {
 		const send = async (kind: string, body: Record<string, unknown>) => {
 			await paradisCreateMobileBotHandler(kind, PARADIS_MOBILE_BOT_HANDLERS[kind]).handle(accessor, { t: kind, id: 'r', ...body } as IParadisMobileRequest, context);
 		};
-		return { send, replies, calls, files };
+		return { send, replies, calls, files, failUpdate };
 	}
 
 	test('設定がオフならどの要求も断る', async () => {
@@ -57,7 +61,7 @@ suite('Paradis bots mobile requests', () => {
 		assert.deepStrictEqual(replies, [{ error: 'bots are turned off on this PC', code: 'disabled' }]);
 	});
 
-	test('権限の変更は PC と同じ本文で確かめさせ、確かめた後だけ当てる。同じ opId は 2 回当てない', async () => {
+	test('権限の変更は PC と同じ本文で確かめさせ、確かめた後だけ当てる。同じ opId は 2 回当てず、1 回目と同じ返事に duplicate を足す', async () => {
 		const { send, replies, calls } = setup();
 		await send('botUpdate', { botId: 'bot-1', changes: { permission: 'skip-permissions' } });
 		await send('botUpdate', { botId: 'bot-1', changes: { permission: 'skip-permissions' }, confirmed: true, opId: 'op-1' });
@@ -70,7 +74,7 @@ suite('Paradis bots mobile requests', () => {
 			calls,
 		], [
 			[true, 'wider', false, true],
-			[{ t: 'botUpdate', applied: true }, { duplicate: true }, { t: 'botUpdate', applied: true }],
+			[{ t: 'botUpdate', applied: true }, { t: 'botUpdate', applied: true, duplicate: true }, { t: 'botUpdate', applied: true }],
 			['update {"permissionId":"skip-permissions"}', 'update {"paused":true}', 'stop'],
 		]);
 	});
@@ -98,6 +102,18 @@ suite('Paradis bots mobile requests', () => {
 		assert.deepStrictEqual([calls, replies.map(reply => (reply as { suggestion?: { state: string }; code?: string }).suggestion?.state ?? (reply as { code?: string }).code)], [
 			['start s1', 'started s1'],
 			['open', 'started', 'invalid'],
+		]);
+	});
+
+	test('1 回目が断られた opId の再送には、同じ断りを返して当て直さない', async () => {
+		const { send, replies, calls, failUpdate } = setup();
+		failUpdate.value = true;
+		await send('botUpdate', { botId: 'bot-1', changes: { paused: true }, opId: 'op-fail' });
+		failUpdate.value = false;
+		await send('botUpdate', { botId: 'bot-1', changes: { paused: true }, opId: 'op-fail' });
+		assert.deepStrictEqual([replies, calls], [
+			[{ error: 'the ledger is busy', code: 'busy' }, { error: 'the ledger is busy', code: 'busy' }],
+			['update {"paused":true}'],
 		]);
 	});
 });

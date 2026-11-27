@@ -3,7 +3,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { multiSelectAnswer, questionHasPreview } from '../agentQuestionMod.js';
+import { multiSelectAnswer, questionAllowsFreeText, questionHasPreview } from '../agentQuestionMod.js';
 import type { AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../hooks/useAnswerSubmission.js';
@@ -189,7 +189,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 					</Pressable>
 				);
 			})}
-			{composerFreeText && interactive ? (
+			{composerFreeText && interactive && questionAllowsFreeText(message) ? (
 				<Pressable
 					style={[styles.questionOption, otherSelected && [styles.questionOptionSelected, selectedAccent], disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
@@ -201,7 +201,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 					<Text style={styles.questionOptionLabel}>その他（入力して回答）</Text>
 				</Pressable>
 			) : null}
-			{!composerFreeText && !disabled ? (
+			{!composerFreeText && !disabled && questionAllowsFreeText(message) ? (
 				<View style={styles.questionFreeRow}>
 					<TextInput
 						style={styles.questionFreeInput}
@@ -422,7 +422,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 					</Pressable>
 				);
 			})}
-			{composerFreeText && interactive ? (
+			{composerFreeText && interactive && current !== undefined && questionAllowsFreeText(current) ? (
 				<Pressable
 					style={[styles.questionOption, (otherSelected || currentAnswer?.kind === 'text') && [styles.questionOptionSelected, selectedAccent], disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
@@ -435,7 +435,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 					{currentAnswer?.kind === 'text' ? <Text style={styles.questionOptionDesc} numberOfLines={3}>{currentAnswer.text}</Text> : null}
 				</Pressable>
 			) : null}
-			{!composerFreeText && !disabled ? (
+			{!composerFreeText && !disabled && current !== undefined && questionAllowsFreeText(current) ? (
 				<TextInput
 					style={styles.questionFreeInput}
 					value={freeTexts[step] ?? ''}
