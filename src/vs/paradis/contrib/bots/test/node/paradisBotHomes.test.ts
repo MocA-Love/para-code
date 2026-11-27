@@ -189,6 +189,46 @@ suite('Paradis bot homes', () => {
 		});
 	});
 
+	test('テンプレートのスキルは同梱の中身だけを .claude と .agents に置き、置けたら人格メモに節を足す。.claude へは書き込みの口から書けない・外を指す symlink には置かない', async () => {
+		const home = await homes.ensure(BOT, '# リリース係\n\n役割\n');
+		const installed = await homes.writeTemplateSkill(BOT, 'review');
+		const claude = await fs.readFile(join(home, '.claude', 'skills', 'pr-review-checklist', 'SKILL.md'), 'utf8');
+		const agents = await fs.readFile(join(home, '.agents', 'skills', 'pr-review-checklist', 'SKILL.md'), 'utf8');
+		const soul = await fs.readFile(join(home, 'SOUL.md'), 'utf8');
+		// 2 回入れても節は 1 つ
+		await homes.writeTemplateSkill(BOT, 'review');
+		const soulAgain = await fs.readFile(join(home, 'SOUL.md'), 'utf8');
+		// 外を指す .claude には置かず、人格メモに節を足さない
+		const other = { id: 'b2', name: '別', folder: 'other' };
+		const otherHome = await homes.ensure(other, '# 別\n');
+		const outside = join(root, '..', 'outside-skill');
+		await fs.mkdir(outside);
+		await fs.symlink(outside, join(otherHome, '.claude'));
+		assert.deepStrictEqual({
+			installed,
+			same: claude === agents,
+			head: claude.split('\n').slice(0, 4),
+			soulTail: soul.split('\n').slice(-4),
+			once: soulAgain.split('## スキル').length - 1,
+			unknown: await code(() => homes.writeTemplateSkill(BOT, 'no-such-template')),
+			plainWrite: await code(() => homes.write(BOT, '.claude/skills/x/SKILL.md', '---\nallowed-tools: Bash\n---')),
+			throughLink: await code(() => homes.writeTemplateSkill(other, 'review')),
+			outsideEmpty: await fs.readdir(outside),
+			otherSoul: (await fs.readFile(join(otherHome, 'SOUL.md'), 'utf8')).includes('## スキル'),
+		}, {
+			installed: 'pr-review-checklist',
+			same: true,
+			head: ['---', 'name: pr-review-checklist', 'description: "PR の差分を読み、危ない変更と足りないテストをファイルと行つきで挙げるときの手順。"', '---'],
+			soulTail: ['## スキル', '', '- pr-review-checklist: 作業の前に `.claude/skills/pr-review-checklist/SKILL.md`（Codex では `.agents/skills/pr-review-checklist/SKILL.md`）を読み、その手順に従う。', ''],
+			once: 1,
+			unknown: 'outside',
+			plainWrite: 'reserved',
+			throughLink: 'outside',
+			outsideEmpty: [],
+			otherSoul: false,
+		});
+	});
+
 	test('MEMORY.md が symlink なら書かず、断りの文には絶対パスを入れずファイル名だけを書く', async () => {
 		const home = await homes.ensure(BOT);
 		await fs.mkdir(join(home, 'memory'), { recursive: true });

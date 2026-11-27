@@ -32,7 +32,7 @@ import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescri
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
-import { IParadisBotTemplate, paradisBotTemplateSkillFile, paradisBotTemplateSkillPaths, paradisBotTemplateSoul } from '../common/paradisBotTemplates.js';
+import { IParadisBotTemplate, paradisBotTemplateDefaultName, paradisBotTemplateSoul } from '../common/paradisBotTemplates.js';
 import { IParadisBotTemplatePick, ParadisBotTemplatesDialog } from './paradisBotTemplatesDialog.js';
 import { PARADIS_BOT_LIMITS, paradisBotDefaultFace } from '../common/paradisBots.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
@@ -205,8 +205,9 @@ export class ParadisBotCreateDialog extends Disposable {
 		const previous = this.template;
 		const name = this.nameField.value.trim();
 		const role = this.roleInput.value.trim();
-		if (name.length === 0 || name === previous?.name) {
-			this.nameField.value = pick.template?.name ?? '';
+		if (name.length === 0 || name === previous?.name || (previous !== undefined && name === paradisBotTemplateDefaultName(previous.name, this.takenNames()))) {
+			// 同じテンプレートから 2 体目を作るときは「名前 2」のように番号を足す
+			this.nameField.value = pick.template !== undefined ? paradisBotTemplateDefaultName(pick.template.name, this.takenNames()) : '';
 		}
 		if (role.length === 0 || role === previous?.role) {
 			this.roleInput.value = pick.template?.role ?? '';
@@ -246,7 +247,7 @@ export class ParadisBotCreateDialog extends Disposable {
 		this.update();
 		const face = this.face();
 		const template = this.template;
-		const soul = template !== undefined ? paradisBotTemplateSoul(checked.name, this.roleInput.value, template, this.withSkill) : paradisBotCreateSoul(checked.name, this.roleInput.value);
+		const soul = template !== undefined ? paradisBotTemplateSoul(checked.name, this.roleInput.value, template) : paradisBotCreateSoul(checked.name, this.roleInput.value);
 		const result = await this.botsService.createBot({ name: checked.name, agent: this.agents.value ?? PARADIS_BOT_CREATE_AGENTS[0], faceColor: face.faceColor, faceShape: face.faceShape }, soul);
 		if (this._store.isDisposed) {
 			return;
@@ -265,17 +266,20 @@ export class ParadisBotCreateDialog extends Disposable {
 		this.onDidCreate(result.value.id);
 	}
 
-	/** 付属のスキルを専用フォルダへ書く。書けなくても Bot は作れているので、知らせるだけ。 */
+	/**
+	 * 付属のスキルを専用フォルダへ置く（shared process が同梱のカタログから中身を引き、置けたら人格メモにスキルの節を足す）。
+	 * 書けなくても Bot は作れているので、知らせるだけ（人格メモにスキルの節は残らない）。
+	 */
 	private async writeSkill(botId: string, botName: string, template: IParadisBotTemplate): Promise<void> {
-		const skill = template.skill!;
-		const text = paradisBotTemplateSkillFile(skill);
-		for (const path of paradisBotTemplateSkillPaths(skill)) {
-			const written = await this.botsService.writeHomeFile(botId, path, text);
-			if (!written.ok) {
-				this.notificationService.warn(localize('paradis.bots.create.skillFailed', "Bot「{0}」のスキル {1} を置けませんでした: {2}", botName, skill.name, written.message));
-				return;
-			}
+		const installed = await this.botsService.installTemplateSkill(botId, template.id);
+		if (!installed.ok) {
+			this.notificationService.warn(localize('paradis.bots.create.skillFailed', "Bot「{0}」のスキル {1} を置けませんでした: {2}", botName, template.skill?.name ?? '', installed.message));
 		}
+	}
+
+	/** 今いる Bot の名前（テンプレートの名前に番号を足すときに避ける）。 */
+	private takenNames(): string[] {
+		return this.botsService.snapshot.bots.map(bot => bot.name);
 	}
 
 	/** 見本の顔。名前がまだ空なら「新」から決まる顔。 */
