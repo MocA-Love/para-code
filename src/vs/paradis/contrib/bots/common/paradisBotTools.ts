@@ -15,7 +15,7 @@ import { PARADIS_BOT_GITHUB_NEWS_TOOL } from './paradisBotGithub.js';
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_BOT_BOARD_ADD_TASK_TOOL } from './paradisBotBoard.js';
-import { PARADIS_BOT_ASK_TOOL, PARADIS_BOT_TELL_TOOL } from './paradisBotMessages.js';
+import { PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL, PARADIS_BOT_TELL_TOOL } from './paradisBotMessages.js';
 import { PARADIS_BOT_SUGGESTION_LIMITS } from './paradisBotSuggestions.js';
 import { IParadisBotItem, IParadisBotItemChanges, IParadisBotItemEvent, IParadisBotItemLink, PARADIS_BOT_ITEM_LIMITS, PARADIS_BOT_ITEM_STATUSES, ParadisBotItemStatus, paradisBotItemUndelivered, paradisSanitizeBotItemLink, paradisSanitizeBotItemQuestions } from './paradisBotItems.js';
 
@@ -146,7 +146,7 @@ export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_it
  * 会話の Bot のペインで前もって許可する Bot の道具（どれも Bot のペインにだけ出し、呼び出し元のペインの Bot として
  * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）、ボードへタスクを載せる道具（bot_board_add_task）、GitHub の新着を読む道具（bot_github_news。見張りがオンの Bot にだけ出る）を足す。管理の道具（list_bots ほか）は入れない。
  */
-const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_BOARD_ADD_TASK_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL];
+const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL, PARADIS_BOT_BOARD_ADD_TASK_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL];
 
 /**
  * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
@@ -161,8 +161,8 @@ export function paradisBotLaunchApprovalFlags(agent: string): string | undefined
 	return PARADIS_BOT_CHAT_APPROVAL_TOOLS.map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
 }
 
-/** 見回りのペインで使える Bot の道具（読む道具と提案だけ。項目は書かない）。 */
-export const PARADIS_BOT_PATROL_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_SUGGEST_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL]);
+/** 見回りのペインで使える Bot の道具（読む道具と提案、受け箱を読む道具だけ。項目は書かない・伝言は送らない）。 */
+export const PARADIS_BOT_PATROL_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_SUGGEST_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL, PARADIS_BOT_INBOX_TOOL]);
 
 /**
  * 見回りの Claude Code に `--settings` で渡す設定。`--dangerously-skip-permissions`（利用者の雛形・シェルの alias・関数で
