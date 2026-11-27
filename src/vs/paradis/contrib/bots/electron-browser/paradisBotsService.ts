@@ -160,6 +160,14 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		await this.value('notePaneActive', [paneToken], undefined);
 	}
 
+	async reclaimPane(paneToken: string): Promise<void> {
+		await this.value('reclaimPane', [paneToken], undefined);
+	}
+
+	restartChat(botId: string): Promise<boolean> {
+		return this.value('restartChat', [botId], false);
+	}
+
 	async releasePane(paneToken: string): Promise<void> {
 		await this.value('releasePane', [paneToken], undefined);
 	}

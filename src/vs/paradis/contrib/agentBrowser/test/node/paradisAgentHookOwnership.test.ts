@@ -171,6 +171,19 @@ suite('ParadisAgentHookOwnership', () => {
 		], [{ origin: 'owner', agentKind: 'claude' }, { origin: 'owner', agentKind: 'claude' }]);
 	});
 
+	test('tells whether the owner of a pane is still running: unknown without an owner, alive while the same process runs, ended once it is gone or its pid is reused', async () => {
+		const tree = standardTree();
+		const ownership = ownershipWith(tree);
+		const before = await ownership.ownerAlive('t');
+		await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const running = await ownership.ownerAlive('t');
+		tree.set(200, { ...tree.get(200)!, startKey: 'another start' });
+		const reused = await ownership.ownerAlive('t');
+		tree.delete(200);
+		const gone = await ownership.ownerAlive('t');
+		assert.deepStrictEqual({ before, running, reused, gone }, { before: undefined, running: true, reused: false, gone: false });
+	});
+
 	test('a nested codex under claude inside tmux still cannot hijack the pane', async () => {
 		// d3bae4a490a が防いだ乗っ取り: 子のhookが先に届いても、所有者のあとに届いても nested。
 		const ownership = ownershipWith(tmuxTree());
