@@ -10,8 +10,9 @@
 // 画面はまだ無い（一覧・ページは後の PR）。使う側が現れるまで実体は作られない（Delayed）。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -19,7 +20,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from '../common/paradisBots.js';
-import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
+import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 
 const UNAVAILABLE: ParadisBotsServiceResult<never> = { ok: false, code: 'unavailable', message: 'Para Code could not reach the bot service.' };
 
@@ -36,19 +37,50 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 	readonly onDidRequestReveal: Event<IParadisBotRevealRequest>;
 
 	private _snapshot: IParadisBotsSnapshot = EMPTY_PARADIS_BOTS_SNAPSHOT;
+	/** shared process の台帳の知らせの購読（設定 {@link PARADIS_BOTS_ENABLED_SETTING} がオンの間だけ持つ）。 */
+	private readonly subscription = this._register(new MutableDisposable());
 
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this.channel = sharedProcessService.getChannel(PARADIS_BOTS_CHANNEL);
 		this.onDidRequestStop = this.channel.listen<IParadisBotStopRequest>('onDidRequestStop');
 		this.onDidRequestReveal = this.channel.listen<IParadisBotRevealRequest>('onDidRequestReveal');
-		this._register(this.channel.listen<IParadisBotsSnapshot>('onDidChange')(snapshot => this.apply(snapshot)));
+		// 設定をオフにしたら台帳の購読を外して一覧を空にする（窓を読み直すまで shared process の知らせを受け続けない）。
+		// オンに戻したら購読し直して取り直す
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+				this.syncSubscription();
+			}
+		}));
+		this.syncSubscription();
+	}
+
+	private syncSubscription(): void {
+		const enabled = this.configurationService.getValue<boolean>(PARADIS_BOTS_ENABLED_SETTING) === true;
+		if (!enabled) {
+			if (this.subscription.value !== undefined) {
+				this.subscription.clear();
+				// 次にオンにしたとき、台帳の番号が前より小さくても受け取れるよう、空の一覧（番号 0）へ戻す
+				this._snapshot = EMPTY_PARADIS_BOTS_SNAPSHOT;
+				this._onDidChange.fire();
+			}
+			return;
+		}
+		if (this.subscription.value !== undefined) {
+			return;
+		}
+		this.subscription.value = this.channel.listen<IParadisBotsSnapshot>('onDidChange')(snapshot => this.apply(snapshot));
 		this.channel.call<IParadisBotsSnapshot>('getSnapshot').then(
-			snapshot => this.apply(snapshot),
+			snapshot => {
+				if (this.subscription.value !== undefined) {
+					this.apply(snapshot);
+				}
+			},
 			error => this.logService.trace('[paradisBots] getSnapshot failed', String(error)),
 		);
 	}
