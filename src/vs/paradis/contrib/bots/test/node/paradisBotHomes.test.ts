@@ -187,6 +187,20 @@ suite('Paradis bot homes', () => {
 		});
 	});
 
+	test('MEMORY.md が symlink なら書かず、断りの文には絶対パスを入れずファイル名だけを書く', async () => {
+		const home = await homes.ensure(BOT);
+		await fs.mkdir(join(home, 'memory'), { recursive: true });
+		await fs.writeFile(join(home, 'memory', 'real.md'), '本物\n');
+		await fs.rm(join(home, 'MEMORY.md'), { force: true });
+		await fs.symlink(join(home, 'memory', 'real.md'), join(home, 'MEMORY.md'));
+		const error = await homes.write(BOT, 'MEMORY.md', '書き換え').then(() => undefined, (error: Error) => error);
+		assert.deepStrictEqual({
+			message: error?.message,
+			hasPath: error?.message.includes(home) === true,
+			real: await fs.readFile(join(home, 'memory', 'real.md'), 'utf8'),
+		}, { message: 'MEMORY.md is a symbolic link; Para Code does not write through it.', hasPath: false, real: '本物\n' });
+	});
+
 	test('ほかの Bot のフォルダ・印の無い中身のあるフォルダは使わない', async () => {
 		await homes.ensure(BOT);
 		await fs.mkdir(join(root, 'manual'), { recursive: true });
