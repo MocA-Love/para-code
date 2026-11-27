@@ -1,5 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useHumanAsks } from '../features/humanAsks/humanAskStore.js';
+import type { HumanAsk } from '../features/humanAsks/humanAsks.js';
 import { useAppStore, usePcAgentSources } from '../appState.js';
 import { countRunningAgents } from '../attentionCount.js';
 import type { AgentChatState, WorkspaceState } from '../store.js';
@@ -121,7 +123,7 @@ export function installDemoData(): void {
 		paired: true,
 		initializing: false,
 		pcs: [
-			{ id: MBP, name: 'MacBook Pro', hue: 210, connection: 'online', pcOnline: true, pairingRejected: false, workspaces: 3, terminals: 8, waiting: 2, running: countRunningAgents(workspace.terminals, []), lastOnlineAt: now, battery: { level: 82, charging: true } },
+			{ id: MBP, name: 'MacBook Pro', hue: 210, connection: 'online', pcOnline: true, pairingRejected: false, workspaces: 3, terminals: 8, waiting: 2 + DEMO_HUMAN_ASKS.length, running: countRunningAgents(workspace.terminals, []), lastOnlineAt: now, battery: { level: 82, charging: true }, humanAskSupported: true, humanAsks: { count: DEMO_HUMAN_ASKS.length, signature: 'demo' } },
 			{ id: MINI, name: 'Mac mini', hue: 30, connection: 'offline', pcOnline: false, pairingRejected: false, workspaces: 0, terminals: 0, waiting: 0, running: 0, lastOnlineAt: now - 2 * 3_600_000, battery: undefined },
 		],
 		activePcId: MBP,
@@ -133,4 +135,31 @@ export function installDemoData(): void {
 		selectedWs: 'ws-para',
 		pinnedKeys: new Set(['demo-notes']),
 	});
+	// 要対応の「質問と承認」の段（human-ask.v1）。印が同じなので取り直しには行かない
+	useHumanAsks.setState({ byPc: { [MBP]: { signature: 'demo', asks: DEMO_HUMAN_ASKS.map(ask => ({ ...ask, askedAt: now - ask.askedAt })) } } });
 }
+
+/** 要対応の台帳の 1 件の見本（`askedAt` は今からの差）。 */
+const DEMO_HUMAN_ASKS: readonly HumanAsk[] = [
+	{
+		key: 'bot:item42.ev7', source: 'bot', kind: 'question', from: { title: 'リリース係', detail: '項目 #42' },
+		preface: 'Safari だけログイン後にセッションが切れます。原因は Cookie の SameSite です。',
+		questions: [{ id: 'q0', text: '全員を一度ログアウトさせますか、今のセッションを残しますか?', options: [{ id: '0', label: '一度ログアウトさせる' }, { id: '1', label: '今のセッションを残す', detail: '影響は小さい', recommended: true }], allowText: true }],
+		actions: [], canSkip: true, askedAt: 2 * 60_000, busy: false, failed: false,
+	},
+	{
+		key: 'board:demo:415:approval', source: 'board', kind: 'approval', from: { title: '#415 計画の承認', detail: '計測キーの名前を除外規則に当たらないものに変える' },
+		preface: '計画「計画」を見て、承認か差し戻しを選んでください',
+		questions: [],
+		actions: [{ id: 'approve', label: '承認して次へ' }, { id: 'sendBack', label: '差し戻す', allowText: true, confirm: { title: '差し戻しますか', body: '担当が計画を書き直します', ok: '差し戻す' } }, { id: 'complete', label: '完了扱いにする', confirm: { title: '完了扱いにしますか', body: 'エージェントの報告を待たずに次の工程へ進めます', ok: '完了扱いにする' } }],
+		canSkip: false, askedAt: 8 * 60_000, busy: false, failed: false,
+	},
+	{
+		key: 'pane:ask:demo', source: 'pane', kind: 'question', from: { title: 'api', detail: 'main ／ Codex' },
+		questions: [
+			{ id: 'q0', text: 'どの環境から直しますか?', options: [{ id: '0', label: 'staging' }, { id: '1', label: 'production' }], allowText: false },
+			{ id: 'q1', text: '直す範囲は?', options: [{ id: '0', label: 'ログイン' }, { id: '1', label: '決済' }, { id: '2', label: '通知' }], allowText: true, multiSelect: true },
+		],
+		actions: [], canSkip: false, askedAt: 15 * 60_000, busy: false, failed: true,
+	},
+];
