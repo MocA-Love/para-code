@@ -10,7 +10,7 @@ import { localize } from '../../../../nls.js';
 import { IParadisBotChangeRequest } from '../common/paradisBotManageTools.js';
 
 /**
- * 設定の変更の確認に出す本文（何を何から何へ。役割は新しい本文の全文、権限は広がるかどうか）。
+ * 設定の変更の確認に出す本文（権限が広がるかどうかを先頭に、何を何から何へ、役割の新しい本文の全文を最後に）。
  * @param caller 依頼したエージェントのターミナルの名前。持ち主が画面から変えるときは渡さない（依頼の行を出さない）
  */
 export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, 'changes' | 'permission'>, caller?: string): string {
@@ -43,11 +43,20 @@ export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, '
 		localize('paradisBots.changeAgentRequest', "この変更は、あなたではなくターミナル「{0}」のエージェントからの依頼です。", caller),
 		'',
 	];
+	// 権限が広がるかどうかを先頭に出す（本文は内側でスクロールするので、長い役割の後ろだと見ずに許可できてしまう）
+	switch (request.permission) {
+		// allow-any-unicode-next-line
+		case 'wider': lines.push(localize('paradisBots.permissionWider', "権限が広がります。Bot が確認なしでできることが増えます。"), ''); break;
+		// allow-any-unicode-next-line
+		case 'narrower': lines.push(localize('paradisBots.permissionNarrower', "権限が狭まります。"), ''); break;
+		// allow-any-unicode-next-line
+		case 'same': lines.push(localize('paradisBots.permissionSame', "権限の広さは変わりません。"), ''); break;
+		// allow-any-unicode-next-line
+		case 'unknown': lines.push(localize('paradisBots.permissionUnknown', "権限が広がるかどうかを Para Code は判断できません（エージェントの種類も変わるか、知らない権限です）。広がるものとして確かめてください。"), ''); break;
+	}
+	// 前 → 後の要約を先に、役割の全文は最後に
 	for (const change of request.changes) {
-		if (change.field === 'role') {
-			// allow-any-unicode-next-line
-			lines.push(localize('paradisBots.changeRole', "役割（SOUL.md）を次の本文に書き換えます:"), change.to ?? '', '');
-		} else {
+		if (change.field !== 'role') {
 			lines.push(`${labels[change.field] ?? change.field}: ${change.from ?? unset} → ${change.to ?? unset}`);
 		}
 	}
@@ -55,15 +64,11 @@ export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, '
 		// allow-any-unicode-next-line
 		lines.push('', localize('paradisBots.watchGithubOn', "5 分ごとに gh で GitHub を確かめます。あなた宛てのレビューの依頼と担当の割り当てが新しく来たら、この Bot の見回りを起こします。"));
 	}
-	switch (request.permission) {
-		// allow-any-unicode-next-line
-		case 'wider': lines.push('', localize('paradisBots.permissionWider', "権限が広がります。Bot が確認なしでできることが増えます。")); break;
-		// allow-any-unicode-next-line
-		case 'narrower': lines.push('', localize('paradisBots.permissionNarrower', "権限が狭まります。")); break;
-		// allow-any-unicode-next-line
-		case 'same': lines.push('', localize('paradisBots.permissionSame', "権限の広さは変わりません。")); break;
-		// allow-any-unicode-next-line
-		case 'unknown': lines.push('', localize('paradisBots.permissionUnknown', "権限が広がるかどうかを Para Code は判断できません（エージェントの種類も変わるか、知らない権限です）。広がるものとして確かめてください。")); break;
+	for (const change of request.changes) {
+		if (change.field === 'role') {
+			// allow-any-unicode-next-line
+			lines.push('', localize('paradisBots.changeRole', "役割（SOUL.md）を次の本文に書き換えます:"), change.to ?? '');
+		}
 	}
 	return lines.join('\n').trim();
 }

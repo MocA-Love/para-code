@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
@@ -27,6 +27,8 @@ import { IParadisBotGroup } from '../../common/paradisBotGroups.js';
 import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotSummary, IParadisBotsService, IParadisBotsSnapshot, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
 import { PARADIS_BOTS_BAND_STORAGE_KEY } from '../../common/paradisBotsBandModel.js';
+import { ParadisBotCreateDialog } from '../../browser/paradisBotCreateDialog.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {
@@ -113,5 +115,22 @@ suite('Paradis bots band slot', () => {
 			['グループ'],
 			['レビュー係、1 件があなたの番'],
 		]);
+	});
+
+	test('作成のモーダルは、開いている間に設定をオフにすると閉じる', () => {
+		const disposables = store.add(new DisposableStore());
+		const instantiation = disposables.add(new TestInstantiationService());
+		const configuration = new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: true });
+		instantiation.stub(IConfigurationService, configuration);
+		const host = document.createElement('div');
+		instantiation.stub(ILayoutService, { activeContainer: host } as Partial<ILayoutService> as ILayoutService);
+		instantiation.stub(IParadisBotsService, { snapshot: { revision: 1, readOnly: false, bots: [] }, onDidChange: Event.None } as Partial<IParadisBotsService> as IParadisBotsService);
+		instantiation.stub(IHoverService, NullHoverService);
+		instantiation.stub(IContextViewService, {});
+		disposables.add(instantiation.createInstance(ParadisBotCreateDialog, undefined, () => { }, false));
+		const open = host.childElementCount;
+		configuration.setUserConfiguration(PARADIS_BOTS_ENABLED_SETTING, false);
+		configuration.onDidChangeConfigurationEmitter.fire({ affectsConfiguration: (key: string) => key === PARADIS_BOTS_ENABLED_SETTING } as unknown as IConfigurationChangeEvent);
+		assert.deepStrictEqual([open, host.childElementCount], [1, 0]);
 	});
 });

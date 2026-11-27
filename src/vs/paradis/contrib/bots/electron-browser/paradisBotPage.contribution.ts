@@ -131,7 +131,7 @@ class ParadisBotPageContribution extends Disposable {
 		}
 		const resolver = this.instantiationService.createInstance(ParadisBotPaneResolver);
 		const patrol = this.instantiationService.createInstance(ParadisBotPatrolPort);
-		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver, patrol));
+		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver, patrol, undefined));
 		this.registration.value = {
 			dispose: () => {
 				overlay.dispose();
