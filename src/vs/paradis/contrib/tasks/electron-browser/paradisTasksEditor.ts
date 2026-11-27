@@ -68,6 +68,9 @@ const $ = dom.$;
 
 /** タスクボードの窓を開くコマンド（taskBoard/electron-browser/paradisTaskBoardEntry.contribution.ts）。 */
 const PARADIS_TASK_BOARD_OPEN_COMMAND_ID = 'paradis.taskBoard.open';
+const PARADIS_TASK_BOARD_STOP_COMMAND_ID = 'paradis.taskBoard.stop';
+/** ボードを開く操作がこれより長く掛かったら、ボタンを「起動中… 止める」に替える（すぐ開くときにちらつかせない）。 */
+const TASK_BOARD_STARTING_LABEL_DELAY = 400;
 
 /** 画面の切り替え（Issue・PR は検索、プロジェクトは GitHub Projects v2）。 */
 type ParadisTasksTab = ParadisTasksMode | 'project';
@@ -162,6 +165,8 @@ export class ParadisTasksEditor extends EditorPane {
 	private projects: readonly IParadisTasksProject[] | undefined;
 	private projectsError: IParadisTasksError | undefined;
 	private projectsLoading = false;
+	/** 「タスクボードを開く」の処理が終わるのを待っている（ボタンは「起動中… 止める」）。 */
+	private taskBoardStarting = false;
 	private projectsGeneration = 0;
 	/** 選んでいるプロジェクトとビュー。 */
 	private projectChoice: { readonly owner: string; readonly number: number; readonly view: number } | undefined;
@@ -256,7 +261,7 @@ export class ParadisTasksEditor extends EditorPane {
 		this.sourceChip = dom.append(sourceRow, $('span.paradis-tasks-chip'));
 		dom.append(sourceRow, $('span.paradis-tasks-grow'));
 		// タスクボード（工程のフローでエージェントを回す窓）へは、この画面から行く
-		this.button(sourceRow, localize('paradis.tasks.openTaskBoard', "タスクボードを開く"), () => void this.commandService.executeCommand(PARADIS_TASK_BOARD_OPEN_COMMAND_ID), 'paradis-tasks-pill', Codicon.tasklist);
+		const boardButton = this.button(sourceRow, localize('paradis.tasks.openTaskBoard', "タスクボードを開く"), () => void this.openOrStopTaskBoard(boardButton), 'paradis-tasks-pill', Codicon.tasklist);
 
 		const modeRow = dom.append(this.root, $('.paradis-tasks-row'));
 		for (const mode of ['issue', 'pr', 'project'] as const) {
@@ -1015,6 +1020,36 @@ export class ParadisTasksEditor extends EditorPane {
 			store.add(hover);
 		} else {
 			this._register(hover);
+		}
+	}
+
+	/**
+	 * 「タスクボードを開く」。起動を待っている間は同じボタンを「起動中… 止める」に替え、押すと起動を止める
+	 * （起動に時間が掛かったときに、止める手段が画面に無かった）。失敗は、開く処理が通知で出す。
+	 */
+	private async openOrStopTaskBoard(button: HTMLButtonElement): Promise<void> {
+		if (this.taskBoardStarting) {
+			await this.commandService.executeCommand(PARADIS_TASK_BOARD_STOP_COMMAND_ID);
+			return;
+		}
+		// 文字の部分は、ボタンの最後の子（button() が作る `.paradis-tasks-button-label`）
+		const label = button.lastElementChild;
+		const idle = label?.textContent ?? '';
+		this.taskBoardStarting = true;
+		const timer = setTimeout(() => {
+			if (label) {
+				// allow-any-unicode-next-line
+				label.textContent = localize('paradis.tasks.taskBoardStarting', "起動中… 止める");
+			}
+		}, TASK_BOARD_STARTING_LABEL_DELAY);
+		try {
+			await this.commandService.executeCommand(PARADIS_TASK_BOARD_OPEN_COMMAND_ID);
+		} finally {
+			clearTimeout(timer);
+			this.taskBoardStarting = false;
+			if (label) {
+				label.textContent = idle;
+			}
 		}
 	}
 

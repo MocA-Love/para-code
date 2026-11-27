@@ -9,6 +9,7 @@
 // shared process で Bot の台帳のサービスを作り、ウィンドウへチャネルを出し、para-browser MCP へ Bot の道具を足す。
 // `paradis.sharedProcess.contribution.ts` から副作用 import される（MCP の説明の段は登録の順に並ぶので、並びの最後に置く）。
 
+import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
@@ -16,10 +17,13 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
+import { PARADIS_MCP_PORT_FILE_NAME } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { paradisCodexHomeCandidates } from '../../agentBrowser/node/paradisAgentHome.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
+import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -29,9 +33,45 @@ import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
+import { paradisForgetBotPatrol, paradisPrepareBotPatrolLaunch, paradisTrustBotPatrolFolder } from './paradisBotPatrolLaunch.js';
+import { paradisClaudeTrustKeysFor, paradisIsTooBroadToTrust, paradisResolveClaudeGlobalConfigFile } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
+import { ParadisBotsMobileFeed } from './paradisBotsMobileFeed.js';
 
 let shared: ParadisBotsService | undefined;
+
+/** 利用者の Claude Code の全体の設定ファイル（`~/.claude.json` など）。決められなければ undefined。 */
+async function claudeConfigFile(): Promise<string | undefined> {
+	const configDir = process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
+	const legacyExists = await fs.access(join(configDir.normalize('NFC'), '.config.json')).then(() => true, () => false);
+	return paradisResolveClaudeGlobalConfigFile(process.env, homedir(), () => legacyExists);
+}
+
+/**
+ * 見回りのフォルダを Claude Code の信頼済みにする（無いと TUI が「このフォルダを信頼しますか」で止まる）。Bot ごとに
+ * 1 項目。ワークツリーの信頼と同じロックと書き方。失敗しても投げない（見回りは信頼の確認で止まり、打ち切りで終わる）。
+ */
+async function trustClaudeFolder(folder: string): Promise<void> {
+	try {
+		const configFile = await claudeConfigFile();
+		if (configFile !== undefined && !paradisIsTooBroadToTrust(await paradisClaudeTrustKeysFor(folder), homedir())) {
+			await paradisTrustBotPatrolFolder(configFile, folder);
+		}
+	} catch {
+		// 書けなければ書かない
+	}
+}
+
+/** para-browser の MCP の口のポート（Para Code が書くポートのファイルから読む。動いていなければ undefined）。 */
+async function readGatewayPort(userDataPath: string): Promise<number | undefined> {
+	try {
+		const record: unknown = JSON.parse(await fs.readFile(join(userDataPath, PARADIS_MCP_PORT_FILE_NAME), 'utf8'));
+		const port = typeof record === 'object' && record !== null ? (record as { port?: unknown }).port : undefined;
+		return typeof port === 'number' && Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /** shared process に 1 つだけの Bot のサービス。登録の前は undefined。後の PR（定期実行の見回り・中継）はここから取る。 */
 export function paradisSharedBotsService(): ParadisBotsService | undefined {
@@ -53,6 +93,17 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		// 記憶の写しは専用フォルダ（Bot が書ける）の外に置く
 		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
 		homes,
+		// 見回りの設定ファイルも専用フォルダ（Bot が書ける）の外に置く
+		preparePatrol: (agent, botId, home) => paradisPrepareBotPatrolLaunch({
+			folder: join(paradisBotsDataFolder(userDataPath), 'patrol'),
+			runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs'),
+			stopFolder: homedir(),
+			gatewayPort: () => readGatewayPort(userDataPath),
+			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
+			trustClaudeFolder: folder => trustClaudeFolder(folder),
+		}, agent, botId, home),
+		forgetPatrol: async botId => paradisForgetBotPatrol({ folder: join(paradisBotsDataFolder(userDataPath), 'patrol'), runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs') }, botId, await claudeConfigFile().catch(() => undefined)),
+		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
@@ -67,6 +118,8 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: enabled,
 	})));
+	// スマホへ送る Bot の一覧（PR 16、bots.page.v1）
+	store.add(new ParadisBotsMobileFeed(service, configurationService));
 	// Bot のペインからは、別のペインを起こす・動かす IDE の道具を断る
 	store.add(paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(service)));
 	// Bot のペインからの ask_human は断る（Bot は作業項目の Needs you で聞く）

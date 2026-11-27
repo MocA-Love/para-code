@@ -48,6 +48,9 @@ export class ParadisBotHomeError extends Error {
 	}
 }
 
+/** 専用フォルダの直下で、Bot に書かせない名前（小文字）。エージェントの設定・hook・MCP・指示の上書きの置き場。 */
+const AGENT_CONFIG_ENTRIES: ReadonlySet<string> = new Set(['.claude', '.codex', '.mcp.json', 'agents.override.md', 'claude.local.md', '.git']);
+
 function missing(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
@@ -194,6 +197,10 @@ export class ParadisBotHomes {
 		// 大文字と小文字を区別しないファイルシステム（macOS の既定）では `.Para-Bot.json` も同じファイル
 		if (forWrite && clean.toLowerCase() === PARADIS_BOT_OWNER_FILE) {
 			throw new ParadisBotHomeError('reserved', `${PARADIS_BOT_OWNER_FILE} is written by Para Code.`);
+		}
+		// エージェントの設定・hook・MCP の置き場（Claude Code・Codex がフォルダから読むもの）は書かせない
+		if (forWrite && AGENT_CONFIG_ENTRIES.has(clean.split('/')[0].toLowerCase())) {
+			throw new ParadisBotHomeError('reserved', `${clean.split('/')[0]} holds settings that Claude Code or Codex read from a folder, so bots do not write it.`);
 		}
 		const home = this.folder(bot);
 		const path = join(home, ...clean.split('/'));
