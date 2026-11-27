@@ -42,6 +42,8 @@ export interface IParadisAgentChatTerminal {
 	bracketedPasteMode(): boolean;
 	/** ペインの状態（hook と OSC 7501 から決めたもの）。無ければ見ない。Antigravity CLI の許可待ちはこれでしか分からない。 */
 	agentStatus?(): ParadisAgentStatus | undefined;
+	/** キーボードがこのターミナルに向いているか（ウィンドウが前面で、このターミナルにフォーカスがある）。無ければ見ない。 */
+	hasKeyboardFocus?(): boolean;
 }
 
 /** その種類の記述。種類が分からない会話は Claude Code と同じに扱う（キーで渡す）。 */
@@ -74,8 +76,11 @@ function paradisAntigravitySendBlockReason(block: ParadisAntigravitySendBlock): 
  */
 export type ParadisAgentChatSendOutcome =
 	| { readonly kind: 'sent' }
-	/** `code` は呼ぶ側が分けたい断り（`working` 作業中で順番待ちに入れられない、`draft` 利用者が入力欄に書きかけ）。 */
-	| { readonly kind: 'refused'; readonly message: string; readonly code?: 'working' | 'draft' }
+	/**
+	 * `code` は呼ぶ側が分けたい断り（`working` 作業中で順番待ちに入れられない、`draft` 利用者が入力欄に書きかけ、
+	 * `focused` 書きかけを読めない宛先で、利用者がそのターミナルを操作中）。
+	 */
+	| { readonly kind: 'refused'; readonly message: string; readonly code?: 'working' | 'draft' | 'focused' }
 	| { readonly kind: 'unknown'; readonly message: string };
 
 /** 外から届ける発言（Bot 同士の伝言）の追加の確認。 */
@@ -84,7 +89,7 @@ export interface IParadisAgentChatDeliverOptions {
 	readonly working: boolean;
 	/**
 	 * 入力欄に利用者の書きかけがあれば送らない（貼る前は空、Enter の前は貼った文だけ）。書きかけを読めない種類・mod の
-	 * 無い会話は確かめずに送る。
+	 * 無い会話は、利用者がそのターミナルにキーボードを向けている（打っているかもしれない）間は送らない。
 	 */
 	readonly refuseDraft: boolean;
 }
@@ -200,6 +205,7 @@ export class ParadisAgentChatInput {
 		const refused = (message: string): ParadisAgentChatSendOutcome => ({ kind: 'refused', message });
 		const refusedWorking: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'working', message: localize('paradisAgentChat.errorWorkingNoQueue', "エージェントが作業中です。終わってから送ってください") };
 		const refusedDraft: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'draft', message: localize('paradisAgentChat.errorDraft', "入力欄に書きかけの文があります") };
+		const refusedFocused: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'focused', message: localize('paradisAgentChat.errorFocused', "利用者がこのターミナルを操作中です") };
 		const terminal = this.dependencies.terminal(instanceId, token);
 		if (terminal === undefined) {
 			return refused(localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません"));
@@ -239,7 +245,7 @@ export class ParadisAgentChatInput {
 			return refusedWorking;
 		}
 		let lateReason: string | undefined;
-		let draftBlocked = false;
+		let draftBlocked: ParadisAgentChatSendOutcome | undefined;
 		let checks = 0;
 		try {
 			const outcome = await paradisSendAgentMessageToTui(
@@ -253,20 +259,26 @@ export class ParadisAgentChatInput {
 					// 貼る前（1 回目）は入力欄が空、Enter の前（2 回目）は貼った文だけのときに進む
 					if (options?.refuseDraft === true) {
 						const draft = (await this.dependencies.source.getAgentChatDraft?.(token).catch(() => undefined))?.trim();
-						if (draft !== undefined && !paradisDraftIsOnly(draft, checks++ === 0 ? undefined : paradisStripAgentInvisibleCharacters(text).trim())) {
-							draftBlocked = true;
+						const first = checks++ === 0;
+						if (draft !== undefined && !paradisDraftIsOnly(draft, first ? undefined : paradisStripAgentInvisibleCharacters(text).trim())) {
+							draftBlocked = refusedDraft;
+							return false;
+						}
+						// 書きかけを読めない: 利用者がこのターミナルを操作中なら貼らない（貼った後は Enter の前の確かめに任せる）
+						if (draft === undefined && first && terminal.hasKeyboardFocus?.() === true) {
+							draftBlocked = refusedFocused;
 							return false;
 						}
 					}
 					return true;
 				},
 			);
-			if (!outcome.executed && !outcome.consumed && draftBlocked) {
-				return refusedDraft;
+			if (!outcome.executed && !outcome.consumed && draftBlocked !== undefined) {
+				return draftBlocked;
 			}
 			if (!outcome.executed) {
 				return outcome.consumed
-					? { kind: 'unknown', message: localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした（{0}）", lateReason ?? (draftBlocked ? refusedDraft.message : '')) }
+					? { kind: 'unknown', message: localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした（{0}）", lateReason ?? (draftBlocked?.kind === 'refused' ? draftBlocked.message : '')) }
 					: refused(lateReason ?? localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました"));
 			}
 		} catch {
