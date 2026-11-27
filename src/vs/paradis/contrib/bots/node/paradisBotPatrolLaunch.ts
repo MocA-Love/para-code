@@ -21,9 +21,9 @@
 import { promises as fs } from 'fs';
 import { dirname, join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
-import { paradisClaudeMcpServerEntry } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
+import { paradisClaudeMcpServerEntry, paradisMcpServerUrl } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
 import { ParadisClaudeTrustOutcome, paradisApplyClaudeFolderTrust, paradisClaudeTrustKeysFor, paradisRevokeClaudeFolderTrust, paradisUpdateClaudeConfig } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
-import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, paradisBotPatrolCodexDisabledServers } from '../common/paradisBotTools.js';
+import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, ParadisCodexBrowserRegistration, paradisBotPatrolCodexDisabledServers, paradisCodexBrowserRegistration } from '../common/paradisBotTools.js';
 
 /** 読む `config.toml` の大きさの上限（Para Code の MCP の設定と同じ）。 */
 const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
@@ -65,6 +65,20 @@ function fileStem(botId: string): string {
 
 async function exists(path: string): Promise<boolean> {
 	return fs.lstat(path).then(() => true, () => false);
+}
+
+/**
+ * 会話の Bot を Codex で起動するときの、para-browser の登録の様子と MCP の口（全部のホームの `config.toml` を読む）。
+ * 登録が無い環境では、起動の引数で para-browser の定義を足す（paradisBotLaunchApprovalFlags）。
+ */
+export async function paradisReadCodexBrowserRegistration(environment: Pick<IParadisBotPatrolLaunchEnvironment, 'gatewayPort' | 'codexConfigFiles'>): Promise<{ readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined }> {
+	const texts: (string | undefined | false)[] = [];
+	for (const path of environment.codexConfigFiles()) {
+		texts.push(await readCodexConfig(path));
+	}
+	const registration = paradisCodexBrowserRegistration(texts);
+	const port = registration.kind === 'nowhere' ? await environment.gatewayPort() : undefined;
+	return { registration, url: port !== undefined ? paradisMcpServerUrl(port) : undefined };
 }
 
 async function readCodexConfig(path: string): Promise<string | undefined | false> {
@@ -115,6 +129,7 @@ async function agentConfigAbove(folder: string, stopFolder: string): Promise<str
 /** 見回りの起動に要るものを用意する。用意できなければ断る理由（英文。エージェントと定期実行の記録に出る）。 */
 export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatrolLaunchEnvironment, agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome): Promise<ParadisBotPatrolLaunchContext | string> {
 	let disabledServers: readonly IParadisCodexMcpServerRef[] = [];
+	let browser: { readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined } | undefined;
 	let port = 0;
 	if (agent === 'codex') {
 		const texts: string[] = [];
@@ -132,6 +147,12 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 			return 'Para Code could not list the MCP servers in a Codex config.toml for certain, so it does not start a look-around (it could not turn the others off). Write each MCP server as its own [mcp_servers.<name>] table with url or command, using a name of letters, digits, "-" or "_", to start look-arounds again.';
 		}
 		disabledServers = servers;
+		// para-browser を登録していない環境では、見回りの引数で定義を足す。ホームによって違う・口が動いていないときは
+		// 見回りを起動しない（para-browser の道具を読むものだけに絞れないため）
+		browser = await paradisReadCodexBrowserRegistration(environment);
+		if (browser.registration.kind === 'unknown' || (browser.registration.kind === 'nowhere' && browser.url === undefined)) {
+			return 'Para Code could not set up its browser tools for a Codex look-around (the para-browser MCP server is registered in some Codex homes but not in others, or the browser tools are not running). Register para-browser in every Codex config.toml or restart Para Code to start look-arounds again.';
+		}
 	} else {
 		const gatewayPort = await environment.gatewayPort();
 		if (gatewayPort === undefined) {
@@ -159,7 +180,7 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 		return `Para Code could not prepare the folder for a look-around (${runFolder}). Check that Para Code can write there to start look-arounds again.`;
 	}
 	if (agent === 'codex') {
-		return { agent, runFolder, disabledServers };
+		return { agent, runFolder, disabledServers, ...(browser !== undefined ? { browser } : {}) };
 	}
 	const settingsFile = join(environment.folder, `${stem}.claude-settings.json`);
 	const mcpConfigFile = join(environment.folder, `${stem}.claude-mcp.json`);

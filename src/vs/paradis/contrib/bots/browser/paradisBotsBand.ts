@@ -11,7 +11,8 @@
 // 並び、帯の中だけスクロールし、下の境の線で高さを変えられる。開閉と高さは覚える。閉じても、ピン留めした Bot の行だけは
 // 見出しの下に残る（スペースのピン留めと同じ）。ピン留めは Bot の台帳（IParadisBot.pinned）に持つので、別の窓・スマホでも同じ。
 //
-// 行を押すと {@link PARADIS_BOTS_OPEN_COMMAND} を呼ぶ（中身の Bot のページは後の PR が登録する。登録が無ければ何もしない）。
+// 行を押すと {@link PARADIS_BOTS_OPEN_COMMAND} を呼ぶ（Bot のページを開く。登録は paradisBotsLaunch.contribution.ts。Web のビューには
+// 登録が無いので、無ければ何もしない）。
 // 帯は paradisBots.contribution の electron-browser から登録するので、Web のビューには出ない。
 
 import './media/paradisBotsBand.css';

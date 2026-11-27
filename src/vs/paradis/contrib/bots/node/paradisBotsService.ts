@@ -53,7 +53,7 @@ import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadis
 import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
 import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisAgentCommandTemplate, paradisResolveAgentLaunchFlags } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
@@ -112,6 +112,11 @@ export interface IParadisBotsServiceOptions {
 	readonly forgetPatrol?: (botId: string) => Promise<void>;
 	/** そのエージェントの起動の雛形（利用者の設定 `paradis.workspaceSwitch.agents` を反映したもの）。 */
 	readonly agentTemplate?: (agentId: string) => IParadisAgentCommandTemplate | undefined;
+	/**
+	 * 会話の Bot を Codex で起動するときに、para-browser が Codex の `config.toml` に登録されているかと MCP の口を読む。
+	 * 無ければ登録済みとして扱う（今までどおり道具の許可だけを渡す）。
+	 */
+	readonly codexBrowserRegistration?: () => Promise<{ readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined }>;
 }
 
 /** 前に出す依頼にウィンドウが応えるのを待つ時間。 */
@@ -151,6 +156,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly preparePatrol: IParadisBotsServiceOptions['preparePatrol'];
 	private readonly agentTemplate: IParadisBotsServiceOptions['agentTemplate'];
 	private readonly forgetPatrol: IParadisBotsServiceOptions['forgetPatrol'];
+	private readonly codexBrowserRegistration: IParadisBotsServiceOptions['codexBrowserRegistration'];
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -199,6 +205,7 @@ export class ParadisBotsService extends Disposable {
 		this.preparePatrol = options.preparePatrol;
 		this.agentTemplate = options.agentTemplate;
 		this.forgetPatrol = options.forgetPatrol;
+		this.codexBrowserRegistration = options.codexBrowserRegistration;
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -658,8 +665,11 @@ export class ParadisBotsService extends Disposable {
 				// 会話で Bot が記憶を書き換える前の状態を写しておく（記憶の整理の取り消しで戻す先）。取れなくても起動は止めない
 				await this.memorySnapshots?.take(bot, 'auto').catch(error => this.logService.warn('[ParadisBots] could not copy the memory before a conversation', error));
 			}
+			// Codex の会話は、para-browser を登録していない環境で道具の許可だけを渡すと起動しない（invalid transport）ので、
+			// 登録の様子を読んでから引数を決める
+			const browser = purpose === 'chat' && bot.agent === 'codex' && this.codexBrowserRegistration !== undefined ? await this.codexBrowserRegistration().catch(() => undefined) : undefined;
 			const launchId = this.issueLaunch(botId, purpose);
-			const extraFlags = purpose === 'patrol' ? patrolArgs : paradisBotLaunchApprovalFlags(bot.agent);
+			const extraFlags = purpose === 'patrol' ? patrolArgs : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}

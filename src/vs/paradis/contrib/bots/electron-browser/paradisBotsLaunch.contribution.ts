@@ -38,13 +38,12 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
+import { PARADIS_BOTS_OPEN_COMMAND } from '../common/paradisBotsBandModel.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
 import { paradisBotInstancesInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { IParadisBotRevealRequest, IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
-
-export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
 
 const findInstance = paradisFindBotTerminalInstance;
 

@@ -149,16 +149,96 @@ export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_it
 const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL, PARADIS_BOT_BOARD_ADD_TASK_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL];
 
 /**
- * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
- * 利用者の `config.toml` には書かず、その起動にだけ効かせる。どれも英数字と `_.=-` だけの固定の文字列を単一引用符で
- * 囲むので、POSIX・fish・PowerShell のどれでも 1 つの引数になる。Codex 以外は undefined（Claude Code は MCP の
- * 道具を許可の一覧に足さなくても、起動の権限の設定に従う）。
+ * Codex の `config.toml` に para-browser の MCP サーバーがあるか（見回り・会話の Bot の起動で、全部のホーム（アカウント）の
+ * `config.toml` を合わせて決める）。
+ * - `everywhere`: どのホームにも `[mcp_servers.para-browser]` がある（Para Code の自動セットアップ済み）
+ * - `nowhere`: どのホームにも無い（ファイルが無いホームを含む）。`-c` で道具の許可だけを渡すと、Codex は定義の無い
+ *   `mcp_servers.para-browser` の表を作って `invalid transport` で起動しない（Codex 0.171.0 で確かめた）ので、
+ *   url と認証の変数も一緒に渡して定義を完結させる
+ * - `unknown`: 読めない・曖昧に書かれている・ホームによって違う。para-browser の `-c` は 1 つも渡さない（Codex が
+ *   起動しないよりは、Bot の道具が確認付きになるか使えない方がよい）
  */
-export function paradisBotLaunchApprovalFlags(agent: string): string | undefined {
+export type ParadisCodexBrowserRegistration =
+	| { readonly kind: 'everywhere' }
+	| { readonly kind: 'nowhere' }
+	| { readonly kind: 'unknown' };
+
+/**
+ * 全部のホームの `config.toml` の文（ファイルが無いホームは undefined、読めなかったホームは false）から、para-browser の
+ * 登録の様子を決める。
+ */
+export function paradisCodexBrowserRegistration(configTexts: readonly (string | undefined | false)[]): ParadisCodexBrowserRegistration {
+	let defined = 0;
+	for (const text of configTexts) {
+		if (text === false) {
+			return { kind: 'unknown' };
+		}
+		if (text === undefined) {
+			continue;
+		}
+		const servers = paradisCodexMcpServersOf(text);
+		if (servers === undefined) {
+			return { kind: 'unknown' };
+		}
+		if (servers.some(server => server.name === 'para-browser')) {
+			defined++;
+		}
+	}
+	if (defined === 0) {
+		return { kind: 'nowhere' };
+	}
+	return defined === configTexts.length ? { kind: 'everywhere' } : { kind: 'unknown' };
+}
+
+/** url の値に使ってよい形（`-c` の値を TOML の文字列として引用せずに渡すので、引用を崩す文字が無いもの）。 */
+const SAFE_CODEX_BROWSER_URL = /^http:\/\/127\.0\.0\.1:\d{1,5}\/[A-Za-z0-9/_-]*$/;
+
+/**
+ * para-browser を `config.toml` に登録していないときに足す、para-browser の定義（`-c` の生の値。url と、ペインのトークンを
+ * 読む環境変数の名前）。値は TOML として読めない裸の文字列で渡す（Codex は TOML として読めない値を文字列として扱う。
+ * 引用符を使わないので、シェルの単一引用符の中に置け、PowerShell 5.1 が二重引用符を落としても崩れない）。
+ * url が使えない形なら undefined。
+ */
+function codexBrowserDefinition(url: string): readonly string[] | undefined {
+	if (!SAFE_CODEX_BROWSER_URL.test(url)) {
+		return undefined;
+	}
+	return [`mcp_servers.para-browser.url=${url}`, `mcp_servers.para-browser.bearer_token_env_var=${PARADIS_CODEX_PANE_TOKEN_ENV_VAR}`];
+}
+
+/** ペインのトークンの環境変数（agentBrowser の PARADIS_PANE_TOKEN_ENV_VAR と同じ値。common どうしの循環を避けて写す）。 */
+const PARADIS_CODEX_PANE_TOKEN_ENV_VAR = 'PARA_CODE_TERMINAL_PANE_ID';
+
+/**
+ * para-browser の登録の様子に合わせて、`-c` で渡す値を組み立てる（`tools` は para-browser の道具に足す設定の値）。
+ * 登録が無ければ定義も足し、定義を作れない・様子が分からなければ空。
+ */
+export function paradisCodexBrowserConfigValues(registration: ParadisCodexBrowserRegistration, browserUrl: string | undefined, tools: readonly string[]): readonly string[] {
+	if (registration.kind === 'unknown') {
+		return [];
+	}
+	if (registration.kind === 'nowhere') {
+		const definition = browserUrl !== undefined ? codexBrowserDefinition(browserUrl) : undefined;
+		return definition === undefined ? [] : [...definition, ...tools];
+	}
+	return tools;
+}
+
+/**
+ * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
+ * 利用者の `config.toml` には書かず、その起動にだけ効かせる。どれも英数字と `_.=-:/` だけの文字列を単一引用符で
+ * 囲むので、POSIX・fish・PowerShell のどれでも 1 つの引数になる。Codex 以外は undefined（Claude Code は MCP の
+ * 道具を許可の一覧に足さなくても、起動の権限の設定に従う）。para-browser を登録していなければ定義も足し
+ * （{@link paradisCodexBrowserRegistration}）、渡せる物が無ければ undefined。
+ *
+ * @param browserUrl para-browser の MCP の口（動いていなければ undefined）
+ */
+export function paradisBotLaunchApprovalFlags(agent: string, registration: ParadisCodexBrowserRegistration = { kind: 'everywhere' }, browserUrl?: string): string | undefined {
 	if (agent !== 'codex') {
 		return undefined;
 	}
-	return PARADIS_BOT_CHAT_APPROVAL_TOOLS.map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
+	const values = paradisCodexBrowserConfigValues(registration, browserUrl, PARADIS_BOT_CHAT_APPROVAL_TOOLS.map(tool => `mcp_servers.para-browser.tools.${tool}.approval_mode=approve`));
+	return values.length > 0 ? values.map(value => `-c '${value}'`).join(' ') : undefined;
 }
 
 /** 見回りのペインで使える Bot の道具（読む道具と提案、受け箱を読む道具だけ。項目は書かない・伝言は送らない）。 */
@@ -191,7 +271,7 @@ export interface IParadisCodexMcpServerRef {
  */
 export type ParadisBotPatrolLaunchContext =
 	| { readonly agent: 'claude'; readonly runFolder: string; readonly homeFolder: string; readonly instructionsFile: string; readonly settingsFile: string; readonly mcpConfigFile: string }
-	| { readonly agent: 'codex'; readonly runFolder: string; readonly disabledServers: readonly IParadisCodexMcpServerRef[] };
+	| { readonly agent: 'codex'; readonly runFolder: string; readonly disabledServers: readonly IParadisCodexMcpServerRef[]; readonly browser?: { readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined } };
 
 /** 見回り（読むだけ）に制限できるエージェントか。ほかのエージェント（OpenCode・Antigravity）は見回りを起動しない。 */
 export function paradisBotPatrolSupported(agent: string): agent is 'claude' | 'codex' {
@@ -244,8 +324,11 @@ export function paradisBotPatrolLaunchArgs(context: ParadisBotPatrolLaunchContex
 		...context.disabledServers.flatMap(server => ['-c', server.transport === 'url'
 			? `mcp_servers.${server.name}={url='${PARADIS_CODEX_DISABLED_URL}',enabled=false}`
 			: `mcp_servers.${server.name}={command='false',enabled=false}`]),
-		'-c', `mcp_servers.para-browser.enabled_tools=[${allowed.map(tool => `'${tool}'`).join(',')}]`,
-		...[...PARADIS_BOT_PATROL_TOOLS].flatMap(tool => ['-c', `mcp_servers.para-browser.tools.${tool}.approval_mode=approve`]),
+		// para-browser を登録していない環境では定義も足す（無いまま道具の設定だけ渡すと Codex が起動しない）
+		...paradisCodexBrowserConfigValues(context.browser?.registration ?? { kind: 'everywhere' }, context.browser?.url, [
+			`mcp_servers.para-browser.enabled_tools=[${allowed.map(tool => `'${tool}'`).join(',')}]`,
+			...[...PARADIS_BOT_PATROL_TOOLS].map(tool => `mcp_servers.para-browser.tools.${tool}.approval_mode=approve`),
+		]).flatMap(value => ['-c', value]),
 	];
 }
 
