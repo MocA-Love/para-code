@@ -37,6 +37,35 @@ export interface IParadisBotSettingsDraft {
 	readonly role: string | undefined;
 }
 
+/** 書きかけを始めたときの台帳の値（名前・エージェント・権限）。台帳がほかで変わったかを見分ける元。 */
+export type ParadisBotSettingsBase = Pick<IParadisBotSettingsDraft, 'name' | 'agent' | 'permissionId'>;
+
+/** 台帳の値の欄（書きかけと台帳を突き合わせる欄）。 */
+export type ParadisBotSettingsField = keyof ParadisBotSettingsBase;
+
+/**
+ * 台帳の値が変わったときに、書きかけを合わせ直す。手を付けていない欄（書きかけが元の値のまま）は新しい値にし、
+ * 書き換えていた欄は書きかけを残して `changedElsewhere` に挙げる（台帳の値で上書きしない。画面は「ほかで変わりました」と
+ * 知らせる）。台帳と同じ値に書き換えていた欄は挙げない。
+ */
+export function paradisBotSettingsRebase(base: ParadisBotSettingsBase, draft: IParadisBotSettingsDraft, bot: ParadisBotSettingsBase): { readonly base: ParadisBotSettingsBase; readonly draft: IParadisBotSettingsDraft; readonly changedElsewhere: readonly ParadisBotSettingsField[] } {
+	const changedElsewhere: ParadisBotSettingsField[] = [];
+	const pick = <F extends ParadisBotSettingsField>(field: F): ParadisBotSettingsBase[F] => {
+		if (bot[field] === base[field]) {
+			return draft[field];
+		}
+		if (draft[field] === base[field]) {
+			return bot[field];
+		}
+		if (draft[field] !== bot[field]) {
+			changedElsewhere.push(field);
+		}
+		return draft[field];
+	};
+	const next: IParadisBotSettingsDraft = { ...draft, name: pick('name'), agent: pick('agent'), permissionId: pick('permissionId') };
+	return { base: { name: bot.name, agent: bot.agent, permissionId: bot.permissionId }, draft: next, changedElsewhere };
+}
+
 /**
  * 入力と今の値の差を、update_bot と同じ変更にする。何も変わっていなければ undefined。
  * エージェントを変えて、今の権限がそのエージェントに無ければ既定へ戻す。確かめるのは update_bot と同じく

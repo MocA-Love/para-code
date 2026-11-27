@@ -391,4 +391,41 @@ suite('Paradis bots page overlay', () => {
 			statuses: ['u43:done', 'u44:working'],
 		});
 	});
+
+	test('設定: 入力中の名前は、別の Bot が変わっても作り直さず、この Bot の名前がほかで変わっても上書きせずに知らせる', async () => {
+		const { container, page, bots, botsChanged, disposables } = setup();
+		document.body.appendChild(container);
+		disposables.add(toDisposable(() => container.remove()));
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		await settle();
+		const name = container.querySelector('.paradis-bot-settings-value input') as HTMLInputElement;
+		name.focus();
+		name.value = '出荷係';
+		name.dispatchEvent(new mainWindow.Event('input'));
+		name.setSelectionRange(1, 2);
+		bots.push(bot('other', '別の係'));
+		botsChanged.fire();
+		await settle();
+		const afterOther = { same: container.querySelector('.paradis-bot-settings-value input') === name, notice: container.getElementsByClassName('paradis-bot-settings-elsewhere').length };
+		bots[0] = { ...bots[0], name: '台帳で変えた名前', pinned: true };
+		botsChanged.fire();
+		await settle();
+		const input = container.querySelector('.paradis-bot-settings-value input') as HTMLInputElement;
+		assert.deepStrictEqual({
+			afterOther,
+			value: input.value,
+			focused: document.activeElement === input,
+			selection: [input.selectionStart, input.selectionEnd],
+			notice: container.getElementsByClassName('paradis-bot-settings-elsewhere')[0]?.textContent,
+		}, {
+			afterOther: { same: true, notice: 0 },
+			value: '出荷係',
+			focused: true,
+			selection: [1, 2],
+			notice: '書きかけの間に、ほかの場所で名前が変わりました。保存すると、この画面の値で上書きします。',
+		});
+	});
 });
