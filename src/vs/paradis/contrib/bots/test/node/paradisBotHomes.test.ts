@@ -307,7 +307,11 @@ suite('Paradis bot homes', () => {
 		const fromChat = await service.botSuggest(botId, 'pane-c', 'PR の返事', '返事を書いて');
 		const fromPatrol = await service.botSuggest(botId, 'pane-p', 'PR の返事', '返事を書いて');
 		const open = service.getSnapshot().bots[0].openSuggestions;
-		const started = await service.startSuggestion(service.listSuggestions(botId)[0].id);
+		const suggestionId = service.listSuggestions(botId)[0].id;
+		const started = await service.startSuggestion(suggestionId);
+		// 「始める」は文を返すだけ。画面が入れ終えてから「始めた」にする
+		const openAfterStart = service.getSnapshot().bots[0].openSuggestions;
+		const marked = await service.markSuggestionStarted(suggestionId);
 		service.releasePane('pane-p');
 
 		await service.writeHomeFile(botId, 'MEMORY.md', '- 2026-11-27 古い記憶\n');
@@ -320,7 +324,9 @@ suite('Paradis bot homes', () => {
 			fromPatrol: fromPatrol.ok ? fromPatrol.value.title : fromPatrol.code,
 			open,
 			started: started.ok ? [started.value.state, started.value.request] : started.code,
-			afterStart: service.getSnapshot().bots[0].openSuggestions,
+			openAfterStart,
+			marked: marked.ok ? marked.value.state : marked.code,
+			afterMark: service.getSnapshot().bots[0].openSuggestions,
 			taken,
 			undone,
 			memory: await service.readHomeFile(botId, 'MEMORY.md'),
@@ -330,10 +336,12 @@ suite('Paradis bot homes', () => {
 			fromChat: 'not_patrol',
 			fromPatrol: 'PR の返事',
 			open: 1,
-			started: ['started', '返事を書いて'],
-			afterStart: 0,
-			taken: { ok: true, value: { takenAt: 5000, files: 1 } },
-			undone: { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/release.md'], takenAt: 5000 } },
+			started: ['open', '返事を書いて'],
+			openAfterStart: 1,
+			marked: 'started',
+			afterMark: 0,
+			taken: { ok: true, value: { takenAt: 5000, files: 1, total: 1, partial: false } },
+			undone: { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/release.md'], takenAt: 5000, skipped: [] } },
 			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
 			homeFiles: ['.para-bot.json'],
 		});
@@ -385,6 +393,81 @@ suite('Paradis bot homes', () => {
 			chatHashes: [paradisBotPaneTokenHash('pane-chat')],
 			removed: ['id2'],
 		});
+	});
+
+	test('サービス: 記憶の写しは設定オフで断る・書き戻すのは記憶のファイルだけ・多すぎれば一部だけと返す・Bot を消すと写しも消える', async () => {
+		const userData = join(root, '..', 'userData');
+		const snapshotRoot = join(userData, 'snapshots');
+		let ids = 0;
+		let enabled = true;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => `id${++ids}`,
+			enabled: () => enabled,
+			memorySnapshots: new ParadisBotMemorySnapshots(snapshotRoot, homes, () => 7000),
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		assert.ok(created.ok);
+		const botId = created.value.id;
+		const home = join(root, created.value.folder);
+		const soul = await service.readHomeFile(botId, 'SOUL.md');
+
+		enabled = false;
+		const offSnapshot = await service.snapshotMemory(botId);
+		const offUndo = await service.undoMemoryTidy(botId);
+		const folderWhileOff = await fs.readdir(snapshotRoot).catch(() => 'none');
+		enabled = true;
+
+		await fs.mkdir(join(home, 'memory'), { recursive: true });
+		for (let index = 0; index < 205; index++) {
+			await fs.writeFile(join(home, 'memory', `n${String(index).padStart(3, '0')}.md`), `${index}\n`);
+		}
+		const taken = await service.snapshotMemory(botId);
+		// 写しを書き換えて、人格メモ・指示文・フォルダの外を書き戻させようとする
+		const snapshotFile = join(snapshotRoot, botId, '7000.json');
+		await fs.writeFile(snapshotFile, JSON.stringify({ version: 1, takenAt: 7000, files: { 'MEMORY.md': '- 戻した記憶\n', 'SOUL.md': '乗っ取り', 'AGENTS.md': '乗っ取り', 'memory/a/b.md': 'x', 'memory/n000.md': '戻した\n' } }));
+		const undone = await service.undoMemoryTidy(botId);
+		const removed = await service.removeBot(botId);
+		assert.deepStrictEqual({
+			offSnapshot,
+			offUndo,
+			folderWhileOff,
+			taken: taken.ok ? taken.value : taken.code,
+			undone: undone.ok ? { restored: undone.value.restored, skipped: undone.value.skipped } : undone.code,
+			soulKept: (await fs.readFile(join(home, 'SOUL.md'), 'utf8')) === (soul.ok ? soul.value : undefined),
+			memory: await fs.readFile(join(home, 'MEMORY.md'), 'utf8'),
+			n000: await fs.readFile(join(home, 'memory', 'n000.md'), 'utf8'),
+			removed: removed.ok,
+			snapshotsAfterRemove: await fs.readdir(join(snapshotRoot, botId)).catch(() => 'gone'),
+			homeAfterRemove: (await fs.stat(home)).isDirectory(),
+		}, {
+			offSnapshot: { ok: false, code: 'disabled', message: 'Para Code bots are turned off. Turn on the bot setting (paradis.bots.enabled) first.' },
+			offUndo: { ok: false, code: 'disabled', message: 'Para Code bots are turned off. Turn on the bot setting (paradis.bots.enabled) first.' },
+			folderWhileOff: 'none',
+			// MEMORY.md と memory/ の 205 件のうち、上限の 200 件だけ
+			taken: { takenAt: 7000, files: 200, total: 206, partial: true },
+			undone: { restored: ['MEMORY.md', 'memory/n000.md'], skipped: ['SOUL.md', 'AGENTS.md', 'memory/a/b.md'] },
+			soulKept: true,
+			memory: '- 戻した記憶\n',
+			n000: '戻した\n',
+			removed: true,
+			snapshotsAfterRemove: 'gone',
+			homeAfterRemove: true,
+		});
+	});
+
+	test('サービス: 提案の台帳が読めなくても、Bot と項目は書ける（提案だけが読むだけになる）', async () => {
+		const userData = join(root, '..', 'userData');
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => 'id1',
+			suggestionsFile: { read: async () => { throw new Error('broken'); }, write: async () => { } },
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		const patrol = service.issueLaunch('id1', 'patrol');
+		assert.ok(patrol !== undefined && service.reportLaunch(patrol, 'pane-p'));
+		const suggested = await service.botSuggest('id1', 'pane-p', '題', '依頼');
+		assert.deepStrictEqual({ created: created.ok, suggested: suggested.ok ? 'ok' : suggested.code }, { created: true, suggested: 'read_only' });
 	});
 
 	test('人格メモの雛形は日本語（利用者が開いて書き足す）', async () => {
