@@ -420,7 +420,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 
 	private open(bot: IParadisBotSummary): void {
 		if (CommandsRegistry.getCommand(PARADIS_BOTS_OPEN_COMMAND)) {
-			void this.commandService.executeCommand(PARADIS_BOTS_OPEN_COMMAND, bot.id);
+			void this.commandService.executeCommand(PARADIS_BOTS_OPEN_COMMAND, bot.id, { read: true });
 		}
 	}
 

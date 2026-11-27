@@ -26,6 +26,7 @@ import { NullHoverService } from '../../../../../platform/hover/test/browser/nul
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
+import { IParadisAgentChatGuide } from '../../../agentChat/common/paradisAgentChat.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
 import { IParadisBotPatrolPort } from '../../browser/paradisBotPatrol.js';
 import { paradisRequestBotPageTab } from '../../browser/paradisBotPageTabRequest.js';
@@ -118,7 +119,13 @@ suite('Paradis bots page overlay', () => {
 		const chatActive = new Set<number>();
 		const chatActiveChanged = disposables.add(new Emitter<number>());
 		let holds = 0;
+		const pinned = new Set<number>();
+		const chatCalls: string[] = [];
+		const guides = new Map<number, IParadisAgentChatGuide | undefined>();
 		instantiation.stub(IParadisAgentChatService, {
+			pinChatMode: (id: number, moveFocus: boolean) => { pinned.add(id); chatCalls.push(`pin ${id} ${moveFocus}`); },
+			isChatPinned: (id: number) => pinned.has(id),
+			setChatGuide: (id: number, guide: IParadisAgentChatGuide | undefined) => guides.set(id, guide),
 			insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; },
 			onDidChangeHeader: headerChanged.event,
 			headerState: () => header,
@@ -174,7 +181,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId), isPatrolPane };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
-		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
+		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, chatCalls, guides, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -583,10 +590,55 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual({ terminalView, chatView, itemsTab, beforeTabs, backToTerminal, calls: headerCalls }, {
 			itemsTab: false,
 			beforeTabs: true,
-			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
+			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: true },
 			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', terminal: true },
-			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
+			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', terminal: true },
 			calls: ['hide 1 #1', 'hide 1 #2', 'unhide 1 #1', 'hide 1 #3', 'unhide 1 #2', 'terminal 1', 'unhide 1 #3', 'hide 1 #4', 'unhide 1 #4'],
+		});
+	});
+
+	test('Bot の会話のペインはいつもチャット表示にし（ペインごとに 1 回）、会話が見つかるまで止まっている理由の案内を出す。ターミナルを開いた後は帯のボタンでチャットへ戻る。見回りのペインは控えない', async () => {
+		const { container, page, chatCalls, guides, bots, botsChanged, setChatActive, patrolPanes, panes, changed } = setup();
+		const button = () => container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLButtonElement;
+		const look = () => [button().hidden, button().getAttribute('aria-label')];
+		page.setInstance(1);
+		await settle();
+		const waking = guides.get(1);
+		// 照らし直しでもう一度控え直さない（利用者がターミナルを開いた後に、勝手にチャットへ戻さない）
+		changed.fire();
+		await settle();
+		setChatActive(1, true);
+		const chatButton = look();
+		button().click();
+		setChatActive(1, false);
+		const terminalButton = look();
+		button().click();
+		bots[0] = { ...bots[0], halt: { kind: 'needsUser' } };
+		botsChanged.fire();
+		const needsUser = guides.get(1);
+		bots[0] = { ...bots[0], halt: { kind: 'notFound' } };
+		botsChanged.fire();
+		const notFound = guides.get(1)?.band?.title;
+		// 見回りのペインは控えず、案内も出さない
+		panes.set(2, 'release');
+		patrolPanes.add(2);
+		page.setInstance(2);
+		await settle();
+		// Bot のペインでなくなったら案内を消す
+		page.setInstance(1);
+		await settle();
+		panes.delete(1);
+		changed.fire();
+		await settle();
+		assert.deepStrictEqual({ waking, chatButton, terminalButton, needsUser, notFound, patrolGuide: guides.get(2), cleared: guides.get(1), calls: chatCalls }, {
+			waking: { notice: '起こしています…', sendable: true },
+			chatButton: [false, 'ターミナルを開く'],
+			terminalButton: [false, 'チャットに戻る'],
+			needsUser: { notice: 'まだ会話はありません', band: { title: 'ターミナルで操作が要ります', detail: '初回設定・ログイン・許可の画面で止まっています' } },
+			notFound: 'Claude Code が見つかりません',
+			patrolGuide: undefined,
+			cleared: undefined,
+			calls: ['pin 1 true', 'pin 1 true'],
 		});
 	});
 

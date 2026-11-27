@@ -83,6 +83,7 @@ import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosti
 import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.js';
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } from './paradisCdpPeerResolver.js';
+import { PARADIS_CONFINED_PANE_IMPERSONATION_MESSAGE, paradisCallerIsFromConfinedPane, paradisConfinedShellPids } from './paradisConfinedPaneCaller.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisAntigravityProgramStatusTransition, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
@@ -98,7 +99,7 @@ import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, par
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { PARADIS_AGENT_CLI_ENABLED_SETTING, PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION, paradisAgentCliEnabled } from '../common/paradisAgentCliSkill.js';
 import { IParadisAgentInstructionPart, IParadisAgentInstructionSection, IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, ParadisCliConversations, ParadisCliGroup, paradisBuildCliCatalog, paradisCliCallMetaOf, paradisMcpInstructionsText } from '../common/paradisCliCatalog.js';
-import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisMcpCallRefusalFor, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
+import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisActiveMcpConfinedPanes, paradisMcpCallRefusalFor, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { paradisWithReadOnlyToolAnnotation } from '../common/paradisMcpReadOnlyTools.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
@@ -850,6 +851,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
 	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
+	/** 接続とトークンの組ごとの「制限するペインからのなりすましか」（キーは照合したシェルの PID の並び）。 */
+	private readonly _confinedCallerChecks = new WeakMap<Socket, Map<string, { readonly key: string; readonly result: Promise<boolean> }>>();
 	/** 接続元を確かめられなかった回数（ペインと理由の組ごと）。ログを初回と 2 の累乗の回だけに間引く。 */
 	private readonly _callerUnverifiedCounts = new Map<string, number>();
 	/**
@@ -3914,6 +3917,39 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
+	 * 接続元の祖先に、名乗ったトークン以外の制限するペイン（Bot のペインなど）のシェルがあるか（paradisConfinedPaneCaller.ts）。
+	 * 制限するペインが無ければ接続元を調べない。結果は接続とトークンの組ごとに、照合したシェルが変わるまで覚える。
+	 */
+	private async _isConfinedPaneImpersonation(token: string, socket: Socket | undefined, signal?: AbortSignal): Promise<boolean> {
+		const sources = paradisActiveMcpConfinedPanes();
+		const port = this._port;
+		if (sources.length === 0 || !socket || port === undefined || typeof socket.remotePort !== 'number' || socket.localPort !== port) {
+			return false;
+		}
+		const pids = await paradisConfinedShellPids(token, this._paneShells.values(), sources);
+		if (pids.length === 0) {
+			return false;
+		}
+		const key = pids.join(',');
+		let checks = this._confinedCallerChecks.get(socket);
+		const hit = checks?.get(token);
+		if (hit && hit.key === key) {
+			return hit.result;
+		}
+		const remotePort = socket.remotePort;
+		const result = paradisCallerIsFromConfinedPane(token, this._paneShells.values(), sources,
+			ancestorPids => paradisClassifyPeer(remotePort, port, process.pid, { ancestorPids }, undefined, { budgetMs: 5_000 }));
+		if (!checks) {
+			checks = new Map();
+			this._confinedCallerChecks.set(socket, checks);
+		}
+		checks.set(token, { key, result });
+		const refused = await result;
+		signal?.throwIfAborted();
+		return refused;
+	}
+
+	/**
 	 * 接続元を確かめられなかったことを、ペインと理由の組ごとに初回と 2 の累乗の回だけログに出す（診断専用）。
 	 * 高負荷でコマンドが間に合わない（`probe-failed`）のか、ペインのシェルが分からない（`pane-not-registered`）のかを
 	 * 後から見分けるため。token そのものは出さない。
@@ -5414,7 +5450,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._hibernatingTokens.delete(token);
 		this._cleanupTokenLocalState(token, generation, true);
 		this._hookOwnership.clear(token);
-		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() }));
+		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, observedExit: true, at: Date.now() }));
 		this._runNonThrowingCleanup('terminal-exit-acknowledgement', () => this._onDidAcknowledgePane.fire(token));
 		return true;
 	}
@@ -5936,6 +5972,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			const refusal = await this._callerRefusalBeforeLane(ingressLease, name, socket, signal);
 			if (refusal !== undefined) {
 				return refusal;
+			}
+			// Bot のペインの中のプロセスが、ほかのペインのトークンを名乗った呼び出しは断る
+			if (await this._isConfinedPaneImpersonation(ingressLease.token, socket, signal)) {
+				this._requireIngressLease(ingressLease);
+				return this._toolError(PARADIS_CONFINED_PANE_IMPERSONATION_MESSAGE);
 			}
 			// ほかの機能がペインごとに断る道具（Bot の見回りのペインは読むだけの道具だけ）。run_steps の中の手順にも聞く
 			const paneRefusal = await paradisMcpCallRefusalFor(ingressLease.token, name);

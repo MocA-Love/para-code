@@ -58,7 +58,7 @@ import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentCha
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoiceMenu.js';
 import { ParadisAgentChatChoiceReturn } from '../browser/paradisAgentChatChoiceReturn.js';
-import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
+import { IParadisAgentChatCommand, IParadisAgentChatGuide, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory, paradisSendToAgentPane } from '../common/paradisAgentChatComposerLogic.js';
 import { ParadisAgentChatActiveTracker, paradisAgentChatActive } from '../common/paradisAgentChatActive.js';
 import { IParadisAgentChatHeaderState, ParadisAgentChatHeaderHides, ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
@@ -69,6 +69,11 @@ import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentB
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisAntigravityPaneStatus } from '../common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
+import { paradisAgentReadyForFirstInput, paradisWaitForAgentFirstInput } from '../common/paradisAgentChatFirstInput.js';
+import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
+import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
+import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
+import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
 import '../browser/media/paradisAgentChat.css';
 
@@ -169,12 +174,18 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly watcherId = generateUuid();
 	private readonly sessions = this._register(new DisposableMap<string, ParadisAgentChatSession>());
 	/** 会話の写しごとの、見出しの変化の見張り。 */
-	private readonly headerWatches = this._register(new DisposableMap<string, ParadisAgentChatHeaderWatch>());
+	private readonly headerWatches = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly _onDidChangeHeader = this._register(new Emitter<number>());
 	readonly onDidChangeHeader = this._onDidChangeHeader.event;
 	/** 見出しを畳んだ側の台帳（ペインが閉じた・チャット表示が閉じた・会話が替わったら戻す）。 */
 	private readonly headerHides = this._register(new ParadisAgentChatHeaderHides());
 	private readonly chatModeInstances = new Set<number>();
+	/** いつもチャット表示にするペイン（{@link pinChatMode}。Bot の会話のペイン）。会話が見つかる前でもチャット表示にできる。 */
+	private readonly pinnedInstances = new Set<number>();
+	/** 会話が見つかるまで出す案内（{@link setChatGuide}）。 */
+	private readonly guides = new Map<number, IParadisAgentChatGuide>();
+	private readonly _onDidChangeGuide = this._register(new Emitter<number>());
+	readonly onDidChangeGuide = this._onDidChangeGuide.event;
 	/** 今チャット表示で見えているペイン（{@link isChatActive}）。 */
 	private readonly chatActive = this._register(new ParadisAgentChatActiveTracker());
 	readonly onDidChangeChatActive = this.chatActive.onDidChange;
@@ -310,9 +321,40 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return this.paneTokenService.getTokenForInstance(instanceId);
 	}
 
-	/** そのペインでエージェントの会話が確定していて、チャットに切り替えられるか。 */
+	/** そのペインでエージェントの会話が確定していて、チャットに切り替えられるか（いつもチャット表示にするペインは、確定を待たない）。 */
 	isAvailable(instanceId: number): boolean {
-		return this.enabled && this.insightsService.getForInstance(instanceId) !== undefined;
+		return this.enabled && (this.pinnedInstances.has(instanceId) || this.insightsService.getForInstance(instanceId) !== undefined);
+	}
+
+	pinChatMode(instanceId: number, moveFocus: boolean): void {
+		if (!this.enabled || this.terminalService.getInstanceFromId(instanceId) === undefined) {
+			return;
+		}
+		this.pinnedInstances.add(instanceId);
+		this.setChatMode(instanceId, true, moveFocus && this.isActiveInstance(instanceId));
+	}
+
+	isChatPinned(instanceId: number): boolean {
+		return this.enabled && this.pinnedInstances.has(instanceId);
+	}
+
+	setChatGuide(instanceId: number, guide: IParadisAgentChatGuide | undefined): void {
+		const previous = this.guides.get(instanceId);
+		if (guide === undefined ? previous === undefined : JSON.stringify(guide) === JSON.stringify(previous)) {
+			return;
+		}
+		if (guide === undefined) {
+			this.guides.delete(instanceId);
+		} else if (this.terminalService.getInstanceFromId(instanceId) !== undefined) {
+			this.guides.set(instanceId, guide);
+		} else {
+			return;
+		}
+		this._onDidChangeGuide.fire(instanceId);
+	}
+
+	chatGuide(instanceId: number): IParadisAgentChatGuide | undefined {
+		return this.guides.get(instanceId);
 	}
 
 	/** 帯の「ターミナルを開く」。選択画面が消えたらチャット表示へ戻す（フォーカスは、そのタブが前に出ているときだけ入力欄へ）。 */
@@ -455,6 +497,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	private forgetInstance(instanceId: number): void {
 		this.chatModeInstances.delete(instanceId);
+		this.pinnedInstances.delete(instanceId);
+		this.guides.delete(instanceId);
 		this.headerHides.release(instanceId);
 		this.instanceListeners.deleteAndDispose(instanceId);
 		this.updateChatActive();
@@ -520,13 +564,15 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		if (session === undefined) {
 			session = new ParadisAgentChatSession(token, this.source, this.logService);
 			this.sessions.set(token, session);
-			const watch = new ParadisAgentChatHeaderWatch(session);
-			watch.onDidChange(() => {
+			const watch = new DisposableStore();
+			const header = watch.add(new ParadisAgentChatHeaderWatch(session));
+			// 購読も見張りと一緒に捨てる（捨てないと会話の写しを捨てた後も残る）
+			watch.add(header.onDidChange(() => {
 				const instanceId = this.paneTokenService.getInstanceForToken(token);
 				if (instanceId !== undefined) {
 					this._onDidChangeHeader.fire(instanceId);
 				}
-			});
+			}));
 			this.headerWatches.set(token, watch);
 		}
 		return session;
@@ -682,12 +728,68 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly chatTerminals = new WeakMap<ITerminalInstance, IParadisAgentChatTerminal>();
 
 	async sendMessage(instanceId: number, token: string, text: string): Promise<string | undefined> {
-		const error = await this.input.sendMessage(instanceId, token, text);
+		const early = await this.sendBeforeConversation(instanceId, token, text);
+		// 会話の前に送った（''）なら送れた、文なら送れなかった理由
+		const error = early !== undefined ? (early === '' ? undefined : early) : await this.input.sendMessage(instanceId, token, text);
 		// 非同期の質問への返信（カードから送った決まった形の発言）は、入力欄の履歴に残さない
 		if (error === undefined && paradisParseCodexAsyncReply(text) === undefined) {
 			this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		}
 		return error;
+	}
+
+	/**
+	 * いつもチャット表示にするペインで、会話がまだ見つからない（最初の指示なしで起こした Bot。最初の発言まで会話の記録が無い）
+	 * ときの最初の 1 文。エージェントの入力欄の準備ができてから TUI へ送る。会話があるペインは undefined（いつもの経路で送る）。
+	 * 送れたら `''`、送れなければ理由の文。
+	 */
+	private async sendBeforeConversation(instanceId: number, token: string, text: string): Promise<string | undefined> {
+		if (!this.pinnedInstances.has(instanceId)) {
+			return undefined;
+		}
+		const session = this.session(token);
+		if (session.state === undefined) {
+			await session.refresh();
+		}
+		if (session.state !== undefined) {
+			return undefined;
+		}
+		const value = paradisBuildPresetInsertText(text, true);
+		if (value === undefined) {
+			return localize('paradisAgentChat.errorEmpty', "送る文がありません");
+		}
+		const terminal = () => this.chatTerminal(instanceId, token);
+		const probe = () => {
+			const current = terminal();
+			const instance = this.terminalService.getInstanceFromId(instanceId);
+			const buffer = instance?.xterm?.raw.buffer.active;
+			if (current === undefined || instance === undefined || buffer === undefined) {
+				return undefined;
+			}
+			// Claude Code の `❯` か Codex の `›` の入力欄が空で見えているときだけ送る（どちらでも無ければ分からない）
+			const claude = paradisClaudeComposerState(buffer);
+			const composer = claude !== 'unknown' ? claude : paradisCodexComposerState(buffer);
+			return { foreground: current.foreground(), composer, choiceMenu: this.readChoiceMenu(instanceId) !== undefined };
+		};
+		const ready = await paradisWaitForAgentFirstInput(probe);
+		const target = terminal();
+		if (!ready || target === undefined) {
+			// 文は入力欄に残る（送れなかったので消さない）
+			return localize('paradisAgentChat.errorFirstInputNotReady', "ターミナルで操作が要ります。初回設定や確認の画面で止まっていないか確かめてください");
+		}
+		// 貼る直前は入力欄が空で受け付ける状態か、Enter の直前は（貼った文で入力欄はもう空ではないので）選択画面が出ていないかを見直す
+		let pasted = false;
+		const validate = async () => {
+			const state = probe();
+			if (terminal() !== target || state === undefined) {
+				return false;
+			}
+			const ok = pasted ? state.foreground === 'agent' && !state.choiceMenu : paradisAgentReadyForFirstInput(state);
+			pasted = true;
+			return ok;
+		};
+		const outcome = await paradisSendAgentMessageToTui(value, (value, execute, bracketedPasteMode) => target.sendText(value, execute ?? false, bracketedPasteMode), validate);
+		return outcome.executed ? '' : localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました");
 	}
 
 	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined> {

@@ -11,6 +11,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 import { IParadisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
+import { IParadisAgentChatGuide } from '../common/paradisAgentChat.js';
 
 export const IParadisAgentChatService = createDecorator<IParadisAgentChatService>('paradisAgentChatService');
 
@@ -28,6 +29,16 @@ export interface IParadisAgentChatService {
 	 * 見つからなければターミナル表示のまま false を返す。チャット表示を切っているときも false。
 	 */
 	openChatWhenReady(instanceId: number, timeoutMs: number): Promise<boolean>;
+	/**
+	 * そのターミナルを、いつもチャット表示にするペインとして控え、チャット表示にする（Bot の会話のペイン）。会話が見つかる前でも
+	 * 切り替え、見つかるまでは {@link setChatGuide} の案内を出す。利用者がターミナルを開いた後も控えは残り、もう一度呼ぶと
+	 * チャット表示へ戻る。フォーカスは `moveFocus` で、そのタブが前に出ているときだけ入力欄へ移す。チャット表示を切っているときは何もしない。
+	 */
+	pinChatMode(instanceId: number, moveFocus: boolean): void;
+	/** {@link pinChatMode} で控えたペインか（チャット表示を切っているときは false）。 */
+	isChatPinned(instanceId: number): boolean;
+	/** そのペインで会話が見つかるまで出す案内を差し替える（undefined で消す）。ペインが閉じたら忘れる。 */
+	setChatGuide(instanceId: number, guide: IParadisAgentChatGuide | undefined): void;
 	/**
 	 * そのターミナルのチャット表示の入力欄へ、送らずに下書きを入れる（Bot のホームの提案の「始める」など）。書きかけの文は
 	 * 消さず、空行を挟んで後ろへ足す（`appended`）。見えていれば入力欄へフォーカスする。チャット表示でない・切っている・

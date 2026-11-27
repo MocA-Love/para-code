@@ -75,11 +75,11 @@ export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'r
  * （{@link paradisRegisterAgentIdeActionRefusal} に渡す）。Bot が Bot でないペインを起こす・動かして、そこから
  * Bot を変える道具を呼ぶ穴を塞ぐ。
  */
-export function paradisBotIdeActionRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'boardOriginOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
+export function paradisBotIdeActionRefusal(service: Pick<ParadisBotsService, 'ready' | 'restrictedBotIdOfPane' | 'boardOriginOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
 	return async (paneToken, toolName) => {
 		// 起動の直後は結び付けの表を読み終えていないので、待ってから引く（待たないと門が開いたままになる）
 		await service.ready;
-		if (service.botOfPane(paneToken) !== undefined) {
+		if (service.restrictedBotIdOfPane(paneToken) !== undefined) {
 			return toolName === PARADIS_CREATE_SCHEDULED_RUN_TOOL ? SCHEDULE_FROM_BOT_MESSAGE : IDE_ACTION_FROM_BOT_MESSAGE;
 		}
 		return service.boardOriginOfPane(paneToken) !== undefined ? IDE_ACTION_FROM_BOARD_TASK_MESSAGE : undefined;
@@ -117,7 +117,7 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 	 * 一覧と説明を埋めない。Bot のペインはどうせ書く道具を断られる）。出さなくても、呼ばれたときの門（callTool）はそのまま。
 	 */
 	private shownTo(paneToken: string | undefined): boolean {
-		return this.settings.botsEnabled() && paneToken !== undefined && paneToken.length > 0 && this.service.botOfPane(paneToken) === undefined && this.service.boardOriginOfPane(paneToken) === undefined;
+		return this.settings.botsEnabled() && paneToken !== undefined && paneToken.length > 0 && this.service.restrictedBotIdOfPane(paneToken) === undefined && this.service.boardOriginOfPane(paneToken) === undefined;
 	}
 
 	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[] {
@@ -146,7 +146,7 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 			return toolError(write ? CALLER_UNVERIFIED_MESSAGE : READ_CALLER_UNVERIFIED_MESSAGE);
 		}
 		// Bot のペインからは書かせない（自分や他の Bot の設定を変えて、できることを広げる穴を塞ぐ）
-		if (write && this.service.botOfPane(paneToken) !== undefined) {
+		if (write && this.service.restrictedBotIdOfPane(paneToken) !== undefined) {
 			return toolError(FROM_BOT_MESSAGE);
 		}
 		// Bot が載せたタスクのためにボードが動かしたペインも同じ（Bot の書いた指示で動いている）

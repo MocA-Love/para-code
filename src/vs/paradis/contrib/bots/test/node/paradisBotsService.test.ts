@@ -20,6 +20,7 @@ import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../comm
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
 import { IParadisBotsSnapshot } from '../../common/paradisBotsApi.js';
 import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, PARADIS_BOT_LAUNCH_TTL_MS } from '../../node/paradisBotPanes.js';
+import { paradisBotIdeActionRefusal, paradisBotPatrolToolRefusal } from '../../node/paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from '../../node/paradisBotToolProvider.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
@@ -48,7 +49,7 @@ interface IHarness {
 	readonly botsFile: MemoryFile<IParadisBotsState>;
 	readonly itemsFile: MemoryFile<IParadisBotItemsState>;
 	readonly panesFile: MemoryFile<IParadisBotPanesState>;
-	readonly hooks: Emitter<{ token: string; event: string }>;
+	readonly hooks: Emitter<{ token: string; event: string; observedExit?: true }>;
 	readonly clock: { now: number };
 	/** Bot の機能（試験中の設定）。 */
 	readonly settings: { enabled: boolean };
@@ -64,7 +65,7 @@ function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: Memory
 	const itemsFile = files?.itemsFile ?? new MemoryFile(EMPTY_PARADIS_BOT_ITEMS_STATE);
 	const panesFile = files?.panesFile ?? new MemoryFile(EMPTY_PARADIS_BOT_PANES_STATE);
 	const humanAsk = store.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
-	const hooks = store.add(new Emitter<{ token: string; event: string }>());
+	const hooks = store.add(new Emitter<{ token: string; event: string; observedExit?: true }>());
 	const settings = { enabled: true };
 	let ids = 0;
 	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, enabled: () => settings.enabled, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}), ...(revealTimeoutMs !== undefined ? { revealTimeoutMs } : {}) }));
@@ -127,14 +128,53 @@ suite('Paradis bots service', () => {
 		});
 	});
 
-	test('isBotPane: Bot として起動したペインだけ true、Bot の機能がオフなら false', async () => {
+	test('isBotPane と Bot の制限: Bot として起動したペインだけ。Bot の機能をオフにしても、結び付いたペインの間は外れない', async () => {
 		const h = harness(store);
 		await h.service.ready;
-		await h.bot('見張り係');
-		const check = () => ({ bot: h.service.isBotPane('pane-見張り係'), other: h.service.isBotPane('pane-other'), empty: h.service.isBotPane('') });
-		const on = check();
+		const botId = await h.bot('見張り係');
+		assert.ok(h.service.reportLaunch(h.service.issueLaunch(botId, 'patrol')!, 'pane-patrol'));
+		const ideRefusal = paradisBotIdeActionRefusal(h.service);
+		const patrolRefusal = paradisBotPatrolToolRefusal(h.service);
+		const check = async () => ({
+			bot: h.service.isBotPane('pane-見張り係'), other: h.service.isBotPane('pane-other'), empty: h.service.isBotPane(''),
+			refused: [(await ideRefusal('pane-見張り係', 'launch_agent')) !== undefined, (await ideRefusal('pane-patrol', 'create_terminal')) !== undefined, (await patrolRefusal('pane-patrol', 'click')) !== undefined, (await ideRefusal('pane-other', 'launch_agent')) !== undefined],
+		});
+		const on = await check();
+		// Bot のエージェントが settings.json で機能をオフにしても、制限は外れない。ウィンドウはこのハッシュで Bot のペインを閉じる
 		h.settings.enabled = false;
-		assert.deepStrictEqual({ on, off: check() }, { on: { bot: true, other: false, empty: false }, off: { bot: false, other: false, empty: false } });
+		const off = await check();
+		assert.deepStrictEqual({ on, off, allPaneHashes: h.service.allPaneHashes().length }, {
+			on: { bot: true, other: false, empty: false, refused: [true, true, true, false] },
+			off: { bot: true, other: false, empty: false, refused: [true, true, true, false] },
+			allPaneHashes: 2,
+		});
+	});
+
+	test('偽の TerminalExit（agent-hook の HTTP から届く、observedExit の無いもの）では結び付けも制限も外れず、Para Code が見た終了では外れる', async () => {
+		const h = harness(store);
+		await h.service.ready;
+		const botId = await h.bot('会話係');
+		assert.ok(h.service.reportLaunch(h.service.issueLaunch(botId, 'patrol')!, 'pane-patrol'));
+		const ideRefusal = paradisBotIdeActionRefusal(h.service);
+		const patrolRefusal = paradisBotPatrolToolRefusal(h.service);
+		const state = async () => ({
+			chat: [h.service.isBotPane('pane-会話係'), (await ideRefusal('pane-会話係', 'launch_agent')) !== undefined],
+			patrol: [h.service.isBotPane('pane-patrol'), h.service.purposeOfPane('pane-patrol'), (await ideRefusal('pane-patrol', 'send_terminal_input')) !== undefined, (await patrolRefusal('pane-patrol', 'click')) !== undefined],
+		});
+		h.hooks.fire({ token: 'pane-patrol', event: 'UserPromptSubmit' });
+		const working = h.service.getSnapshot().bots[0].activity;
+		// エージェントが自分のトークンで送った TerminalExit（hook のバスには observedExit の無いイベントとして流れる）。
+		// 結び付けは残し、表示だけ作業中ではなくする
+		h.hooks.fire({ token: 'pane-会話係', event: 'TerminalExit' });
+		h.hooks.fire({ token: 'pane-patrol', event: 'TerminalExit' });
+		const forged = { ...await state(), activity: [working, h.service.getSnapshot().bots[0].activity] };
+		// ウィンドウが終了を知らせたもの（notifyTerminalExit だけが observedExit を付ける）
+		h.hooks.fire({ token: 'pane-会話係', event: 'TerminalExit', observedExit: true });
+		h.hooks.fire({ token: 'pane-patrol', event: 'TerminalExit', observedExit: true });
+		assert.deepStrictEqual({ forged, observed: await state() }, {
+			forged: { chat: [true, true], patrol: [true, 'patrol', true, true], activity: ['patrolling', 'idle'] },
+			observed: { chat: [false, false], patrol: [false, undefined, false, false] },
+		});
 	});
 
 	test('Needs you → 「聞く・答える」に 1 件 → 回答 → 項目が作業中へ戻る', async () => {
@@ -251,7 +291,7 @@ suite('Paradis bots service', () => {
 		second.hooks.fire({ token: 'pane-B', event: 'UserPromptSubmit' });
 		const afterSeen = second.service.getSnapshot().bots.map(bot => [bot.name, bot.activity]);
 		// 現れないまま閉じたペイン（TerminalExit）と、消した Bot の分は保存から消える
-		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit' });
+		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit', observedExit: true });
 		await second.service.removeBot(second.service.botOfPane('pane-B')!.id);
 		assert.deepStrictEqual({
 			saved: [saved.version, saved.panes.map(pane => [pane.hash, pane.purpose])],
@@ -373,7 +413,7 @@ suite('Paradis bots service', () => {
 		const notAppeared = await code(a, 'chat', second.service);
 		second.hooks.fire({ token: 'pane-A', event: 'SessionStart' });
 		const appeared = await code(a, 'chat', second.service);
-		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit' });
+		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit', observedExit: true });
 		const closed = await code(a, 'chat', second.service);
 		assert.deepStrictEqual({ open, concurrent, afterLaunchingTtl, otherReported, lateReported, notAppeared, appeared, closed }, {
 			open: ['already_open', 'unavailable'],
@@ -387,7 +427,7 @@ suite('Paradis bots service', () => {
 		});
 	});
 
-	test('前に出す依頼に応えるウィンドウが無ければ、結び付けを外して起動へ進める。再読み込みでは外さない。起動し直した後に古いペインを 2 つ目の会話として戻さない', async () => {
+	test('前に出す依頼に応えるウィンドウが無ければ、会話として数えるのをやめて起動へ進める（Bot の制限は本物の終了まで残す）。再読み込みでは外さない。起動し直した後に古いペインを 2 つ目の会話として戻さない', async () => {
 		const h = harness(store, undefined, undefined, 20);
 		const created = await h.service.createBot({ name: 'A', agent: 'claude' });
 		assert.ok(created.ok);
@@ -416,15 +456,33 @@ suite('Paradis bots service', () => {
 		// どのウィンドウも応えない（ペインのあったウィンドウを閉じた）: 待ってから外し、起動へ進める
 		const unanswered = await h.service.requestReveal(a);
 		const afterTimeout = await code();
+		// 応えが無かった古いペインは、会話・Bot の道具には数えないが、Bot の制限は残る。止める依頼では一緒に閉じる
+		const detached = { bot: h.service.botOfPane('pane-1')?.id, restricted: h.service.isBotPane('pane-1'), stopHashes: h.service.paneHashesOf(a).length };
+		// 古いペインのエージェントが偽の TerminalExit（observedExit の無いもの）を送っても、制限は外れない（#1264 と両立）
+		h.hooks.fire({ token: 'pane-1', event: 'TerminalExit' });
+		const afterForgedExit = { restricted: h.service.isBotPane('pane-1'), ideRefused: await paradisBotIdeActionRefusal(h.service)('pane-1', 'launch_agent') !== undefined };
+		// 設定をオフにしても、閉じ切るまで制限は残る（#1264 と同じ）
+		h.settings.enabled = false;
+		const whileDisabled = h.service.isBotPane('pane-1');
+		h.settings.enabled = true;
+		// 新しい会話のペインが開いた後も、古いペインの制限は残る
+		const reopenedHere = bind('pane-3');
+		const afterReopen = [h.service.isBotPane('pane-1'), h.service.botOfPane('pane-3')?.id === a];
 
 		// 起動し直した後: 保存した古いペインがまだ現れないうちに新しい会話を開いた。後から古いペインの hook が来ても戻さない
 		const second = harness(store, h);
 		await second.service.ready;
 		const reopened = bind('pane-2', second.service);
 		second.hooks.fire({ token: 'pane-1', event: 'SessionStart' });
+		const oldPaneRestricted = second.service.isBotPane('pane-1');
+		// 偽の TerminalExit では外れず、Para Code が見た終了（observedExit）で外れる
+		second.hooks.fire({ token: 'pane-1', event: 'TerminalExit' });
+		const secondAfterForgedExit = second.service.isBotPane('pane-1');
+		second.hooks.fire({ token: 'pane-1', event: 'TerminalExit', observedExit: true });
+		const afterExit = second.service.isBotPane('pane-1');
 		assert.deepStrictEqual({
-			afterReload, reveals, answered, afterAnswer, unanswered, afterTimeout, nothingToReveal: await h.service.requestReveal(a),
-			reopened, oldPane: second.service.botOfPane('pane-1')?.id, newPane: second.service.botOfPane('pane-2')?.id,
+			afterReload, reveals, answered, afterAnswer, unanswered, afterTimeout, detached, afterForgedExit, whileDisabled, secondAfterForgedExit, reopenedHere, afterReopen, afterExit, nothingToReveal: await h.service.requestReveal(a),
+			reopened, oldPane: second.service.botOfPane('pane-1')?.id, oldPaneRestricted, newPane: second.service.botOfPane('pane-2')?.id,
 		}, {
 			afterReload: 'already_open',
 			reveals: ['one pane'],
@@ -432,9 +490,17 @@ suite('Paradis bots service', () => {
 			afterAnswer: 'already_open',
 			unanswered: false,
 			afterTimeout: 'unavailable',
+			detached: { bot: undefined, restricted: true, stopHashes: 1 },
+			afterForgedExit: { restricted: true, ideRefused: true },
+			whileDisabled: true,
+			secondAfterForgedExit: true,
+			reopenedHere: true,
+			afterReopen: [true, true],
+			afterExit: false,
 			nothingToReveal: false,
 			reopened: true,
 			oldPane: undefined,
+			oldPaneRestricted: true,
 			newPane: a,
 		});
 	});
@@ -534,8 +600,8 @@ suite('Paradis bots service', () => {
 		h.hooks.fire({ token: 'pane-patrol', event: 'task_started' });
 		const patrolling = row();
 		// ターミナルを閉じると結び付けが外れ、「停止」へ戻る
-		h.hooks.fire({ token: 'pane-patrol', event: 'TerminalExit' });
-		h.hooks.fire({ token: 'pane-chat', event: 'TerminalExit' });
+		h.hooks.fire({ token: 'pane-patrol', event: 'TerminalExit', observedExit: true });
+		h.hooks.fire({ token: 'pane-chat', event: 'TerminalExit', observedExit: true });
 		const released = row();
 		await timeout(80);
 		const revisions = seen.map(snapshot => snapshot.revision);

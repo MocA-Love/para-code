@@ -13,6 +13,7 @@ import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import type { ParadisBotTaskTools } from '../../scheduledRuns/common/paradisScheduledRuns.js';
+import type { IParadisAgentChatMessage } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, IParadisBotItemsState, ParadisBotItemStatus, paradisBotItemCounts } from './paradisBotItems.js';
 import type { IParadisBotSuggestion } from './paradisBotSuggestions.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from './paradisBots.js';
@@ -85,6 +86,16 @@ export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
 	readonly sleeping?: true;
 }
 
+/** 眠っている Bot の前の会話（{@link IParadisBotsService.sleepingChat}）。 */
+export interface IParadisBotSleepingChat {
+	readonly agent: 'claude' | 'codex';
+	readonly messages: readonly IParadisAgentChatMessage[];
+	/** 読んだ範囲より前を落とした。 */
+	readonly truncated: boolean;
+	/** 会話の記録が見つからない・読めない（話しかければ続きから起きる）。 */
+	readonly unreadable?: true;
+}
+
 export interface IParadisBotsSnapshot {
 	/** Bot・項目・様子のどれかが変わるたびに増える番号。 */
 	readonly revision: number;
@@ -151,7 +162,8 @@ export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState
 		openSuggestions,
 		activity,
 		...(halt !== undefined ? { halt } : {}),
-		...(activity === 'stopped' && !bot.paused && resumable ? { sleeping: true } : {}),
+		// 会話のペインが無ければ眠っている（見回りのペインが動いていても、会話は眠ったまま）
+		...(!panes.some(pane => pane.purpose === 'chat') && !bot.paused && resumable ? { sleeping: true } : {}),
 		lastActivityAt: Math.max(bot.createdAt, counts.lastActivityAt, ...panes.map(pane => pane.lastSeenAt)),
 	};
 }
@@ -297,6 +309,11 @@ export interface IParadisBotsService {
 	ackReveal(revealId: string): Promise<void>;
 	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。`purpose` を渡せばその用途だけ。 */
 	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]>;
+	/**
+	 * 眠っている Bot の前の会話を、エージェントを起こさずに会話の記録のファイルから読む（読むだけの吹き出しに出す）。
+	 * 続けられる会話が無ければ undefined。
+	 */
+	sleepingChat(botId: string): Promise<IParadisBotSleepingChat | undefined>;
 
 	/** その Bot のまだ決めていない提案（新しい順）。Bot のホームの節にだけ出す。 */
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]>;

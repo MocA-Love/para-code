@@ -235,7 +235,11 @@ export const PARADIS_BOT_GREETING_PROMPT = 'You were just created as a Para Code
  * それ以外は渡さない（利用者の入力を待つ）。ほかの Bot からの伝言では起こさない（受け箱に入れて未読の数を出すだけ。#1232 の
  * 決め。利用者の居ない所で頼まれたことを実行させない）。
  */
-export function paradisBotFirstPrompt(options: { readonly greet?: boolean }, resumed: boolean): string | undefined {
+export function paradisBotFirstPrompt(options: { readonly greet?: boolean; readonly prompt?: string }, resumed: boolean): string | undefined {
+	// 眠った会話の入力欄から話しかけた文は、続けて起こした会話の最初の指示にする
+	if (options.prompt !== undefined && options.prompt.trim().length > 0) {
+		return options.prompt;
+	}
 	return options.greet === true && !resumed ? PARADIS_BOT_GREETING_PROMPT : undefined;
 }
 

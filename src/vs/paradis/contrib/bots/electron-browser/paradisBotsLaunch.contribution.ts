@@ -39,6 +39,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
@@ -49,6 +50,8 @@ import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browse
 import { isEqualOrParent } from '../../../../base/common/extpath.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
+import { ParadisBotSleepingChatEditorInput } from '../browser/paradisBotSleepingChatEditor.js';
+import '../browser/paradisBotSleepingChatEditor.contribution.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { paradisBotFirstPrompt } from '../common/paradisBotTools.js';
 import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
@@ -56,7 +59,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
 import { paradisAddTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
-import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
 
@@ -65,7 +68,7 @@ const opening = new Set<string>();
 
 /** 開いた結果。`running` はもうこのウィンドウで動いていた（前に出したかは `focused`）。 */
 export type ParadisOpenBotResult =
-	| { readonly ok: true; readonly state: 'running' | 'started'; readonly focused: boolean }
+	| { readonly ok: true; readonly state: 'running' | 'started' | 'sleeping'; readonly focused: boolean }
 	| { readonly ok: false; readonly error: string };
 
 /** 終わったエージェントのペインを閉じてから、結び付けが外れるのを待つ上限。 */
@@ -87,6 +90,10 @@ async function paradisRevealBotPane(
 export interface IParadisOpenBotOptions {
 	/** 作った直後の Bot。起こして、最初の挨拶をさせる（眠った会話があれば渡さない）。 */
 	readonly greet?: boolean;
+	/** 利用者が帯・グループの画面から開いた。眠っていれば起こさず、前の会話を読むだけの吹き出しで見せる。 */
+	readonly read?: boolean;
+	/** 眠った会話の入力欄から話しかけた文。続けて起こした会話の最初の指示にする。 */
+	readonly prompt?: string;
 }
 
 /**
@@ -104,6 +111,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const hostService = accessor.get(IHostService);
 	const environmentService = accessor.get(IWorkbenchEnvironmentService);
+	const agentChatService = accessor.get(IParadisAgentChatService);
+	const editorService = accessor.get(IEditorService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -124,6 +133,13 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			existing.instance.dispose(TerminalExitReason.User);
 			await paradisWaitForBotChatRelease(botsService, botId);
 		} else if (existing !== undefined) {
+			// 眠った会話の入力欄から送った直後に、別の経路で会話が起きていた: 送った文はそのペインへ渡す（捨てない）
+			if (options.prompt !== undefined && options.prompt.trim().length > 0) {
+				const error = await agentChatService.sendMessageToPane(existing.instanceId, options.prompt);
+				if (error !== undefined) {
+					return { ok: false, error };
+				}
+			}
 			if (!fromAgent) {
 				// そのペインのスペースへ切り替えてから前に出す（通知のクリックと同じ動き）
 				await paradisRevealBotPane({ hostService, terminalService, switchService }, existing);
@@ -133,6 +149,11 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		// 専用フォルダはこの PC にある。SSH のウィンドウで開くと、接続先のシェルでそのパスを cwd にしてしまう
 		if (environmentService.remoteAuthority !== undefined) {
 			return { ok: false, error: 'remote' };
+		}
+		// 眠っている Bot を開いた: 起こさずに前の会話を読むだけの吹き出しで見せる（話しかけたときだけ起こす）
+		if (existing === undefined && options.read === true && !fromAgent && summary?.sleeping === true) {
+			await editorService.openEditor(ParadisBotSleepingChatEditorInput.getOrCreate(instantiationService, botId), { pinned: true });
+			return { ok: true, state: 'sleeping', focused: true };
 		}
 		let launch = await botsService.requestLaunch(botId, 'chat');
 		// 会話は 1 つの Bot に 1 つだけ。利用者が開いたときは、開いているウィンドウに前へ出してもらう。どのウィンドウも
@@ -156,6 +177,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		if (outcome.ok) {
 			// 閉じても止めず隠すペインとして、すぐ控える（Bot の様子の見直しを待つ間に閉じられても確認を出さない）
 			paradisAddTerminalHiddenOnClose(outcome.terminal.instanceId);
+			// 会話はいつも吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ
+			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent);
 		}
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };
@@ -182,22 +205,26 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({ id: PARADIS_BOTS_OPEN_COMMAND, title: localize2('paradisBots.open', "Open Bot"), f1: false });
 	}
-	async run(accessor: ServicesAccessor, botId: unknown, options?: unknown): Promise<void> {
+	async run(accessor: ServicesAccessor, botId: unknown, options?: unknown): Promise<boolean> {
 		if (typeof botId !== 'string' || botId.length === 0) {
-			return;
+			return false;
 		}
 		const notificationService = accessor.get(INotificationService);
-		const greet = typeof options === 'object' && options !== null && (options as IParadisOpenBotOptions).greet === true;
-		const result = await paradisOpenBot(accessor, botId, false, greet ? { greet } : {});
+		const given = typeof options === 'object' && options !== null ? options as IParadisOpenBotOptions : {};
+		const result = await paradisOpenBot(accessor, botId, false, {
+			...(given.greet === true ? { greet: true } : {}),
+			...(given.read === true ? { read: true } : {}),
+			...(typeof given.prompt === 'string' ? { prompt: given.prompt } : {}),
+		});
 		if (!result.ok && result.error === 'already_open') {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.alreadyOpen', "この Bot は別のウィンドウで開いています。そのウィンドウに出しました。"));
-			return;
+			return false;
 		}
 		if (!result.ok && result.error === 'launching') {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.launching', "この Bot は起動しているところです。"));
-			return;
+			return false;
 		}
 		if (!result.ok) {
 			notificationService.warn(result.error === 'remote'
@@ -206,6 +233,8 @@ registerAction2(class extends Action2 {
 				// allow-any-unicode-next-line
 				: localize('paradisBots.openFailed', "Bot を起動できませんでした。もう一度試してください。"));
 		}
+		// 開けたか（眠った会話のタブは、起こせたときだけ閉じる）
+		return result.ok;
 	}
 });
 
@@ -365,6 +394,7 @@ class ParadisBotsWindowWorker extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
+		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
 		@IEditorService private readonly editorService: IEditorService,
@@ -647,7 +677,7 @@ class ParadisBotsWindowWorker extends Disposable {
 		}
 	}
 
-	private async stop(request: IParadisBotStopRequest): Promise<void> {
+	private async stop(request: Pick<IParadisBotStopRequest, 'paneHashes' | 'idle'>): Promise<void> {
 		for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, request.paneHashes)) {
 			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
 			if (instance !== undefined && !instance.isDisposed && request.idle === true) {
@@ -671,6 +701,14 @@ class ParadisBotsWindowWorker extends Disposable {
 			}
 		}
 	}
+
+	/**
+	 * Bot の機能がオフになった: このウィンドウの Bot のペインを全部閉じる。閉じ終わるまでも、Bot の制限（IDE の操作の道具・
+	 * 見回りの読むだけ）は shared process が結び付けで断り続ける（設定は見ない）。
+	 */
+	async stopAll(): Promise<void> {
+		await this.stop({ paneHashes: await this.sharedProcessService.getChannel(PARADIS_BOTS_CHANNEL).call<readonly string[]>('allPaneHashes') });
+	}
 }
 
 /**
@@ -688,6 +726,7 @@ class ParadisBotsWindowContribution extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 		this._register(configurationService.onDidChangeConfiguration(event => {
@@ -700,7 +739,16 @@ class ParadisBotsWindowContribution extends Disposable {
 
 	private apply(): void {
 		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
-			this.worker.clear();
+			// オンからオフにした: 動いている Bot のペインを閉じてから窓口を外す（利用者が切ったときも、Bot のエージェントが
+			// settings.json を書き換えたときも同じ）
+			const worker = this.worker.value;
+			if (worker !== undefined) {
+				worker.stopAll().catch(error => this.logService.warn('[paradisBots] closing the bot terminals after turning bots off failed', error)).finally(() => {
+					if (this.worker.value === worker && this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+						this.worker.clear();
+					}
+				});
+			}
 			return;
 		}
 		if (!this.channelRegistered) {

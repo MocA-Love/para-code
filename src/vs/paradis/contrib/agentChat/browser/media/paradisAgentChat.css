@@ -108,6 +108,11 @@
 	display: none;
 }
 
+/* 見出しを畳んだ間も、ターミナルの右上に重なる札（コンテキストの使用量・共有の印）が最初の吹き出しに被らないよう、見出しの分だけ下げて始める。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-agent-chat.header-hidden .paradis-agent-chat-scroll {
+	padding-top: var(--vscode-spacing-size360);
+}
+
 /* ターミナルへ戻るのは本家の ActionBar（アイコン 16・押せる範囲 22×22）。見出しの行の高さの中で中央に置く。 */
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-back {
 	flex: none;

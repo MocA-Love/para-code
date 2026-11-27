@@ -34,7 +34,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../../workbench/browser/dnd.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
-import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
+import { IParadisAgentChatGuide, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
 import { paradisAgentChatTimeLabel, paradisAgentChatUsageCacheDetail, paradisAgentChatUsageLabel } from '../common/paradisAgentChatTime.js';
 import { paradisAppendAgentLogoSvg } from './paradisAgentChatFace.js';
@@ -75,6 +75,15 @@ export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost
 	readChoiceMenu?(instanceId: number): IParadisAgentChoiceMenu | undefined;
 	/** PC の Claude Code で画面（/model など）が開いているか。分からなければ undefined。省けば聞かない。 */
 	isDialogOpen?(token: string): Promise<boolean | undefined>;
+	/** 会話が見つかるまで出す案内（Bot の会話のペインなど）。省けば今までどおりの文だけ。 */
+	chatGuide?(instanceId: number): IParadisAgentChatGuide | undefined;
+	/** {@link chatGuide} が変わったペイン。 */
+	readonly onDidChangeGuide?: Event<number>;
+	/**
+	 * 動いていない会話を読むだけの写し（眠った Bot の会話）。最後の待っている質問・エージェントの終了を「待っている」と見なさず、
+	 * 入力欄を止めず、「ターミナルを開く」の帯も出さない（送ると呼ぶ側が起こす）。
+	 */
+	readonly readOnly?: boolean;
 }
 
 /** 差分カードで最初から見せる行数。超えた分は「すべて表示」で開く。 */
@@ -330,6 +339,13 @@ export class ParadisAgentChatView extends Disposable {
 		this.terminalBand = append(this.element, $('.paradis-agent-chat-terminal-band'));
 		this.terminalBand.setAttribute('role', 'status');
 		this.terminalBand.style.display = 'none';
+		if (host.onDidChangeGuide !== undefined) {
+			this._register(host.onDidChangeGuide(instanceId => {
+				if (instanceId === this.instanceId) {
+					this.renderScheduler.schedule();
+				}
+			}));
+		}
 		this.composer = this._register(new ParadisAgentChatComposer(this.element, host));
 		this._register(this.composer.onDidSubmit(text => this.submit(text)));
 		this._register(host.onDidChangeSettings(() => {
@@ -574,10 +590,11 @@ export class ParadisAgentChatView extends Disposable {
 		// 質問は PostToolUse ですぐ消えるので対象にしない（先頭の打鍵が取りこぼされて質問が残っているときに、
 		// 送った文の Enter が選択肢を確定するため）。承認も、送る直前に画面を確かめる（ParadisAgentChatInput）。
 		const answeredHere = interaction?.kind === 'approval' && this.approvalStates.get(interaction.id)?.sent === true;
-		const codexQuestion = state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
+		const readOnly = this.host.readOnly === true;
+		const codexQuestion = !readOnly && state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
 		this.composer.setBlockedReason(state === undefined
-			? localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません")
-			: state.agentExited
+			? this.noSessionBlockedReason()
+			: state.agentExited && !readOnly
 				? localize('paradisAgentChat.blockedExited', "エージェントは終了しました。ターミナルに戻って確かめてください")
 				: codexQuestion
 					? localize('paradisAgentChat.blockedCodexQuestion', "Codex が質問しています。ターミナルで答えてください")
@@ -628,9 +645,10 @@ export class ParadisAgentChatView extends Disposable {
 			item.element.remove();
 		}
 		this.rendered.clear();
-		this.notice.textContent = loaded
+		// 呼ぶ側の案内（Bot の会話のペインの「起こしています…」など）があれば、それを出す
+		this.notice.textContent = this.guide()?.notice ?? (loaded
 			? localize('paradisAgentChat.empty', "このターミナルのエージェントの会話が見つかりません。エージェントが会話を始めると、ここに表示されます。")
-			: localize('paradisAgentChat.loading', "会話を読み込んでいます…");
+			: localize('paradisAgentChat.loading', "会話を読み込んでいます…"));
 		this.notice.style.display = '';
 	}
 
@@ -1751,16 +1769,21 @@ export class ParadisAgentChatView extends Disposable {
 	 * 質問を待っている間は、それぞれのカードと文言が出るので帯は出さない。
 	 */
 	private updateChoiceMenu(state: IParadisAgentChatState | undefined): boolean {
-		const waiting = this.visible && this.instanceId !== undefined && state !== undefined && !state.agentExited && state.interaction === null;
-		const menu = waiting && state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) === undefined
+		// 読むだけの写しは、待っている質問・終了・選択画面を見ない（帯を出さない）
+		const waiting = this.host.readOnly !== true && this.visible && this.instanceId !== undefined && state !== undefined && !state.agentExited && state.interaction === null;
+		const codexQuestion = waiting && state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
+		const menu = waiting && state.agent === 'codex' && !codexQuestion
 			? this.host.readChoiceMenu?.(this.instanceId!)
 			: undefined;
 		this.choiceMenu = menu;
 		// Claude Code の画面（/model など）は mod に聞いた答え（askPanel）。承認・質問が出たら帯は出さない
 		const panel = waiting && state.agent === 'claude' ? this.panel : undefined;
 		this.panelShown = panel !== undefined;
-		const detail = menu !== undefined ? menu.title : panel?.command !== undefined ? `/${panel.command}` : undefined;
-		const signature = menu !== undefined ? JSON.stringify(['menu', menu.kind, detail ?? '']) : panel !== undefined ? JSON.stringify(['panel', detail ?? '']) : '';
+		// 吹き出しでは進められない場面（会話が見つかる前の初回設定・ログインの画面、Codex の TUI の質問、エージェントの終了）も、
+		// 同じ帯から開けるようにする（勝手にターミナルへは切り替えない）
+		const other = menu === undefined && panel === undefined && this.visible && this.host.readOnly !== true ? this.otherTerminalBand(state, codexQuestion) : undefined;
+		const detail = menu !== undefined ? menu.title : panel?.command !== undefined ? `/${panel.command}` : other?.detail;
+		const signature = menu !== undefined ? JSON.stringify(['menu', menu.kind, detail ?? '']) : panel !== undefined ? JSON.stringify(['panel', detail ?? '']) : other !== undefined ? JSON.stringify(['other', other.title, detail ?? '']) : '';
 		if (signature === this.terminalBandSignature) {
 			return false;
 		}
@@ -1771,7 +1794,7 @@ export class ParadisAgentChatView extends Disposable {
 		if (signature !== '') {
 			this.terminalBand.append(renderIcon(Codicon.terminal));
 			const text = append(this.terminalBand, $('.paradis-agent-chat-terminal-band-text'));
-			append(text, $('span.paradis-agent-chat-terminal-band-title')).textContent = localize('paradisAgentChat.terminalBand', "この操作はターミナルで続けます");
+			append(text, $('span.paradis-agent-chat-terminal-band-title')).textContent = other?.title ?? localize('paradisAgentChat.terminalBand', "この操作はターミナルで続けます");
 			if (detail !== undefined && detail.length > 0) {
 				append(text, $('span.paradis-agent-chat-terminal-band-detail')).textContent = detail;
 			}
@@ -1781,6 +1804,32 @@ export class ParadisAgentChatView extends Disposable {
 			this.terminalBandStore.add(open.onDidClick(() => menu !== undefined ? this._onDidRequestTerminalForChoice.fire() : this._onDidRequestTerminal.fire()));
 		}
 		return true;
+	}
+
+	/** 選択画面・Claude Code の画面のほかに「ターミナルを開く」の帯を出す場面。無ければ undefined。 */
+	private otherTerminalBand(state: IParadisAgentChatState | undefined, codexQuestion: boolean): { readonly title: string; readonly detail?: string } | undefined {
+		if (state === undefined) {
+			return this.guide()?.band;
+		}
+		if (state.agentExited) {
+			return { title: localize('paradisAgentChat.exitedBand', "エージェントは終了しました"), detail: localize('paradisAgentChat.exitedBandDetail', "ターミナルで確かめてください") };
+		}
+		return codexQuestion ? { title: localize('paradisAgentChat.codexQuestionBand', "Codex が質問しています"), detail: localize('paradisAgentChat.codexQuestionBandDetail', "ターミナルで答えてください") } : undefined;
+	}
+
+	/** 会話が無いときに送れない理由（呼ぶ側の案内が送れると言えば、送れる）。 */
+	private noSessionBlockedReason(): string | undefined {
+		const guide = this.guide();
+		if (guide?.sendable === true) {
+			return undefined;
+		}
+		return guide !== undefined
+			? localize('paradisAgentChat.blockedWaitingSession', "会話が始まると話しかけられます")
+			: localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません");
+	}
+
+	private guide(): IParadisAgentChatGuide | undefined {
+		return this.instanceId !== undefined ? this.host.chatGuide?.(this.instanceId) : undefined;
 	}
 
 	/**

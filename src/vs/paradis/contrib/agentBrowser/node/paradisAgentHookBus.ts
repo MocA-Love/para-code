@@ -63,6 +63,12 @@ export interface IParadisAgentHookEvent {
 	 * Claude Code の daemon の配下の会話（`/fork` の分岐先）の hook とペインの hook を見分けられていない。
 	 */
 	readonly ownerUnverified?: true;
+	/**
+	 * Para Code 自身がペインの終了（シェルの終了・ターミナルの dispose）を見た `TerminalExit`。ウィンドウからの終了の知らせ
+	 * （`notifyTerminalExit`）だけが付ける。agent-hook の HTTP から届く `TerminalExit` には付かない（ペインのトークンを持つ
+	 * エージェント自身が送れるので、ペインが生きていても届く）。Bot の制限のように、外すと危ない印はこれが付いたときだけ外す。
+	 */
+	readonly observedExit?: true;
 	/** 受信時刻（epoch ms）。 */
 	readonly at: number;
 }

@@ -218,6 +218,31 @@ export async function paradisMcpCallRefusalFor(paneToken: string, toolName: stri
 	return undefined;
 }
 
+/**
+ * 呼び出し元のプロセスで制限するペイン（Bot のペインなど）を教える口。トークンは同じ利用者のプロセスなら `ps -E` で
+ * 読めるので、制限するペインの中のプロセスがほかのペインのトークンを名乗ることがある。サーバーは、そうしたペインの
+ * シェルの子孫からほかのペインのトークンで来た呼び出しを断る（paradisConfinedPaneCaller.ts）。
+ */
+export interface IParadisMcpConfinedPanes {
+	/** 調べる必要があるか（機能がオフなら false。false なら接続元を調べない）。 */
+	active(): boolean;
+	/** そのトークンのペインを制限するか。 */
+	isConfined(paneToken: string): Promise<boolean>;
+}
+
+const confinedPaneSources = new Set<IParadisMcpConfinedPanes>();
+
+/** {@link IParadisMcpConfinedPanes} を登録する。 */
+export function paradisRegisterMcpConfinedPanes(source: IParadisMcpConfinedPanes): IDisposable {
+	confinedPaneSources.add(source);
+	return toDisposable(() => confinedPaneSources.delete(source));
+}
+
+/** 登録された {@link IParadisMcpConfinedPanes} のうち、今調べる必要があるもの。 */
+export function paradisActiveMcpConfinedPanes(): readonly IParadisMcpConfinedPanes[] {
+	return [...confinedPaneSources].filter(source => source.active());
+}
+
 /** 登録口から足されたプロバイダを登録順に返す。 */
 export function paradisRegisteredMcpToolProviders(): readonly IParadisMcpToolProvider[] {
 	return [...registeredProviders];
