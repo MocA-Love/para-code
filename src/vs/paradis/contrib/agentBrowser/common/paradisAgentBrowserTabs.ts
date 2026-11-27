@@ -273,10 +273,12 @@ export function paradisUrlOrigin(url: string | undefined): string {
 
 /**
  * 画面に出す文字列から、制御文字と見た目を偽れる不可視文字を取り除く。
- * C0 / C1 制御文字、ゼロ幅文字と LRM / RLM（U+200B〜U+200F）、埋め込みと上書きの双方向制御
- * （U+202A〜U+202E）、分離の双方向制御（U+2066〜U+2069）、BOM（U+FEFF）を空白へ寄せる。
+ * C0 / C1 制御文字、ソフトハイフン（U+00AD）、アラビア文字の書字方向の印（U+061C）、モンゴル文字の母音区切り
+ * （U+180E）、ゼロ幅文字と LRM / RLM（U+200B〜U+200F）、埋め込みと上書きの双方向制御（U+202A〜U+202E）、
+ * 語結合子と見えない演算子（U+2060〜U+2064）、分離の双方向制御（U+2066〜U+2069）、BOM（U+FEFF）、
+ * タグ文字（U+E0000〜U+E007F。画面では見えず、モデルには読める文字として届く）を空白へ寄せる。
  */
-const PARADIS_UNSAFE_DISPLAY_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+const PARADIS_UNSAFE_DISPLAY_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{E0000}-\u{E007F}]/gu;
 
 /**
  * エージェントやページ由来の文字列を1行の表示用にする。危ない文字を空白へ寄せ、連続空白を畳み、
