@@ -79,6 +79,11 @@ export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost
 	chatGuide?(instanceId: number): IParadisAgentChatGuide | undefined;
 	/** {@link chatGuide} が変わったペイン。 */
 	readonly onDidChangeGuide?: Event<number>;
+	/**
+	 * 動いていない会話を読むだけの写し（眠った Bot の会話）。最後の待っている質問・エージェントの終了を「待っている」と見なさず、
+	 * 入力欄を止めず、「ターミナルを開く」の帯も出さない（送ると呼ぶ側が起こす）。
+	 */
+	readonly readOnly?: boolean;
 }
 
 /** 差分カードで最初から見せる行数。超えた分は「すべて表示」で開く。 */
@@ -585,10 +590,11 @@ export class ParadisAgentChatView extends Disposable {
 		// 質問は PostToolUse ですぐ消えるので対象にしない（先頭の打鍵が取りこぼされて質問が残っているときに、
 		// 送った文の Enter が選択肢を確定するため）。承認も、送る直前に画面を確かめる（ParadisAgentChatInput）。
 		const answeredHere = interaction?.kind === 'approval' && this.approvalStates.get(interaction.id)?.sent === true;
-		const codexQuestion = state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
+		const readOnly = this.host.readOnly === true;
+		const codexQuestion = !readOnly && state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
 		this.composer.setBlockedReason(state === undefined
 			? this.noSessionBlockedReason()
-			: state.agentExited
+			: state.agentExited && !readOnly
 				? localize('paradisAgentChat.blockedExited', "エージェントは終了しました。ターミナルに戻って確かめてください")
 				: codexQuestion
 					? localize('paradisAgentChat.blockedCodexQuestion', "Codex が質問しています。ターミナルで答えてください")
@@ -1763,7 +1769,8 @@ export class ParadisAgentChatView extends Disposable {
 	 * 質問を待っている間は、それぞれのカードと文言が出るので帯は出さない。
 	 */
 	private updateChoiceMenu(state: IParadisAgentChatState | undefined): boolean {
-		const waiting = this.visible && this.instanceId !== undefined && state !== undefined && !state.agentExited && state.interaction === null;
+		// 読むだけの写しは、待っている質問・終了・選択画面を見ない（帯を出さない）
+		const waiting = this.host.readOnly !== true && this.visible && this.instanceId !== undefined && state !== undefined && !state.agentExited && state.interaction === null;
 		const codexQuestion = waiting && state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
 		const menu = waiting && state.agent === 'codex' && !codexQuestion
 			? this.host.readChoiceMenu?.(this.instanceId!)
@@ -1774,7 +1781,7 @@ export class ParadisAgentChatView extends Disposable {
 		this.panelShown = panel !== undefined;
 		// 吹き出しでは進められない場面（会話が見つかる前の初回設定・ログインの画面、Codex の TUI の質問、エージェントの終了）も、
 		// 同じ帯から開けるようにする（勝手にターミナルへは切り替えない）
-		const other = menu === undefined && panel === undefined && this.visible ? this.otherTerminalBand(state, codexQuestion) : undefined;
+		const other = menu === undefined && panel === undefined && this.visible && this.host.readOnly !== true ? this.otherTerminalBand(state, codexQuestion) : undefined;
 		const detail = menu !== undefined ? menu.title : panel?.command !== undefined ? `/${panel.command}` : other?.detail;
 		const signature = menu !== undefined ? JSON.stringify(['menu', menu.kind, detail ?? '']) : panel !== undefined ? JSON.stringify(['panel', detail ?? '']) : other !== undefined ? JSON.stringify(['other', other.title, detail ?? '']) : '';
 		if (signature === this.terminalBandSignature) {

@@ -86,7 +86,7 @@ export async function paradisFindBotTranscript(agent: string, sessionId: string,
 }
 
 /** ファイルの末尾 {@link TAIL_BYTES} を行に分ける（途中から読んだときは、切れた最初の行を捨てる）。 */
-async function readTailLines(path: string): Promise<string[]> {
+async function readTailLines(path: string): Promise<{ readonly lines: string[]; readonly cut: boolean }> {
 	const handle = await fs.open(path, 'r');
 	try {
 		const size = (await handle.stat()).size;
@@ -94,7 +94,7 @@ async function readTailLines(path: string): Promise<string[]> {
 		const buffer = Buffer.alloc(size - start);
 		await handle.read(buffer, 0, buffer.length, start);
 		const lines = buffer.toString('utf8').split('\n');
-		return start > 0 ? lines.slice(1) : lines;
+		return { lines: start > 0 ? lines.slice(1) : lines, cut: start > 0 };
 	} finally {
 		await handle.close();
 	}
@@ -114,8 +114,10 @@ export async function paradisReadBotSleepingChat(record: { readonly agent: strin
 		if (path === undefined) {
 			return { agent, messages: [], truncated: false, unreadable: true };
 		}
-		const { messages, truncated } = paradisAgentTranscriptSnapshot(agent, await readTailLines(path));
-		return { agent, messages, truncated };
+		const tail = await readTailLines(path);
+		const { messages, truncated } = paradisAgentTranscriptSnapshot(agent, tail.lines);
+		// 末尾だけを読んだときも「前の会話は省略」にする
+		return { agent, messages, truncated: truncated || tail.cut };
 	} catch {
 		return { agent, messages: [], truncated: false, unreadable: true };
 	}

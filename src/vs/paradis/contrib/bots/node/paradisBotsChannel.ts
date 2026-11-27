@@ -136,6 +136,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				return id !== undefined && (args.at(1) === undefined || purpose !== undefined) ? service.paneHashesOf(id, purpose) : [];
 			}
 			case 'sleepingChat': return id !== undefined ? service.sleepingChat(id) : undefined;
+			case 'allPaneHashes': return service.allPaneHashes();
 			case 'listSuggestions': return id !== undefined ? service.listSuggestions(id) : [];
 			case 'startSuggestion': return id !== undefined ? service.startSuggestion(id) : INVALID;
 			case 'markSuggestionStarted': return id !== undefined ? service.markSuggestionStarted(id) : INVALID;
