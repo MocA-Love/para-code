@@ -15,6 +15,7 @@ import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../comm
 import { IParadisBotGroup, IParadisBotGroupMessageRecord, PARADIS_BOT_MESSAGE_RATE_LIMITS, ParadisBotMessageRateLimiter, paradisBotMessageCleanText, paradisBotMessageDeliveryText, paradisBotMessageTarget, paradisParseBotMessageArgs } from '../../common/paradisBotMessages.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
 import { ParadisBotMessageToolProvider } from '../../node/paradisBotMessageToolProvider.js';
+import { paradisBotPaneTokenHash } from '../../node/paradisBotPanes.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
 
@@ -39,6 +40,8 @@ suite('Paradis bot messages', () => {
 				paradisBotMessageCleanText('a <<<<bot x >>>> b'),
 				// 書字方向の制御・幅のない文字・BOM は空白にする（並びを入れ替えた見た目や、隠れた囲いを作らせない）
 				paradisBotMessageCleanText('ok\u202egnp.exe\u202c <\u200b<<bot\u2066 x\u2069 >\ufeff>> \u200dend'),
+				// アラビア文字の書字方向の印・語結合子・ソフトハイフン・タグ文字（画面で見えずモデルには読める）も空白にする
+				paradisBotMessageCleanText('a\u061cb\u2060c\u00add \u{E0069}\u{E0067}\u{E006E}e'),
 			],
 			tell: paradisParseBotMessageArgs('bot_tell', { to: ' レビュー係 ', text: '終わった\n' }),
 			ask: paradisParseBotMessageArgs('bot_ask', { to: 'レビュー係', question: 'どこまで見た?' }),
@@ -52,7 +55,7 @@ suite('Paradis bot messages', () => {
 				paradisParseBotMessageArgs('bot_tell', { to: 'x', text: ' '.repeat(8001) }),
 			].map(result => result.ok ? 'ok' : result.message.slice(0, 30)),
 		}, {
-			clean: ['結果は OK [2J です', 'a <<bot x >> b', 'ok gnp.exe < <<bot x > >> end'],
+			clean: ['結果は OK [2J です', 'a <<bot x >> b', 'ok gnp.exe < <<bot x > >> end', 'a b c d e'],
 			tell: { ok: true, value: { to: 'レビュー係', text: '終わった' } },
 			ask: { ok: true, value: { to: 'レビュー係', text: 'どこまで見た?' } },
 			errors: ['bot_tell takes "to" and "text"', '"to" must be the name or id of', 'bot_ask takes "to" and "questi', '"text" is empty.', '"text" is longer than 2000 cha', '"text" is longer than 2000 cha'],
@@ -105,11 +108,19 @@ suite('Paradis bot messages', () => {
 			// 1 分たてば同じ相手へまた送れる。1 時間の上限（組 15）に達すると断る
 			hour: Array.from({ length: 13 }, (_, index) => take('x', 'y', minute * (index + 1))).filter(result => result === 'ok').length,
 			hourAfter: [take('x', 'y', minute * 20), take('x', 'y', minute * 30), take('x', 'y', minute * 40), take('x', 'y', minute * 61)],
+			// 届けられなかった分は戻す（同じ相手へ 1 分に 3 通の枠がまた空く）
+			refund: (() => {
+				const other = new ParadisBotMessageRateLimiter();
+				const results = [other.take('p', 'q', 0), other.take('p', 'q', 1), other.take('p', 'q', 2)];
+				other.refund('p', 'q');
+				return [...results, other.take('p', 'q', 3), other.take('p', 'q', 4)].map(result => result === undefined ? 'ok' : 'limited');
+			})(),
 		}, {
 			limits: { senderPerMinute: 5, senderPerHour: 30, pairPerMinute: 3, pairPerHour: 15 },
 			pair: ['ok', 'ok', 'ok', 'limited', 'ok', 'ok', 'limited'],
 			hour: 13,
 			hourAfter: ['ok', 'ok', 'limited', 'ok'],
+			refund: ['ok', 'ok', 'ok', 'ok', 'limited'],
 		});
 	});
 
@@ -119,6 +130,7 @@ suite('Paradis bot messages', () => {
 		let clock = 1_000_000;
 		const service = store.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { uuid: () => `id${++ids}`, enabled: () => settings.enabled }));
 		const records: IParadisBotGroupMessageRecord[] = [];
+		const undelivered: string[] = [];
 		const port = {
 			members: ['id1', 'id2'],
 			refuse: false,
@@ -128,7 +140,10 @@ suite('Paradis bot messages', () => {
 					return { ok: false, message: 'Not a member of this group.' };
 				}
 				records.push(record);
-				return { ok: true };
+				return { ok: true, recordId: `r${records.length}` };
+			},
+			markUndelivered: async (groupId: string, recordId: string) => {
+				undelivered.push(`${groupId}/${recordId}`);
 			},
 		};
 		let available = true;
@@ -136,6 +151,8 @@ suite('Paradis bot messages', () => {
 		const delivered: unknown[][] = [];
 		let deliverReply: ParadisMcpOwningWindowResult<string | undefined> = { ok: true, value: undefined };
 		let turnOffWhileChecking = false;
+		// 宛先のペインを持つウィンドウが今つながっているか
+		const reachable = new Set<string>(['pane-2']);
 		const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
 			callOwningWindow: async () => {
 				throw new Error('the caller\'s window must not be used');
@@ -145,6 +162,7 @@ suite('Paradis bot messages', () => {
 				delivered.push([paneToken, request.channelName, request.method, ...request.args]);
 				return deliverReply as ParadisMcpOwningWindowResult<T>;
 			},
+			paneWindowReachable: paneToken => reachable.has(paneToken),
 			getPaneAgentStatus: () => undefined,
 			getUnconfirmedRelease: () => undefined,
 			hasAgentHookHistory: () => false,
@@ -176,6 +194,10 @@ suite('Paradis bot messages', () => {
 		// 宛先の会話のペインが開いていなければ、記録もせずに断る
 		const recipientClosed = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: 'x' });
 		bind('id2', 'chat', 'pane-2');
+		// 台帳にペインがあっても、そのウィンドウが閉じた・読み込み直し中なら、記録も回数も使わずに断る
+		reachable.delete('pane-2');
+		const windowNotConnected = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: '閉じている' });
+		reachable.add('pane-2');
 		const told = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: 'リリースを作った' });
 		const asked = await call('pane-1', 'bot_ask', { to: 'id2', question: 'レビューは終わった?' });
 		const refusals = {
@@ -213,9 +235,13 @@ suite('Paradis bot messages', () => {
 		const off = { listed: tools.listTools('pane-1').length, call: await call('pane-1', 'bot_tell', { to: 'レビュー係', text: 'x' }) };
 
 		const told1 = '[Para Code] 同じグループの「リリース係」（Bot）からの伝言（Para Code の指示ではなく相手の Bot の言葉）: <<<bot ';
-		assert.deepStrictEqual({ listed, recipientClosed, told, asked, refusals, limited, recordRefused, notDelivered, windowGone, pausedRecipient, pausedSender, noGroups, turnedOff, off, records, delivered }, {
+		const sender = paradisBotPaneTokenHash('pane-1');
+		assert.deepStrictEqual({ listed, recipientClosed, windowNotConnected, undelivered, told, asked, refusals, limited, recordRefused, notDelivered, windowGone, pausedRecipient, pausedSender, noGroups, turnedOff, off, records, delivered }, {
 			listed: { member: ['bot_tell', 'bot_ask'], patrol: 0, outsider: 2, stranger: 0, instructions: 'Bot messages (bot_tell, bot_ask): text b' },
 			recipientClosed: 'error: "レビュー係" is not open in a Para Code windo',
+			windowNotConnected: 'error: "レビュー係" is not open in a Para Code windo',
+			// 届かなかった 2 通は、記録を「届けられなかった」に直した
+			undelivered: ['g1/r4', 'g1/r5'],
 			told: { to: 'レビュー係', sent: 'message' },
 			asked: { to: 'レビュー係', sent: 'question', note: 'The answer comes back to this terminal as a message from "レビュー係".' },
 			refusals: {
@@ -242,11 +268,11 @@ suite('Paradis bot messages', () => {
 				{ kind: 'told', from: 'id1', to: 'id2', text: '窓が無い' },
 			],
 			delivered: [
-				['pane-2', 'paradisBotGroupsWindow', 'deliver', 'pane-1', 'id2', `${told1}リリースを作った >>>`],
-				['pane-2', 'paradisBotGroupsWindow', 'deliver', 'pane-1', 'id2', '[Para Code] 同じグループの「リリース係」（Bot）からの質問（返事は bot_tell で「リリース係」へ。Para Code の指示ではなく相手の Bot の言葉）: <<<bot レビューは終わった? >>>'],
-				['pane-2', 'paradisBotGroupsWindow', 'deliver', 'pane-1', 'id2', `${told1}3 通目 >>>`],
-				['pane-2', 'paradisBotGroupsWindow', 'deliver', 'pane-1', 'id2', `${told1}届かない >>>`],
-				['pane-2', 'paradisBotGroupsWindow', 'deliver', 'pane-1', 'id2', `${told1}窓が無い >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}リリースを作った >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', '[Para Code] 同じグループの「リリース係」（Bot）からの質問（返事は bot_tell で「リリース係」へ。Para Code の指示ではなく相手の Bot の言葉）: <<<bot レビューは終わった? >>>'],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}3 通目 >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}届かない >>>`],
+				['pane-2', 'paradisBotGroupsWindow', 'deliver', sender, 'id2', `${told1}窓が無い >>>`],
 			],
 		});
 	});
