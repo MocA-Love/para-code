@@ -631,7 +631,7 @@ suite('Paradis bots page overlay', () => {
 		changed.fire();
 		await settle();
 		assert.deepStrictEqual({ waking, chatButton, terminalButton, needsUser, notFound, patrolGuide: guides.get(2), cleared: guides.get(1), calls: chatCalls }, {
-			waking: { notice: '起こしています…' },
+			waking: { notice: '起こしています…', sendable: true },
 			chatButton: [false, 'ターミナルを開く'],
 			terminalButton: [false, 'チャットに戻る'],
 			needsUser: { notice: 'まだ会話はありません', band: { title: 'ターミナルで操作が要ります', detail: '初回設定・ログイン・許可の画面で止まっています' } },

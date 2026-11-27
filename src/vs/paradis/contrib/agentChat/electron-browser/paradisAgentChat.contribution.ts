@@ -69,6 +69,9 @@ import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentB
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisAntigravityPaneStatus } from '../common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
+import { paradisWaitForAgentFirstInput } from '../common/paradisAgentChatFirstInput.js';
+import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
+import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
 import '../browser/media/paradisAgentChat.css';
 
@@ -723,12 +726,47 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly chatTerminals = new WeakMap<ITerminalInstance, IParadisAgentChatTerminal>();
 
 	async sendMessage(instanceId: number, token: string, text: string): Promise<string | undefined> {
-		const error = await this.input.sendMessage(instanceId, token, text);
+		const early = await this.sendBeforeConversation(instanceId, token, text);
+		// 会話の前に送った（''）なら送れた、文なら送れなかった理由
+		const error = early !== undefined ? (early === '' ? undefined : early) : await this.input.sendMessage(instanceId, token, text);
 		// 非同期の質問への返信（カードから送った決まった形の発言）は、入力欄の履歴に残さない
 		if (error === undefined && paradisParseCodexAsyncReply(text) === undefined) {
 			this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		}
 		return error;
+	}
+
+	/**
+	 * いつもチャット表示にするペインで、会話がまだ見つからない（最初の指示なしで起こした Bot。最初の発言まで会話の記録が無い）
+	 * ときの最初の 1 文。エージェントの入力欄の準備ができてから TUI へ送る。会話があるペインは undefined（いつもの経路で送る）。
+	 * 送れたら `''`、送れなければ理由の文。
+	 */
+	private async sendBeforeConversation(instanceId: number, token: string, text: string): Promise<string | undefined> {
+		if (!this.pinnedInstances.has(instanceId)) {
+			return undefined;
+		}
+		const session = this.session(token);
+		if (session.state === undefined) {
+			await session.refresh();
+		}
+		if (session.state !== undefined) {
+			return undefined;
+		}
+		const value = paradisBuildPresetInsertText(text, true);
+		if (value === undefined) {
+			return localize('paradisAgentChat.errorEmpty', "送る文がありません");
+		}
+		const terminal = () => this.chatTerminal(instanceId, token);
+		const ready = await paradisWaitForAgentFirstInput(() => {
+			const current = terminal();
+			return current === undefined ? undefined : { foreground: current.foreground(), bracketedPasteMode: current.bracketedPasteMode() };
+		});
+		const target = terminal();
+		if (!ready || target === undefined) {
+			return localize('paradisAgentChat.errorFirstInputNotReady', "エージェントの準備ができませんでした。ターミナルで確かめてください");
+		}
+		const outcome = await paradisSendAgentMessageToTui(value, (value, execute, bracketedPasteMode) => target.sendText(value, execute ?? false, bracketedPasteMode), async () => terminal() === target && target.foreground() === 'agent');
+		return outcome.executed ? '' : localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました");
 	}
 
 	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined> {

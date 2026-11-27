@@ -410,7 +410,7 @@ export interface IParadisAgentChatCommand {
 export interface IParadisAgentChatGuide {
 	readonly notice: string;
 	readonly band?: { readonly title: string; readonly detail?: string };
-	/** 会話が無くても入力欄から送れる（眠った会話: 送ると起こす）。既定は送れない。 */
+	/** 会話が無くても入力欄から送れる（起こしたばかりで会話の記録がまだ無い・眠った会話は送ると起こす）。既定は送れない。 */
 	readonly sendable?: boolean;
 }
 

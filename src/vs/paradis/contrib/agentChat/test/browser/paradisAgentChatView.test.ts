@@ -54,6 +54,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	readChoiceMenu: ((instanceId: number) => IParadisAgentChoiceMenu | undefined) | undefined;
 	isDialogOpen: ((token: string) => Promise<boolean | undefined>) | undefined;
 	guide: IParadisAgentChatGuide | undefined;
+	readOnly: boolean | undefined;
 	readonly guideChanged = new Emitter<number>();
 	readonly onDidChangeGuide = this.guideChanged.event;
 	chatGuide(): IParadisAgentChatGuide | undefined { return this.guide; }
@@ -347,6 +348,25 @@ suite('ParadisAgentChatView', () => {
 			closed: { visible: false, notice: null },
 		});
 	}));
+
+	test('a read-only snapshot that ends with an unanswered Codex question keeps the input open and shows no terminal band, while a live pane stops the input', async () => {
+		const view = { token: 'pane', agent: 'codex' as const, epoch: 'e', rev: 1, reset: true, busy: false, live: null, interaction: null, messages: [{ rev: 1, role: 'assistant' as const, kind: 'tool_use' as const, tool: 'request_user_input', toolUseId: 'call_1', text: '{}' }] };
+		const look = async (readOnly: boolean) => {
+			const { host, container, session, disposables } = await createView([view]);
+			host.readOnly = readOnly;
+			await session.refresh();
+			host.guideChanged.fire(1);
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const band = container.querySelector<HTMLElement>('.paradis-agent-chat-terminal-band')!;
+			const result = { notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent ?? null, band: band.style.display !== 'none' };
+			disposables.dispose();
+			return result;
+		};
+		assert.deepStrictEqual({ live: await look(false), readOnly: await look(true) }, {
+			live: { notice: 'Codex が質問しています。ターミナルで答えてください', band: true },
+			readOnly: { notice: null, band: false },
+		});
+	});
 
 	test('shows the guide of the caller while no conversation is found, with the terminal band only when the agent is stuck on a screen the bubbles cannot show', async () => {
 		const { view, host, container, disposables } = await createView([]);

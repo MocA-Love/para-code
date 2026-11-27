@@ -161,7 +161,8 @@ export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState
 		openSuggestions,
 		activity,
 		...(halt !== undefined ? { halt } : {}),
-		...(activity === 'stopped' && !bot.paused && resumable ? { sleeping: true } : {}),
+		// 会話のペインが無ければ眠っている（見回りのペインが動いていても、会話は眠ったまま）
+		...(!panes.some(pane => pane.purpose === 'chat') && !bot.paused && resumable ? { sleeping: true } : {}),
 		lastActivityAt: Math.max(bot.createdAt, counts.lastActivityAt, ...panes.map(pane => pane.lastSeenAt)),
 	};
 }

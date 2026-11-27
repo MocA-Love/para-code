@@ -133,6 +133,13 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			existing.instance.dispose(TerminalExitReason.User);
 			await paradisWaitForBotChatRelease(botsService, botId);
 		} else if (existing !== undefined) {
+			// 眠った会話の入力欄から送った直後に、別の経路で会話が起きていた: 送った文はそのペインへ渡す（捨てない）
+			if (options.prompt !== undefined && options.prompt.trim().length > 0) {
+				const error = await agentChatService.sendMessageToPane(existing.instanceId, options.prompt);
+				if (error !== undefined) {
+					return { ok: false, error };
+				}
+			}
 			if (!fromAgent) {
 				// そのペインのスペースへ切り替えてから前に出す（通知のクリックと同じ動き）
 				await paradisRevealBotPane({ hostService, terminalService, switchService }, existing);

@@ -84,18 +84,21 @@ suite('Paradis bots page', () => {
 	});
 
 	test('会話が見つかるまでの案内: 止まっている理由があるか、しばらく見つからなければ「ターミナルを開く」の帯を出す', () => {
-		const guide = (halt: Parameters<typeof paradisBotChatGuide>[0]['halt'], waitedLong = false, agent: 'claude' | 'codex' = 'codex') => {
+		const guide = (halt: Parameters<typeof paradisBotChatGuide>[0]['halt'], waitedLong = false, agent: 'claude' | 'codex' | 'antigravity' = 'codex') => {
 			const value = paradisBotChatGuide({ agent, halt }, waitedLong);
-			return value.band !== undefined ? `${value.notice} / ${value.band.title} / ${value.band.detail}` : value.notice;
+			return value.band !== undefined ? `${value.notice} / ${value.band.title} / ${value.band.detail}` : `${value.notice}${value.sendable ? '（送れる）' : ''}`;
 		};
 		assert.deepStrictEqual([
 			guide(undefined),
+			// Codex・Claude Code は最初の発言まで会話の記録が無いので、待っても「止まっている」と読まない
 			guide(undefined, true),
+			guide(undefined, true, 'antigravity'),
 			guide({ kind: 'needsUser' }),
 			guide({ kind: 'notFound' }),
 			guide({ kind: 'exited', exitCode: 1 }, false, 'claude'),
 		], [
-			'起こしています…',
+			'起こしています…（送れる）',
+			'起こしています…（送れる）',
 			'まだ会話はありません / ターミナルで操作が要ります / 会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください',
 			'まだ会話はありません / ターミナルで操作が要ります / 初回設定・ログイン・許可の画面で止まっています',
 			'まだ会話はありません / Codex が見つかりません / ターミナルで確かめてください',
