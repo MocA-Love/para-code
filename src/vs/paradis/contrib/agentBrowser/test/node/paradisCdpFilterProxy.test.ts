@@ -481,6 +481,7 @@ suite('Paradis CDP screenshot filter', () => {
 			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 			closeInputConnection: () => undefined,
 			isRemotePane: () => remotePane,
+			verifyIngressPeer: async () => true,
 			isTunnelPeer: async remotePort => {
 				tunnelLookups.push(remotePort);
 				return remotePort === 50001;
@@ -554,6 +555,7 @@ suite('Paradis CDP screenshot filter', () => {
 			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 			closeInputConnection: () => undefined,
 			isRemotePane: () => false,
+			verifyIngressPeer: async () => true,
 			isTunnelPeer: async () => false,
 		};
 		const gateway = new ParadisCdpGateway(delegate, {} as ParadisCdpUpstream, { debug: () => undefined } as never);
@@ -2571,6 +2573,7 @@ function createGatewayUpgradeFixture(
 		dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 		closeInputConnection: () => undefined,
 		isRemotePane: () => false,
+		verifyIngressPeer: async () => true,
 		isTunnelPeer: async () => false,
 	};
 	const logService = {

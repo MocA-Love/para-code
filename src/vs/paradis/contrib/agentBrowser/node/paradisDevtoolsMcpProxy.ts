@@ -403,6 +403,21 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	/**
 	 * `name` が転送対象のツールかどうかを返す（子プロセスが起動できない場合は false）。
 	 */
+	/**
+	 * そのペイン（タブのスコープキーの子も含む）のために起こした、生きている chrome-devtools-mcp の子の PID。
+	 * CDP ゲートウェイが `?pane=` の接続元を確かめるときに、ペインのシェルの子孫でなくても通す相手（paradisCdpGateway.ts）。
+	 */
+	childPidsForPane(paneToken: string): number[] {
+		const pids: number[] = [];
+		for (const [key, entry] of this._children) {
+			const pid = entry.child.pid;
+			if (!entry.killed && typeof pid === 'number' && pid > 1 && paradisPaneTokenOfScopeKey(key) === paneToken) {
+				pids.push(pid);
+			}
+		}
+		return pids;
+	}
+
 	async isProxiedTool(token: string, generation: number, wsEndpoint: string, name: string, signal?: AbortSignal): Promise<boolean> {
 		try {
 			return (await this.listTools(token, generation, wsEndpoint, signal)).some(tool => tool.name === name);

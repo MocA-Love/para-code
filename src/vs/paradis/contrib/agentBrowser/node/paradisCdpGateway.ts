@@ -17,6 +17,9 @@
 // 呼び出し元の識別は接続ごとに行う（paradisCdpPeerResolver.ts参照）:
 //   1. URLクエリ `?pane=<token>`（最優先）
 //   2. loopbackピアPID → 祖先チェーンのenv / 既知シェルPID表 → ペイントークン
+// どちらで決めても、接続を持つプロセスがそのペインのシェルの子孫（接続先のペインは戻り経路の `ssh -R`、
+// 内蔵 chrome-devtools-mcp はそのペインのために起こした子）かを確かめてから通す（verifyIngressPeer）。
+// トークンは同じ利用者のプロセスなら `ps -wwE` で読めるので、名乗っただけでは通さない。
 // 解決したトークンをバインディングレジストリと突合し、バインド済みページの
 // targetId（とその子孫）だけが見える・触れるようにフィルタする（paradisCdpFilterProxy.ts）。
 //
@@ -108,6 +111,13 @@ export interface IParadisCdpGatewayDelegate {
 	 * できないときは true。プロセス表を調べるので、手元のファイルに触れるコマンドが来たときにだけ呼ぶ。
 	 */
 	isTunnelPeer(remotePort: number, localPort: number): Promise<boolean>;
+	/**
+	 * この loopback 接続を持つプロセスが、`token`（ペインのトークンかタブのスコープキー）のペインを使ってよい相手か。
+	 * 手元のペインならそのシェルの子孫、接続先のペインなら戻り経路の `ssh -R`、どちらでもそのペインのために Para Code が
+	 * 起こした chrome-devtools-mcp の子なら true。確かめられないときは false（paradisPaneCallerCheck.ts）。
+	 * トークンは同じ利用者のプロセスなら読めるので、`?pane=` や環境変数で名乗っただけでは通さない。
+	 */
+	verifyIngressPeer(token: string, socket: Socket): Promise<boolean>;
 	/** 接続先のペインの upload_file が写した一時ファイルだけを指す `DOM.setFileInputFiles` の `files` か。 */
 	permitsRemoteFileInput?(token: string, files: unknown): boolean;
 }
@@ -792,6 +802,27 @@ export class ParadisCdpGateway extends Disposable {
 	 * 負の結果は一時的なレース—lsofの追い越し等—でありうるためメモ化しない）。
 	 */
 	private async _resolveIngress(req: http.IncomingMessage): Promise<IParadisCdpIngressAccess | undefined> {
+		const access = await this._resolveClaimedIngress(req);
+		if (access === undefined) {
+			return undefined;
+		}
+		// どの経路で決めたペインでも（`?pane=`、環境変数、シェルの表）、接続を持つプロセスがそのペインの中のものかを確かめる
+		let allowed = false;
+		try {
+			allowed = await this.delegate.verifyIngressPeer(access.token, req.socket as Socket);
+		} catch {
+			allowed = false;
+		}
+		if (!allowed) {
+			this._debugNonThrowing('[ParadisCdpGateway] Refused a connection whose process is not inside the terminal pane it named');
+			this._socketTokens.delete(req.socket as Socket);
+			return undefined;
+		}
+		return access;
+	}
+
+	/** 接続が名乗ったペイン（`?pane=` → 接続元の祖先の環境変数・シェルの表）。接続元がそのペインの中かはまだ確かめない。 */
+	private async _resolveClaimedIngress(req: http.IncomingMessage): Promise<IParadisCdpIngressAccess | undefined> {
 		if (this._disposed) {
 			return undefined;
 		}
