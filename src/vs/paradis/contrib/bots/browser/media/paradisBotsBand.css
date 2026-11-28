@@ -313,7 +313,7 @@
 
 /* Working: eyes look up and around, three dots above (22px and up). */
 .paradis-bot-face[data-state="work"] .paradis-bot-face-eyes {
-	transform: translate(4px, -5px);
+	transform: translate(7px, -7px);
 	animation: paradis-bot-face-look 2.4s var(--paradis-bot-face-loop) ease-in-out infinite;
 }
 
@@ -333,7 +333,7 @@
 
 /* Patrolling: eyes look left and right, a small nod, a magnifier (22px and up). */
 .paradis-bot-face[data-state="patrol"] .paradis-bot-face-eyes {
-	transform: translateX(-5px);
+	transform: translateX(-8px);
 	animation: paradis-bot-face-scan 1.4s var(--paradis-bot-face-loop) ease-in-out infinite;
 }
 
@@ -487,14 +487,14 @@
 }
 
 @keyframes paradis-bot-face-look {
-	0%, 100% { transform: translate(4px, -5px); }
-	33% { transform: translate(-4px, -5px); }
-	66% { transform: translate(0, -6px); }
+	0%, 100% { transform: translate(7px, -7px); }
+	33% { transform: translate(-7px, -7px); }
+	66% { transform: translate(0, -8px); }
 }
 
 @keyframes paradis-bot-face-scan {
-	0%, 100% { transform: translateX(-5px); }
-	50% { transform: translateX(5px); }
+	0%, 100% { transform: translateX(-8px); }
+	50% { transform: translateX(8px); }
 }
 
 @keyframes paradis-bot-face-nod {
