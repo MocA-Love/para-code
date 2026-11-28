@@ -86,6 +86,10 @@ suite('Paradis bots band', () => {
 			// 開いて既定（4 行分）。行が少なければ縮む
 			paradisBotsBandListHeight({ open: true, listHeight: undefined }, 6, 1000),
 			paradisBotsBandListHeight({ open: true, listHeight: undefined }, 2, 1000),
+			// Bot 3 体とグループ 1 つ（見出しと行）: 既定の高さにグループの節を足して、グループの行まで見せる
+			paradisBotsBandListHeight({ open: true, listHeight: undefined }, 5, 1000, 2),
+			// 高さを覚えていればそれ（グループの分は足さない）
+			paradisBotsBandListHeight({ open: true, listHeight: 116 }, 5, 1000, 2),
 			// 覚えた高さ
 			paradisBotsBandListHeight({ open: true, listHeight: 200 }, 10, 1000),
 			// ビューの 4 割まで
@@ -95,7 +99,7 @@ suite('Paradis bots band', () => {
 			// 閉じたらピン留めの行の分だけ、無ければ 0
 			paradisBotsBandListHeight({ open: false, listHeight: 300 }, 2, 1000),
 			paradisBotsBandListHeight({ open: false, listHeight: 300 }, 0, 1000),
-		], [116, 60, 200, 200, 32, 60, 0]);
+		], [116, 60, 144, 116, 200, 200, 32, 60, 0]);
 	});
 
 	test('あなたの番の数と行の文', () => {

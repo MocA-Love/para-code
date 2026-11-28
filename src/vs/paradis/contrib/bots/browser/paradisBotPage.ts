@@ -147,6 +147,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly headerHide = this._register(new MutableDisposable<IDisposable>());
 	/** 受け箱の未読と「読ませる」（Bot が待機中のとき、利用者の操作として受け箱を見るよう頼む）。 */
 	private readonly stripInbox: HTMLButtonElement;
+	private readonly stripInboxCount: HTMLElement;
+	private readonly stripInboxLabel: HTMLElement;
 	private readonly tabElements = new Map<ParadisBotPageTab, HTMLElement>();
 	private readonly itemsTab: HTMLElement;
 	/** Bot ごとの設定・ファイルのタブ（入力中の値を描き直しの間も持つ）。 */
@@ -228,14 +230,18 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		this.stripInbox = DOM.append(this.strip, $('button.paradis-bot-page-inbox.paradis-focus-ring-inset')) as HTMLButtonElement;
 		this.stripInbox.type = 'button';
 		this.stripInbox.hidden = true;
+		// 狭い幅では封筒と数だけになる（文は読み上げの名前とホバーに残す）
+		DOM.append(this.stripInbox, $(ThemeIcon.asCSSSelector(Codicon.mail)));
+		this.stripInboxCount = DOM.append(this.stripInbox, $('span.paradis-bot-page-inbox-count'));
+		this.stripInboxLabel = DOM.append(this.stripInbox, $('span.paradis-bot-page-inbox-label'));
 		this._register(DOM.addDisposableListener(this.stripInbox, DOM.EventType.CLICK, () => void this.askToReadInbox()));
 		const tabs = DOM.append(this.strip, $('.paradis-bot-page-tabs'));
 		tabs.setAttribute('role', 'tablist');
 		tabs.setAttribute('aria-label', localize('paradis.botPage.tabs', "Bot のページ"));
-		this.tab(tabs, 'chat', localize('paradis.botPage.tab.chat', "会話"));
-		this.itemsTab = this.tab(tabs, 'items', localize('paradis.botPage.tab.items', "項目"));
-		this.tab(tabs, 'files', localize('paradis.botPage.tab.files', "ファイル"));
-		this.tab(tabs, 'settings', localize('paradis.botPage.tab.settings', "設定"));
+		this.tab(tabs, 'chat', localize('paradis.botPage.tab.chat', "会話"), Codicon.comment);
+		this.itemsTab = this.tab(tabs, 'items', localize('paradis.botPage.tab.items', "項目"), Codicon.checklist);
+		this.tab(tabs, 'files', localize('paradis.botPage.tab.files', "ファイル"), Codicon.files);
+		this.tab(tabs, 'settings', localize('paradis.botPage.tab.settings', "設定"), Codicon.settingsGear);
 		this.itemsCount = DOM.append(this.itemsTab, $('span.paradis-bot-page-tab-count'));
 		// タブ列の左に置く（帯が収まらない幅では右端から切れるので、この切り替えを先に切らない）。会話以外のタブでも出したままにする
 		this.viewGroup = this.strip.insertBefore($('.paradis-bot-page-view'), tabs);
@@ -541,11 +547,15 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return this.instanceId !== undefined && this.agentChatService.isChatActive(this.instanceId);
 	}
 
-	private tab(parent: HTMLElement, tab: ParadisBotPageTab, label: string): HTMLElement {
+	private tab(parent: HTMLElement, tab: ParadisBotPageTab, label: string, icon: ThemeIcon): HTMLElement {
 		const element = DOM.append(parent, $('button.paradis-bot-page-tab.paradis-focus-ring-inset')) as HTMLButtonElement;
 		element.type = 'button';
 		element.setAttribute('role', 'tab');
-		DOM.append(element, $('span')).textContent = label;
+		// 狭い幅ではアイコンだけになる（見出しの待ちの文と名前より先に縮む）。読み上げの名前とホバーは文字の表示に頼らない
+		element.setAttribute('aria-label', label);
+		DOM.append(element, $(ThemeIcon.asCSSSelector(icon)));
+		DOM.append(element, $('span.paradis-bot-page-tab-label')).textContent = label;
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), element, label));
 		this._register(DOM.addDisposableListener(element, DOM.EventType.CLICK, () => this.setTab(tab)));
 		this.tabElements.set(tab, element);
 		return element;
@@ -647,9 +657,12 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const canAsk = this.canAskToReadInbox(bot);
 		this.stripInbox.hidden = unread === 0;
 		this.stripInbox.disabled = !canAsk;
-		this.stripInbox.textContent = canAsk
+		const inboxLabel = canAsk
 			? localize('paradis.botPage.inbox.ask', "受け箱に {0} 通あります。読ませる", unread)
 			: localize('paradis.botPage.inbox.count', "受け箱に {0} 通", unread);
+		this.stripInboxLabel.textContent = inboxLabel;
+		this.stripInboxCount.textContent = unread > 99 ? '99+' : String(unread);
+		this.stripInbox.setAttribute('aria-label', inboxLabel);
 		this.stripInbox.title = canAsk
 			? localize('paradis.botPage.inbox.askTooltip', "ほかの Bot からの伝言を読むよう、この Bot に頼みます")
 			: localize('paradis.botPage.inbox.waitTooltip', "ほかの Bot からの伝言が届いています。この Bot が待機中になったら読ませられます");

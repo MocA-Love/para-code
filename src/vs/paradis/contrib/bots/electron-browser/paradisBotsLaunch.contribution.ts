@@ -56,7 +56,7 @@ import { ParadisBotSleepingChatEditorInput } from '../browser/paradisBotSleeping
 import '../browser/paradisBotSleepingChatEditor.contribution.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { paradisBotFirstPrompt } from '../common/paradisBotTools.js';
-import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
+import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisDisposeBotPane, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
@@ -137,7 +137,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		const ended = summary?.activity === 'idle' && (summary.halt?.kind === 'exited' || summary.halt?.kind === 'notFound');
 		if (existing !== undefined && ended) {
 			// エージェントが終わってシェルだけが残っている。話しかけられたので、そのペインを閉じて起こし直す
-			existing.instance.dispose(TerminalExitReason.User);
+			await paradisDisposeBotPane(botsService, paneTokenService.getTokenForInstance(existing.instanceId), existing.instance);
 			await paradisWaitForBotChatRelease(botsService, botId);
 		} else if (existing !== undefined) {
 			// 前に出す依頼に応えなかったペインがこのウィンドウにあった（生きていた）なら、会話のペインとして結び付け直す
@@ -745,8 +745,9 @@ class ParadisBotsWindowWorker extends Disposable {
 				}
 			}
 			if (instance !== undefined && !instance.isDisposed) {
-				// 確認のダイアログは出さない（止めると決めたのは利用者で、閉じるのは Bot のターミナルだけ）
-				instance.dispose(TerminalExitReason.User);
+				// 確認のダイアログは出さない（止めると決めたのは利用者で、閉じるのは Bot のターミナルだけ）。結び付けもここで外す
+				// （「止めて起こし直す」は、外れたのを見て起こす）
+				await paradisDisposeBotPane(this.botsService, this.paneTokenService.getTokenForInstance(instanceId), instance);
 			}
 		}
 	}

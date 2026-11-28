@@ -10,7 +10,8 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotLaunchShowsChat, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../../common/paradisBotPageModel.js';
+import type { IParadisBotSummary } from '../../common/paradisBotsApi.js';
+import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotLaunchShowsChat, paradisBotStripHeader, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -80,6 +81,32 @@ suite('Paradis bots page', () => {
 			'一行目\n二行目rm -rf ~',
 			'一行目 二行目rm -rf ~',
 			'a b',
+		]);
+	});
+
+	test('見出しの状態: 台帳で利用者を待っている（操作が要ります・あなたの番）なら、見出しの値が無くても待ちの文として目立たせる（狭い幅でも最後まで残す）', () => {
+		const bot = (fields: Partial<IParadisBotSummary>) => ({ id: 'b', name: 'A', agent: 'claude', needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'idle', lastActivityAt: 0, ...fields }) as IParadisBotSummary;
+		const strip = (fields: Partial<IParadisBotSummary>, header?: Parameters<typeof paradisBotStripHeader>[1]) => {
+			const value = paradisBotStripHeader(bot(fields), header);
+			return `${value.status}${value.attention ? '（待ち）' : ''}${value.busy ? '（動いている）' : ''}`;
+		};
+		assert.deepStrictEqual([
+			strip({}),
+			strip({ halt: { kind: 'needsUser' } }),
+			strip({ needsYou: 2 }),
+			strip({ activity: 'working' }),
+			// 見出しの値があればそれを使う
+			strip({ halt: { kind: 'needsUser' } }, { status: '許可を待っています', attention: true, busy: false, model: '' }),
+			strip({ needsYou: 1 }, { status: '考えています', attention: false, busy: true, model: '' }),
+			strip({ halt: { kind: 'needsUser' } }, { status: '', attention: false, busy: false, model: '' }),
+		], [
+			'待機中',
+			'操作が要ります（待ち）',
+			'2 件があなたの番（待ち）',
+			'作業中',
+			'許可を待っています（待ち）',
+			'考えています（動いている）',
+			'操作が要ります（待ち）',
 		]);
 	});
 
