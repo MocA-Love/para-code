@@ -25,6 +25,7 @@ import { IParadisAgentChatGuide, IParadisAgentChatImageData, IParadisAgentChatSo
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
+import { IParadisAgentChatPersona } from '../../browser/paradisAgentChatService.js';
 import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer, paradisHumanAskCounts } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { paradisInboxPaneKey } from '../../../notificationInbox/common/paradisNotificationInbox.js';
 import { fromNow } from '../../../../../base/common/date.js';
@@ -59,6 +60,10 @@ class TestHost implements IParadisAgentChatViewHost {
 	readonly guideChanged = new Emitter<number>();
 	readonly onDidChangeGuide = this.guideChanged.event;
 	chatGuide(): IParadisAgentChatGuide | undefined { return this.guide; }
+	persona: IParadisAgentChatPersona | undefined;
+	readonly personaChanged = new Emitter<number>();
+	readonly onDidChangePersona = this.personaChanged.event;
+	chatPersona(): IParadisAgentChatPersona | undefined { return this.persona; }
 	private readonly states = new Map<string, IParadisAgentChatCardStates>();
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.states.get(token);
@@ -73,7 +78,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	setDraft(token: string, text: string): void { this.drafts.set(token, text); }
 	getHistory(): readonly string[] { return []; }
 	async getCommands() { return []; }
-	dispose(): void { this._onDidChangeSettings.dispose(); this.guideChanged.dispose(); }
+	dispose(): void { this._onDidChangeSettings.dispose(); this.guideChanged.dispose(); this.personaChanged.dispose(); }
 }
 
 function sourceReturning(views: IParadisAgentChatView[]): IParadisAgentChatSource {
@@ -114,6 +119,39 @@ suite('ParadisAgentChatView', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		return { view, host, container, disposables, session };
 	}
+
+	test('draws the owner\'s face instead of the agent logo (redrawn when it changes), and shows a prompt Para Code sent as a small note while the user\'s own words stay a bubble', async () => {
+		const { host, container } = await createView([{
+			token: 'pane', agent: 'claude', epoch: 'e', rev: 3, reset: true, busy: false, live: null, interaction: null,
+			messages: [
+				{ rev: 0, role: 'user', kind: 'text', text: 'SENT BY PARA CODE' },
+				{ rev: 1, role: 'assistant', kind: 'text', text: 'はじめまして' },
+				{ rev: 2, role: 'user', kind: 'text', text: 'よろしく' },
+			],
+		}]);
+		const before = [...container.querySelectorAll('.paradis-agent-chat-face')].map(face => face.className);
+		const persona = (state: string): IParadisAgentChatPersona => ({
+			renderFace: parent => { parent.appendChild(mainWindow.document.createElement('i')).dataset.state = state; },
+			promptLabel: text => text === 'SENT BY PARA CODE' ? 'Bot に挨拶を頼みました' : undefined,
+		});
+		host.persona = persona('idle');
+		host.personaChanged.fire(1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		host.persona = persona('work');
+		host.personaChanged.fire(1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			before,
+			faces: [...container.querySelectorAll('.paradis-agent-chat-face-persona > i')].map(face => (face as HTMLElement).dataset.state),
+			notes: [...container.querySelectorAll('.paradis-agent-chat-message.system')].map(note => note.textContent),
+			user: [...container.querySelectorAll('.paradis-agent-chat-message.user')].map(message => message.querySelector('.paradis-agent-chat-plain')?.textContent),
+		}, {
+			before: ['paradis-agent-chat-face claude'],
+			faces: ['work'],
+			notes: ['Bot に挨拶を頼みました'],
+			user: ['よろしく'],
+		});
+	});
 
 	test('shows the OpenCode identity in its own conversation header', async () => {
 		const { container } = await createView([{ token: 'pane', agent: 'opencode', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);

@@ -231,6 +231,19 @@ export function paradisCodexBrowserConfigValues(registration: ParadisCodexBrowse
 export const PARADIS_BOT_GREETING_PROMPT = 'You were just created as a Para Code bot. Read SOUL.md (your role and personality) and greet your owner now: introduce yourself in two or three sentences, in the language SOUL.md is written in, and say what you can help with. Then wait for their reply.';
 
 /**
+ * 会話の記録の利用者の発言が、Para Code が送った指示か（`greeting` は作った直後の挨拶の頼み {@link PARADIS_BOT_GREETING_PROMPT}）。
+ * チャット表示はこれを利用者の発言の吹き出しにせず、小さい印にする。空白の違い（貼り付けで付く改行など）だけは同じとみなし、
+ * 利用者が打った文は、同じ文を打たない限り該当しない。
+ */
+export function paradisBotPromptLabel(text: string): 'greeting' | undefined {
+	return normalizePrompt(text) === normalizePrompt(PARADIS_BOT_GREETING_PROMPT) ? 'greeting' : undefined;
+}
+
+function normalizePrompt(text: string): string {
+	return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * 起こすときに最初に渡す指示。作った直後なら挨拶させる。眠った会話を続けるときは挨拶しない（もう話したことのある Bot）。
  * それ以外は渡さない（利用者の入力を待つ）。ほかの Bot からの伝言では起こさない（受け箱に入れて未読の数を出すだけ。#1232 の
  * 決め。利用者の居ない所で頼まれたことを実行させない）。

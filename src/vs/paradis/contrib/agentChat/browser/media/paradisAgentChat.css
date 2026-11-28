@@ -260,6 +260,17 @@
 	font-size: var(--vscode-codiconFontSize-compact);
 }
 
+/* 持ち主（Bot）が描いた顔。顔そのものが形を持つので、丸い枠と下地を付けず、枠いっぱいに描く。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-face.paradis-agent-chat-face-persona {
+	border-color: transparent;
+	background-color: transparent;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-face.paradis-agent-chat-face-persona > * {
+	width: 100%;
+	height: 100%;
+}
+
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message-column {
 	display: flex;
 	flex-direction: column;

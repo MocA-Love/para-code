@@ -25,7 +25,7 @@ import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
+import { IParadisAgentChatPersona, IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisAgentChatGuide } from '../../../agentChat/common/paradisAgentChat.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
 import { IParadisBotPatrolPort } from '../../browser/paradisBotPatrol.js';
@@ -33,6 +33,7 @@ import { paradisRequestBotPageTab } from '../../browser/paradisBotPageTabRequest
 import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
+import { PARADIS_BOT_GREETING_PROMPT } from '../../common/paradisBotTools.js';
 
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {
@@ -122,10 +123,12 @@ suite('Paradis bots page overlay', () => {
 		const pinned = new Set<number>();
 		const chatCalls: string[] = [];
 		const guides = new Map<number, IParadisAgentChatGuide | undefined>();
+		const personas = new Map<number, IParadisAgentChatPersona | undefined>();
 		instantiation.stub(IParadisAgentChatService, {
 			pinChatMode: (id: number, moveFocus: boolean) => { pinned.add(id); chatCalls.push(`pin ${id} ${moveFocus}`); },
 			isChatPinned: (id: number) => pinned.has(id),
 			setChatGuide: (id: number, guide: IParadisAgentChatGuide | undefined) => guides.set(id, guide),
+			setChatPersona: (id: number, persona: IParadisAgentChatPersona | undefined) => { personas.set(id, persona); },
 			insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; },
 			onDidChangeHeader: headerChanged.event,
 			headerState: () => header,
@@ -181,7 +184,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId), isPatrolPane };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
-		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, chatCalls, guides, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
+		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, chatCalls, guides, personas, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -639,6 +642,43 @@ suite('Paradis bots page overlay', () => {
 			patrolGuide: undefined,
 			cleared: undefined,
 			calls: ['pin 1 true', 'pin 1 true'],
+		});
+	});
+
+	test('Bot の会話のペインの吹き出しの顔はその Bot の顔（様子が変われば渡し直す）。作った直後の挨拶の頼みは印にし、利用者の文はそのまま。見回りのペインには渡さない', async () => {
+		const { page, personas, bots, botsChanged, patrolPanes, panes } = setup();
+		const face = (persona: IParadisAgentChatPersona | undefined) => {
+			if (persona === undefined) {
+				return undefined;
+			}
+			const parent = document.createElement('div');
+			persona.renderFace(parent);
+			const element = parent.firstElementChild as HTMLElement;
+			return `${element.className} ${element.dataset.color} ${element.dataset.state}`;
+		};
+		bots[0] = { ...bots[0], needsYou: 0 };
+		page.setInstance(1);
+		await settle();
+		const idle = personas.get(1);
+		bots[0] = { ...bots[0], activity: 'working' };
+		botsChanged.fire();
+		const working = personas.get(1);
+		panes.set(2, 'release');
+		patrolPanes.add(2);
+		page.setInstance(2);
+		await settle();
+		assert.deepStrictEqual({
+			idle: face(idle),
+			working: face(working),
+			greeting: idle?.promptLabel(`${PARADIS_BOT_GREETING_PROMPT}\n`),
+			user: idle?.promptLabel('こんにちは'),
+			patrol: personas.get(2),
+		}, {
+			idle: 'paradis-bot-face blue idle',
+			working: 'paradis-bot-face blue work',
+			greeting: 'Bot を作ったので、自己紹介を頼みました',
+			user: undefined,
+			patrol: undefined,
 		});
 	});
 

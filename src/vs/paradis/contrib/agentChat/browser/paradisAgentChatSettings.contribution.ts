@@ -26,8 +26,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: isMacintosh
-				? localize('paradis.agentChat.enabledMac', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`⌘⇧J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。")
-				: localize('paradis.agentChat.enabledOther', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`Ctrl+Shift+J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。オンの間は、エージェントのタブで `Ctrl+Shift+J` がシェルへ送られません。"),
+				? localize('paradis.agentChat.enabledMac', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`⌘⇧J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。試験中の機能の会話は、この設定に関わらずいつもチャット表示です。")
+				: localize('paradis.agentChat.enabledOther', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`Ctrl+Shift+J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。試験中の機能の会話は、この設定に関わらずいつもチャット表示です。オンの間は、エージェントのタブで `Ctrl+Shift+J` がシェルへ送られません。"),
 		},
 		[PARADIS_AGENT_CHAT_SEND_KEY_SETTING]: {
 			type: 'string',

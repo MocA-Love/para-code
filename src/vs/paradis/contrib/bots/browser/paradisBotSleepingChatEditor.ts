@@ -32,12 +32,14 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisAgentChatGuide, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
 import { ParadisAgentChatSendKey } from '../../agentChat/browser/paradisAgentChatComposer.js';
+import { IParadisAgentChatPersona } from '../../agentChat/browser/paradisAgentChatService.js';
 import { ParadisAgentChatSession } from '../../agentChat/browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../agentChat/browser/paradisAgentChatView.js';
 import { IParadisBotSleepingChat, IParadisBotsService } from '../common/paradisBotsApi.js';
 import { PARADIS_BOTS_OPEN_COMMAND, paradisBotFace } from '../common/paradisBotsBandModel.js';
 import { ParadisBotTaskResultsTray, paradisBotTasksPort } from './paradisBotTasks.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
+import { IParadisBotChatPersona, paradisBotChatPersona } from './paradisBotChatPersona.js';
 import './media/paradisBotPage.css';
 
 export const PARADIS_BOT_SLEEPING_CHAT_EDITOR_ID = 'paradis.editor.botSleepingChat';
@@ -139,6 +141,10 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 	readonly onDidChangeSettings = this._onDidChangeSettings.event;
 	private readonly _onDidChangeGuide = this._register(new Emitter<number>());
 	readonly onDidChangeGuide = this._onDidChangeGuide.event;
+	private readonly _onDidChangePersona = this._register(new Emitter<number>());
+	readonly onDidChangePersona = this._onDidChangePersona.event;
+	/** 吹き出しの顔（この Bot の顔）と、Para Code が送った指示の見分け。 */
+	private persona: IParadisBotChatPersona | undefined;
 	readonly readOnly = true;
 	/** 起こしている最中（二重に送らない）。 */
 	private waking = false;
@@ -242,6 +248,11 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 		}
 		dom.clearNode(this.face);
 		renderParadisBotFace(this.face, paradisBotFace(bot));
+		const persona = paradisBotChatPersona(bot);
+		if (persona.key !== this.persona?.key) {
+			this.persona = persona;
+			this._onDidChangePersona.fire(NO_PANE);
+		}
 		this.name.textContent = bot.name;
 		this.status.textContent = this.waking
 			? localize('paradis.botSleeping.waking', "起こしています…")
@@ -278,6 +289,10 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 		}
 		await this.group.closeEditor(input);
 		return undefined;
+	}
+
+	chatPersona(): IParadisAgentChatPersona | undefined {
+		return this.persona;
 	}
 
 	chatGuide(): IParadisAgentChatGuide | undefined {

@@ -17,6 +17,24 @@ export function paradisAgentChatActive(chatMode: boolean, token: string | undefi
 	return chatMode && token !== undefined;
 }
 
+/**
+ * そのペインでチャット表示を使えるか。`paradis.agentChat.enabled` をオフにしていても、控えたペイン（Bot の会話のペイン。
+ * `pinChatMode`）は使う。Bot の会話はいつも吹き出しで見せるため（オフのままだとターミナルの TUI だけが見え、切り替えの口も出ない）。
+ */
+export function paradisAgentChatUsable(settingEnabled: boolean, pinned: boolean): boolean {
+	return settingEnabled || pinned;
+}
+
+/** 設定をオフにしたときにチャット表示を閉じるペイン（控えたペインはチャット表示のまま残す）。 */
+export function paradisAgentChatClosedOnDisable(chatMode: Iterable<number>, pinned: ReadonlySet<number>): number[] {
+	return [...chatMode].filter(instanceId => !pinned.has(instanceId));
+}
+
+/** 中継に見張らせるペイン（`watchAgentChat` に渡すトークン）。設定がオフなら、控えたペインの分だけ。 */
+export function paradisAgentChatWatchedTokens(settingEnabled: boolean, panes: readonly { readonly instanceId: number; readonly token: string }[], pinned: ReadonlySet<number>): string[] {
+	return panes.filter(pane => paradisAgentChatUsable(settingEnabled, pinned.has(pane.instanceId))).map(pane => pane.token);
+}
+
 /** チャット表示で見えているペインの一覧を持ち、出入りしたペインを知らせる。 */
 export class ParadisAgentChatActiveTracker extends Disposable {
 

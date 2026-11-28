@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisAgentChatActiveTracker, paradisAgentChatActive } from '../../common/paradisAgentChatActive.js';
+import { ParadisAgentChatActiveTracker, paradisAgentChatActive, paradisAgentChatClosedOnDisable, paradisAgentChatUsable, paradisAgentChatWatchedTokens } from '../../common/paradisAgentChatActive.js';
 
 suite('paradisAgentChatActive', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -58,6 +58,22 @@ suite('paradisAgentChatActive', () => {
 				[false, false, [2]],
 			],
 			judge: [false, false, true],
+		});
+	});
+
+	test('a pinned (bot) pane keeps the chat view while the chat view setting is off; other panes follow the setting', () => {
+		const pinned = new Set([2]);
+		const panes = [{ instanceId: 1, token: 'user' }, { instanceId: 2, token: 'bot' }];
+		assert.deepStrictEqual({
+			usable: [[true, false], [true, true], [false, false], [false, true]].map(([enabled, pin]) => paradisAgentChatUsable(enabled, pin)),
+			closedOnDisable: paradisAgentChatClosedOnDisable([1, 2, 3], pinned),
+			watchedOn: paradisAgentChatWatchedTokens(true, panes, pinned),
+			watchedOff: paradisAgentChatWatchedTokens(false, panes, pinned),
+		}, {
+			usable: [true, true, false, true],
+			closedOnDisable: [1, 3],
+			watchedOn: ['user', 'bot'],
+			watchedOff: ['bot'],
 		});
 	});
 });
