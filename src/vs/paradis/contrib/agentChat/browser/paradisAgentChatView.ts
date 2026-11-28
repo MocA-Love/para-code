@@ -49,6 +49,7 @@ import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
 import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
+import { IParadisAgentChatPersona } from './paradisAgentChatService.js';
 import { ParadisInboxAskDialog } from '../../notificationInbox/browser/paradisNotificationInboxAskDialog.js';
 import { paradisInboxAskRefusedText } from '../../notificationInbox/common/paradisNotificationInboxAsk.js';
 import { PARADIS_AGENT_CHAT_LEDGER_LINGER_MS, PARADIS_AGENT_CHAT_LEDGER_SHIFT_GUARD_MS, paradisAgentChatLedgerAsks } from '../common/paradisAgentChatLedgerAsks.js';
@@ -79,6 +80,10 @@ export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost
 	chatGuide?(instanceId: number): IParadisAgentChatGuide | undefined;
 	/** {@link chatGuide} が変わったペイン。 */
 	readonly onDidChangeGuide?: Event<number>;
+	/** ペインの持ち主（Bot）の顔と、Para Code が送った指示の見分け。省けばエージェントのロゴと、すべての発言をそのまま出す。 */
+	chatPersona?(instanceId: number): IParadisAgentChatPersona | undefined;
+	/** {@link chatPersona} が変わったペイン。 */
+	readonly onDidChangePersona?: Event<number>;
 	/**
 	 * 動いていない会話を読むだけの写し（眠った Bot の会話）。最後の待っている質問・エージェントの終了を「待っている」と見なさず、
 	 * 入力欄を止めず、「ターミナルを開く」の帯も出さない（送ると呼ぶ側が起こす）。
@@ -86,6 +91,10 @@ export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost
 	readonly readOnly?: boolean;
 }
 
+/** 持ち主（Bot）が描いた顔の印（様子が変わったら描き直す）。 */
+const PERSONA_FACE_CLASS = 'paradis-agent-chat-face-persona';
+/** 持ち主が描いた顔を覚えておく数がこれを超えたら、外れた顔を忘れる。 */
+const PERSONA_FACE_PRUNE_SIZE = 200;
 /** 差分カードで最初から見せる行数。超えた分は「すべて表示」で開く。 */
 const DIFF_PREVIEW_ROWS = 14;
 /** ツールの出力を展開したときに見せる上限（文字数）。長い出力は全文の取り寄せで読む。 */
@@ -196,6 +205,8 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly composer: ParadisAgentChatComposer;
 
 	private instanceId: number | undefined;
+	/** 持ち主が描いた顔（様子が変わったら、この顔だけを描き直す）。 */
+	private readonly personaFaces = new Set<HTMLElement>();
 	private token: string | undefined;
 	private session: ParadisAgentChatSession | undefined;
 	private readonly sessionListener = this._register(new MutableDisposable());
@@ -342,6 +353,14 @@ export class ParadisAgentChatView extends Disposable {
 		if (host.onDidChangeGuide !== undefined) {
 			this._register(host.onDidChangeGuide(instanceId => {
 				if (instanceId === this.instanceId) {
+					this.renderScheduler.schedule();
+				}
+			}));
+		}
+		if (host.onDidChangePersona !== undefined) {
+			this._register(host.onDidChangePersona(instanceId => {
+				if (instanceId === this.instanceId) {
+					this.redrawPersonaFaces();
 					this.renderScheduler.schedule();
 				}
 			}));
@@ -759,13 +778,24 @@ export class ParadisAgentChatView extends Disposable {
 			case 'approval':
 				return JSON.stringify([item.kind, item.message.rev, paradisIsPendingApprovalItem(item, interaction), interaction?.kind === 'approval' ? interaction.choices : undefined, this.approvalStates.get(item.message.toolUseId ?? '')]);
 			default:
-				return JSON.stringify([item.kind, item.message.rev, expanded, this.imageSignature(item.message)]);
+				// 持ち主の顔が付いた・外れたときは、ロゴの顔と替えるので描き直す（様子の変化は redrawPersonaFaces が顔だけ描き直す）
+				return JSON.stringify([item.kind, item.message.rev, expanded, this.imageSignature(item.message), this.promptLabel(item), item.kind === 'assistant' && this.persona() !== undefined]);
 		}
 	}
 
 	private renderItem(item: ParadisAgentChatItem, state: IParadisAgentChatState, store: DisposableStore): HTMLElement {
 		switch (item.kind) {
 			case 'user': {
+				// Para Code が送った指示は、利用者の発言として見せず、小さい印にする
+				const label = this.promptLabel(item);
+				if (label !== undefined) {
+					const note = $('.paradis-agent-chat-message.system');
+					note.setAttribute('role', 'note');
+					note.setAttribute('aria-label', localize('paradisAgentChat.promptLabel', "Sent by Para Code: {0}", label));
+					append(note, $('span.codicon.codicon-info'));
+					append(note, $('span.paradis-agent-chat-system-text')).textContent = label;
+					return note;
+				}
 				const element = $('.paradis-agent-chat-message.user');
 				const bubble = append(element, $('.paradis-agent-chat-bubble'));
 				if (item.message.questionReplies !== undefined && item.message.questionReplies.length > 0) {
@@ -837,9 +867,22 @@ export class ParadisAgentChatView extends Disposable {
 		const element = $('.paradis-agent-chat-message.assistant');
 		const face = append(element, $('.paradis-agent-chat-face'));
 		face.setAttribute('aria-hidden', 'true');
-		// 顔は種類のロゴ（ターミナルのタブ・起動の一覧と同じ）。ドットの顔は Bot のもので、エージェントの CLI には使わない
+		// 顔は種類のロゴ（ターミナルのタブ・起動の一覧と同じ）。ドットの顔は Bot のもので、Bot の会話のペインだけ持ち主が描く
+		const persona = this.persona();
 		const logo = state === undefined ? undefined : paradisAgentDescriptor(state.agent)?.logo;
-		if (logo !== undefined) {
+		if (persona !== undefined) {
+			face.classList.add(PERSONA_FACE_CLASS);
+			persona.renderFace(face);
+			if (this.personaFaces.size >= PERSONA_FACE_PRUNE_SIZE) {
+				// 外れた発言の顔を溜めない
+				for (const old of [...this.personaFaces]) {
+					if (!old.isConnected) {
+						this.personaFaces.delete(old);
+					}
+				}
+			}
+			this.personaFaces.add(face);
+		} else if (logo !== undefined) {
 			face.classList.add(logo);
 			paradisAppendAgentLogoSvg(face, logo);
 		} else {
@@ -848,6 +891,29 @@ export class ParadisAgentChatView extends Disposable {
 		const column = append(element, $('.paradis-agent-chat-message-column'));
 		const bubble = append(column, $('.paradis-agent-chat-bubble'));
 		return { element, column, bubble };
+	}
+
+	private persona(): IParadisAgentChatPersona | undefined {
+		return this.instanceId !== undefined ? this.host.chatPersona?.(this.instanceId) : undefined;
+	}
+
+	/** 持ち主の顔が変わった（様子が変わった）ら、描いてある顔だけを描き直す（発言の吹き出しは作り直さない）。 */
+	private redrawPersonaFaces(): void {
+		const persona = this.persona();
+		for (const face of [...this.personaFaces]) {
+			if (!face.isConnected) {
+				// 描き直し・切り替えで外れた発言の顔は忘れる
+				this.personaFaces.delete(face);
+				continue;
+			}
+			clearNode(face);
+			persona?.renderFace(face);
+		}
+	}
+
+	/** 利用者の発言のうち、Para Code が送った指示（作った直後の挨拶の頼みなど）に出す印の文。 */
+	private promptLabel(item: ParadisAgentChatItem): string | undefined {
+		return item.kind === 'user' && item.message.questionReplies === undefined ? this.persona()?.promptLabel(item.message.text) : undefined;
 	}
 
 	/** 発言の下の小さい時刻（記録に時刻があるときだけ）。 */

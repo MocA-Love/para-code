@@ -57,6 +57,7 @@ import { paradisBotGroupUnreadCount } from '../common/paradisBotGroups.js';
 import { onDidRequestParadisBotPageTab, paradisTakeRequestedBotPageTab } from './paradisBotPageTabRequest.js';
 import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
+import { IParadisBotChatPersona, paradisBotChatPersona } from './paradisBotChatPersona.js';
 import { IParadisBotPatrolPort, ParadisBotPatrolSection } from './paradisBotPatrol.js';
 import { ParadisBotTaskResultsTray } from './paradisBotTasks.js';
 import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
@@ -156,6 +157,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private botId: string | undefined;
 	/** 今のペインが見回りのペインか（見回りは受け箱を既読にしないので「読ませる」を出さない）。 */
 	private patrolPane = false;
+	/** 最後に渡した顔（{@link setPersona}）。 */
+	private personaKey: string | undefined;
 	/** 対象の解決の番号（古い解決の結果で上書きしない）。 */
 	private resolveSeq = 0;
 	private loadSeq = 0;
@@ -442,6 +445,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (!this.chatPane()) {
 			this.waitTimer.cancel();
 			this.agentChatService.setChatGuide(instanceId, undefined);
+			this.setPersona(instanceId, undefined);
 			return;
 		}
 		if (!this.agentChatService.isChatPinned(instanceId)) {
@@ -450,6 +454,16 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (!this.waitedLong && !this.waitTimer.isScheduled()) {
 			this.waitTimer.schedule();
 		}
+	}
+
+	/** チャット表示の顔と指示の見分けを渡す（顔の値が変わらなければ渡し直さない）。 */
+	private setPersona(instanceId: number, persona: IParadisBotChatPersona | undefined): void {
+		const key = persona === undefined ? undefined : `${instanceId}:${persona.key}`;
+		if (key === this.personaKey) {
+			return;
+		}
+		this.personaKey = key;
+		this.agentChatService.setChatPersona(instanceId, persona);
 	}
 
 	/** 今のペインが Bot の会話のペインか（見回りのペインではない）。 */
@@ -550,6 +564,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		// 会話が見つかるまでの案内（止まっている理由が変わったら出し直す）
 		if (this.chatPane()) {
 			this.agentChatService.setChatGuide(this.instanceId!, paradisBotChatGuide(bot, this.waitedLong));
+			// 吹き出しの顔をこの Bot の顔にする（様子が変わったら渡し直す）
+			this.setPersona(this.instanceId!, paradisBotChatPersona(bot));
 		}
 		// 項目・ファイル・設定のタブで下の会話が覆われている間は出さない。ターミナルを開いた後は「チャットに戻る」にする
 		const pinned = this.chatPane() && this.agentChatService.isChatPinned(this.instanceId!);

@@ -133,10 +133,17 @@ export function paradisBotStatusLine(bot: IParadisBotSummary): string {
 	if (bot.needsYou > 0) {
 		return localize('paradis.bots.status.needsYou', "{0} 件があなたの番", bot.needsYou);
 	}
+	// 会話のペインが無く前の会話が残っていれば、会話は眠っている。見回りのペインが動いていても、会話の状態を主にする
+	// （見回りのペインだけを見て「待機中」と出すと、話しかけられる会話が起きていると読める）
+	const asleep = bot.sleeping === true;
 	switch (bot.activity) {
 		case 'working': return localize('paradis.bots.status.working', "作業中");
-		case 'patrolling': return localize('paradis.bots.status.patrolling', "見回り中");
-		case 'idle': return paradisBotHaltLine(bot.halt) ?? localize('paradis.bots.status.idle', "待機中");
+		case 'patrolling': return asleep
+			? localize('paradis.bots.status.sleepingPatrolling', "眠っています・見回り中")
+			: localize('paradis.bots.status.patrolling', "見回り中");
+		case 'idle': return asleep
+			? localize('paradis.bots.status.sleeping', "眠っています")
+			: paradisBotHaltLine(bot.halt) ?? localize('paradis.bots.status.idle', "待機中");
 		// 前の会話を残して止まっている（再起動の後・何もしない 30 分の後）。話しかけると続きから起きる
 		default: return bot.sleeping === true
 			? localize('paradis.bots.status.sleeping', "眠っています")

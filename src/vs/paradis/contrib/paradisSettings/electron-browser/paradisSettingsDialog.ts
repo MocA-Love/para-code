@@ -510,9 +510,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: isMacintosh
 			// allow-any-unicode-next-line
-			? localize('paradis.settings.agentChatDescMac', "Claude Code / Codex が動いているターミナルタブを、⌘⇧J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。")
+			? localize('paradis.settings.agentChatDescMac', "Claude Code / Codex が動いているターミナルタブを、⌘⇧J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。試験中の機能の会話は、この設定に関わらずいつもチャット表示です。")
 			// allow-any-unicode-next-line
-			: localize('paradis.settings.agentChatDescOther', "Claude Code / Codex が動いているターミナルタブを、Ctrl+Shift+J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。"),
+			: localize('paradis.settings.agentChatDescOther', "Claude Code / Codex が動いているターミナルタブを、Ctrl+Shift+J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。試験中の機能の会話は、この設定に関わらずいつもチャット表示です。"),
 		keywords: 'agent chat claude codex terminal toggle cmd shift j',
 	},
 	{

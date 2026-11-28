@@ -52,7 +52,7 @@ import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgen
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
 import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisIsShellProcessName } from '../browser/paradisAgentChatInput.js';
 import { IParadisAgentChatDictation, IParadisAgentChatDictationTarget, ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
-import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js';
+import { IParadisAgentChatPersona, IParadisAgentChatService } from '../browser/paradisAgentChatService.js';
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
@@ -60,7 +60,7 @@ import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from '../../agentIde/
 import { ParadisAgentChatChoiceReturn } from '../browser/paradisAgentChatChoiceReturn.js';
 import { IParadisAgentChatCommand, IParadisAgentChatGuide, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory, paradisSendToAgentPane } from '../common/paradisAgentChatComposerLogic.js';
-import { ParadisAgentChatActiveTracker, paradisAgentChatActive } from '../common/paradisAgentChatActive.js';
+import { ParadisAgentChatActiveTracker, paradisAgentChatActive, paradisAgentChatClosedOnDisable, paradisAgentChatUsable, paradisAgentChatWatchedTokens } from '../common/paradisAgentChatActive.js';
 import { IParadisAgentChatHeaderState, ParadisAgentChatHeaderHides, ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
 import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
@@ -186,6 +186,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly guides = new Map<number, IParadisAgentChatGuide>();
 	private readonly _onDidChangeGuide = this._register(new Emitter<number>());
 	readonly onDidChangeGuide = this._onDidChangeGuide.event;
+	/** ペインの持ち主の顔と指示の見分け（{@link setChatPersona}。Bot の会話のペイン）。 */
+	private readonly personas = new Map<number, IParadisAgentChatPersona>();
+	private readonly _onDidChangePersona = this._register(new Emitter<number>());
+	readonly onDidChangePersona = this._onDidChangePersona.event;
 	/** 今チャット表示で見えているペイン（{@link isChatActive}）。 */
 	private readonly chatActive = this._register(new ParadisAgentChatActiveTracker());
 	readonly onDidChangeChatActive = this.chatActive.onDidChange;
@@ -262,7 +266,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			if (e.affectsConfiguration(PARADIS_AGENT_CHAT_ENABLED_SETTING)) {
 				this.enabled = this.configurationService.getValue<boolean>(PARADIS_AGENT_CHAT_ENABLED_SETTING) !== false;
 				if (!this.enabled) {
-					for (const instanceId of [...this.chatModeInstances]) {
+					// Bot の会話のペイン（控えたペイン）は、オフにしてもチャット表示のまま
+					for (const instanceId of paradisAgentChatClosedOnDisable(this.chatModeInstances, this.pinnedInstances)) {
 						this.setChatMode(instanceId, false, false);
 					}
 				}
@@ -310,7 +315,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	// ---- チャット表示の状態 --------------------------------------------------------------------
 
 	isChatMode(instanceId: number): boolean {
-		return this.enabled && this.chatModeInstances.has(instanceId);
+		return this.usable(instanceId) && this.chatModeInstances.has(instanceId);
+	}
+
+	/** そのペインでチャット表示を使えるか（設定がオフでも、控えたペインは使う。{@link paradisAgentChatUsable}）。 */
+	private usable(instanceId: number): boolean {
+		return paradisAgentChatUsable(this.enabled, this.pinnedInstances.has(instanceId));
 	}
 
 	isChatActive(instanceId: number): boolean {
@@ -323,11 +333,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	/** そのペインでエージェントの会話が確定していて、チャットに切り替えられるか（いつもチャット表示にするペインは、確定を待たない）。 */
 	isAvailable(instanceId: number): boolean {
-		return this.enabled && (this.pinnedInstances.has(instanceId) || this.insightsService.getForInstance(instanceId) !== undefined);
+		return this.pinnedInstances.has(instanceId) || (this.enabled && this.insightsService.getForInstance(instanceId) !== undefined);
 	}
 
 	pinChatMode(instanceId: number, moveFocus: boolean): void {
-		if (!this.enabled || this.terminalService.getInstanceFromId(instanceId) === undefined) {
+		// 設定がオフでも控える（Bot の会話はいつも吹き出しで見せる）
+		if (this.terminalService.getInstanceFromId(instanceId) === undefined) {
 			return;
 		}
 		this.pinnedInstances.add(instanceId);
@@ -335,7 +346,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	}
 
 	isChatPinned(instanceId: number): boolean {
-		return this.enabled && this.pinnedInstances.has(instanceId);
+		return this.pinnedInstances.has(instanceId);
 	}
 
 	setChatGuide(instanceId: number, guide: IParadisAgentChatGuide | undefined): void {
@@ -355,6 +366,24 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	chatGuide(instanceId: number): IParadisAgentChatGuide | undefined {
 		return this.guides.get(instanceId);
+	}
+
+	setChatPersona(instanceId: number, persona: IParadisAgentChatPersona | undefined): void {
+		if (this.personas.get(instanceId) === persona) {
+			return;
+		}
+		if (persona === undefined) {
+			this.personas.delete(instanceId);
+		} else if (this.terminalService.getInstanceFromId(instanceId) !== undefined) {
+			this.personas.set(instanceId, persona);
+		} else {
+			return;
+		}
+		this._onDidChangePersona.fire(instanceId);
+	}
+
+	chatPersona(instanceId: number): IParadisAgentChatPersona | undefined {
+		return this.personas.get(instanceId);
 	}
 
 	/** 帯の「ターミナルを開く」。選択画面が消えたらチャット表示へ戻す（フォーカスは、そのタブが前に出ているときだけ入力欄へ）。 */
@@ -451,7 +480,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	}
 
 	toggle(instanceId: number): void {
-		if (!this.enabled) {
+		if (!this.usable(instanceId)) {
 			return;
 		}
 		const chat = !this.chatModeInstances.has(instanceId);
@@ -464,7 +493,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	insertDraft(instanceId: number, text: string): ParadisAgentChatDraftInsert | false {
 		const token = this.tokenFor(instanceId);
 		return paradisInsertAgentChatDraft(text, {
-			chatShown: this.enabled && this.isChatMode(instanceId) && token !== undefined,
+			chatShown: this.isChatMode(instanceId) && token !== undefined,
 			insertIntoVisibleInput: value => {
 				for (const overlay of this.overlays) {
 					const result = overlay.currentInstanceId === instanceId ? overlay.insertDraft(value) : undefined;
@@ -499,6 +528,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		this.chatModeInstances.delete(instanceId);
 		this.pinnedInstances.delete(instanceId);
 		this.guides.delete(instanceId);
+		this.personas.delete(instanceId);
 		this.headerHides.release(instanceId);
 		this.instanceListeners.deleteAndDispose(instanceId);
 		this.updateChatActive();
@@ -611,8 +641,9 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	 * （開く前に出た質問のカードも、開いたときに出せるように。中継はセッションの確定したペインだけを扱う）。
 	 */
 	private renewWatch(): void {
-		const tokens = this.enabled ? this.paneTokenService.listPaneTokens().map(entry => entry.token) : [];
-		const visible = this.enabled ? [...this.visibleTokens()] : [];
+		// 設定がオフでも、控えたペイン（Bot の会話）は見張る（見張らないと吹き出しが更新されない）
+		const tokens = paradisAgentChatWatchedTokens(this.enabled, this.paneTokenService.listPaneTokens(), this.pinnedInstances);
+		const visible = [...this.visibleTokens()];
 		this.source.watchAgentChat(this.watcherId, tokens, visible).catch(error => this.logService.trace('[paradisAgentChat] watch failed', String(error)));
 	}
 

@@ -13,6 +13,17 @@ import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerL
 import { IParadisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
 import { IParadisAgentChatGuide } from '../common/paradisAgentChat.js';
 
+/**
+ * チャット表示に出す、ペインの持ち主（Bot など）の顔と、Para Code が送った指示の見分け（{@link IParadisAgentChatService.setChatPersona}）。
+ * agentChat は Bot を知らないので、Bot の側がこの形で渡す。
+ */
+export interface IParadisAgentChatPersona {
+	/** エージェントの発言の左の顔を描く（エージェントの種類のロゴの代わり）。様子が変わったら、持ち主が新しいものを渡し直す。 */
+	renderFace(parent: HTMLElement): void;
+	/** Para Code が送った指示なら、利用者の発言の吹き出しの代わりに出す短い印の文。利用者が打った文なら undefined。 */
+	promptLabel(text: string): string | undefined;
+}
+
 export const IParadisAgentChatService = createDecorator<IParadisAgentChatService>('paradisAgentChatService');
 
 /** デスクトップのチャット表示（実体は electron-browser の ParadisAgentChatController）。 */
@@ -32,13 +43,16 @@ export interface IParadisAgentChatService {
 	/**
 	 * そのターミナルを、いつもチャット表示にするペインとして控え、チャット表示にする（Bot の会話のペイン）。会話が見つかる前でも
 	 * 切り替え、見つかるまでは {@link setChatGuide} の案内を出す。利用者がターミナルを開いた後も控えは残り、もう一度呼ぶと
-	 * チャット表示へ戻る。フォーカスは `moveFocus` で、そのタブが前に出ているときだけ入力欄へ移す。チャット表示を切っているときは何もしない。
+	 * チャット表示へ戻る。フォーカスは `moveFocus` で、そのタブが前に出ているときだけ入力欄へ移す。チャット表示の設定（`paradis.agentChat.enabled`）を
+	 * オフにしていても控える（その設定は Bot でないペインにだけ効く）。
 	 */
 	pinChatMode(instanceId: number, moveFocus: boolean): void;
-	/** {@link pinChatMode} で控えたペインか（チャット表示を切っているときは false）。 */
+	/** {@link pinChatMode} で控えたペインか（チャット表示の設定に関わらない）。 */
 	isChatPinned(instanceId: number): boolean;
 	/** そのペインで会話が見つかるまで出す案内を差し替える（undefined で消す）。ペインが閉じたら忘れる。 */
 	setChatGuide(instanceId: number, guide: IParadisAgentChatGuide | undefined): void;
+	/** そのペインのチャット表示に出す顔と指示の見分けを差し替える（undefined で戻す）。ペインが閉じたら忘れる。 */
+	setChatPersona(instanceId: number, persona: IParadisAgentChatPersona | undefined): void;
 	/**
 	 * そのターミナルのチャット表示の入力欄へ、送らずに下書きを入れる（Bot のホームの提案の「始める」など）。書きかけの文は
 	 * 消さず、空行を挟んで後ろへ足す（`appended`）。見えていれば入力欄へフォーカスする。チャット表示でない・切っている・
