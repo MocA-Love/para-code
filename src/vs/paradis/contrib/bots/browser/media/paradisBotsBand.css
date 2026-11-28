@@ -222,8 +222,18 @@
 	font-size: var(--vscode-codiconFontSize-compact);
 }
 
-/* The dot face (ParaDot-like): a body in the bot's color (the ledger's color name, mapped to theme colors) with two eyes in the sidebar color. */
+/*
+	The dot face (ParaDot-like, paradisBotFace.ts): a body in the bot's color (the ledger's color name, mapped to theme
+	colors) with two eyes in the sidebar color, plus small props. Each state (data-state) is told apart by the eyes' shape
+	and a prop even with motion off; motion only adds to that resting look. Loops run on one clock offset per bot
+	(--paradis-bot-face-loop) so rows do not blink together and a redraw continues mid-loop; a transition (data-transition)
+	runs once from --paradis-bot-face-since. data-props picks which props show: attention (the "?" and the sweat drop,
+	for the 18px rows) or all (the 22px page header and the chat bubbles).
+*/
 .paradis-bot-face {
+	--paradis-bot-face-eye: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	--paradis-bot-face-loop: 0s;
+	--paradis-bot-face-since: 0s;
 	display: inline-block;
 	flex: none;
 	width: 18px;
@@ -234,7 +244,11 @@
 .paradis-bot-face[data-color="teal"] { color: var(--vscode-terminal-ansiCyan); }
 .paradis-bot-face[data-color="green"] { color: var(--vscode-charts-green); }
 .paradis-bot-face[data-color="amber"] { color: var(--vscode-charts-yellow); }
-.paradis-bot-face[data-color="pink"] { color: var(--vscode-terminal-ansiMagenta); }
+/*
+	Pink leans toward red: the themes' magenta (Houston, Dark Modern) sits next to charts-purple, and the two faces looked
+	the same. Mixing a little less than half of the bright red into the bright magenta keeps it pink in light, dark and Houston, between red and violet.
+*/
+.paradis-bot-face[data-color="pink"] { color: color-mix(in srgb, var(--vscode-terminal-ansiBrightRed) 45%, var(--vscode-terminal-ansiBrightMagenta)); }
 .paradis-bot-face[data-color="violet"] { color: var(--vscode-charts-purple); }
 .paradis-bot-face[data-color="red"] { color: var(--vscode-charts-red); }
 .paradis-bot-face[data-color="orange"] { color: var(--vscode-charts-orange); }
@@ -246,45 +260,219 @@
 	overflow: visible;
 }
 
+.paradis-bot-face-motion,
 .paradis-bot-face-body {
-	fill: currentColor;
-	stroke: currentColor;
-	stroke-linejoin: round;
 	transform-box: fill-box;
 	transform-origin: 50% 100%;
 }
 
+.paradis-bot-face-shape {
+	fill: currentColor;
+	stroke: currentColor;
+	stroke-linejoin: round;
+}
+
+.paradis-bot-face-eyes,
+.paradis-bot-face-eyes-event,
+.paradis-bot-face-eyes-open,
 .paradis-bot-face-eye {
-	fill: var(--vscode-sideBar-background, var(--vscode-editor-background));
 	transform-box: fill-box;
 	transform-origin: center;
-	animation: paradis-bot-face-blink 4.6s infinite;
+	transition: transform 0.3s;
+}
+
+.paradis-bot-face-eye {
+	fill: var(--paradis-bot-face-eye);
+	animation: paradis-bot-face-blink 4.6s var(--paradis-bot-face-loop) infinite;
+}
+
+.paradis-bot-face-eye-line {
+	fill: none;
+	stroke: var(--paradis-bot-face-eye);
+	stroke-width: 6;
+	stroke-linecap: round;
+}
+
+.paradis-bot-face-eyes-closed,
+.paradis-bot-face-eyes-flat,
+.paradis-bot-face-eyes-happy,
+.paradis-bot-face-prop {
+	display: none;
+}
+
+.paradis-bot-face-prop {
+	fill: none;
+	stroke: var(--vscode-descriptionForeground);
+	stroke-width: 5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+/* --- Each state's resting look (what stays with motion off) --- */
+
+/* Waiting: open eyes that blink, slow breath. */
+.paradis-bot-face[data-state="idle"] .paradis-bot-face-body {
+	animation: paradis-bot-face-breathe 3.2s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+/* Working: eyes look up and around, three dots above (22px and up). */
+.paradis-bot-face[data-state="work"] .paradis-bot-face-eyes {
+	transform: translate(7px, -7px);
+	animation: paradis-bot-face-look 2.4s var(--paradis-bot-face-loop) ease-in-out infinite;
 }
 
 .paradis-bot-face[data-state="work"] .paradis-bot-face-body {
-	animation: paradis-bot-face-wiggle 0.45s ease-in-out infinite;
+	animation: paradis-bot-face-breathe 2.4s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+.paradis-bot-face[data-state="work"][data-props="all"] .paradis-bot-face-dots {
+	display: inline;
+	fill: var(--vscode-descriptionForeground);
+	stroke: none;
+}
+
+.paradis-bot-face-dots > circle {
+	animation: paradis-bot-face-dot 1s calc(var(--paradis-bot-face-loop) + var(--paradis-bot-face-dot) * 0.2s) ease-in-out infinite;
+}
+
+/* Patrolling: eyes look left and right, a small nod, a magnifier (22px and up). */
+.paradis-bot-face[data-state="patrol"] .paradis-bot-face-eyes {
+	transform: translateX(-8px);
+	animation: paradis-bot-face-scan 1.4s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+.paradis-bot-face[data-state="patrol"] .paradis-bot-face-body {
+	animation: paradis-bot-face-nod 1.4s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+.paradis-bot-face[data-state="patrol"][data-props="all"] .paradis-bot-face-lens {
+	display: inline;
+	animation: paradis-bot-face-float 1.6s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+/* Your turn: open eyes, a hop every 4s, an amber "?" (shown at 18px too). */
+.paradis-bot-face[data-state="ask"] .paradis-bot-face-eye {
+	animation-duration: 3s;
 }
 
 .paradis-bot-face[data-state="ask"] .paradis-bot-face-body {
-	animation: paradis-bot-face-hop 1s ease-in-out infinite;
+	animation: paradis-bot-face-hop-sometimes 4s var(--paradis-bot-face-loop) ease-in-out infinite;
 }
 
-.paradis-bot-face[data-state="paused"] .paradis-bot-face-body {
-	opacity: 0.5;
+.paradis-bot-face[data-state="ask"]:not([data-props="none"]) .paradis-bot-face-ask {
+	display: inline;
 }
 
+.paradis-bot-face-ask > circle:first-child {
+	fill: var(--paradis-bot-face-eye);
+	stroke: none;
+}
+
+.paradis-bot-face-ask > path {
+	stroke: var(--vscode-charts-yellow);
+	stroke-width: 5.5;
+}
+
+.paradis-bot-face-ask > .paradis-bot-face-ask-dot {
+	fill: var(--vscode-charts-yellow);
+	stroke: none;
+}
+
+/* Needs you in the terminal: narrowed eyes and a sweat drop (shown at 18px too). Ended / not found: narrowed eyes, faded body. */
+.paradis-bot-face[data-state="need"] .paradis-bot-face-eyes-open,
+.paradis-bot-face[data-state="halt"] .paradis-bot-face-eyes-open {
+	transform: scaleY(0.45);
+}
+
+.paradis-bot-face[data-state="need"] .paradis-bot-face-eye,
+.paradis-bot-face[data-state="halt"] .paradis-bot-face-eye,
 .paradis-bot-face[data-state="paused"] .paradis-bot-face-eye {
 	animation: none;
 }
 
-@keyframes paradis-bot-face-wiggle {
-	0%, 100% { transform: translateX(-3%) rotate(-4deg); }
-	50% { transform: translateX(3%) rotate(4deg); }
+.paradis-bot-face[data-state="need"]:not([data-props="none"]) .paradis-bot-face-sweat {
+	display: inline;
+	fill: var(--vscode-charts-blue);
+	stroke: var(--paradis-bot-face-eye);
+	stroke-width: 3;
+	animation: paradis-bot-face-drip 1.4s var(--paradis-bot-face-loop) ease-in infinite;
 }
 
-@keyframes paradis-bot-face-hop {
-	0%, 100% { transform: translateY(0) scale(1.05, 0.92); }
-	40% { transform: translateY(-16%) scale(0.96, 1.06); }
+.paradis-bot-face[data-state="halt"] .paradis-bot-face-shape {
+	opacity: 0.6;
+}
+
+/* Asleep: closed eyes (a downward arc), a slow breath, "z z" (22px and up). */
+.paradis-bot-face[data-state="sleep"] .paradis-bot-face-eyes-open,
+.paradis-bot-face[data-state="off"] .paradis-bot-face-eyes-open {
+	display: none;
+}
+
+.paradis-bot-face[data-state="sleep"] .paradis-bot-face-eyes-closed,
+.paradis-bot-face[data-state="off"] .paradis-bot-face-eyes-flat {
+	display: inline;
+}
+
+.paradis-bot-face[data-state="sleep"] .paradis-bot-face-body {
+	animation: paradis-bot-face-breathe 4s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+.paradis-bot-face[data-state="sleep"][data-props="all"] .paradis-bot-face-zz {
+	display: inline;
+	stroke-width: 4;
+	animation: paradis-bot-face-float 2.4s var(--paradis-bot-face-loop) ease-in-out infinite;
+}
+
+/* Not started: flat eyes, still, faded. Paused: open eyes that do not blink, still, faded, two bars (22px and up). */
+.paradis-bot-face[data-state="off"] .paradis-bot-face-shape,
+.paradis-bot-face[data-state="paused"] .paradis-bot-face-shape {
+	opacity: 0.5;
+}
+
+.paradis-bot-face[data-state="paused"][data-props="all"] .paradis-bot-face-pause {
+	display: inline;
+	fill: var(--vscode-descriptionForeground);
+	stroke: none;
+}
+
+/* --- Transitions (run once; with motion off the next state shows at once) --- */
+
+.paradis-bot-face[data-transition="wake"] .paradis-bot-face-motion {
+	animation: paradis-bot-face-stretch 0.8s var(--paradis-bot-face-since) ease-out;
+}
+
+.paradis-bot-face[data-transition="wake"] .paradis-bot-face-eyes-event {
+	animation: paradis-bot-face-blink-quick 0.35s var(--paradis-bot-face-since) 2;
+}
+
+.paradis-bot-face[data-transition="done"] .paradis-bot-face-motion {
+	animation: paradis-bot-face-bounce 0.6s var(--paradis-bot-face-since) ease-out 2;
+}
+
+.paradis-bot-face[data-transition="done"] .paradis-bot-face-eyes-happy {
+	display: inline;
+	opacity: 0;
+	animation: paradis-bot-face-show 1.2s var(--paradis-bot-face-since);
+}
+
+.paradis-bot-face[data-transition="done"] .paradis-bot-face-eyes-open {
+	animation: paradis-bot-face-hide 1.2s var(--paradis-bot-face-since);
+}
+
+.paradis-bot-face[data-transition="done"][data-props="all"] .paradis-bot-face-check {
+	display: inline;
+	opacity: 0;
+	stroke: var(--vscode-charts-green);
+	stroke-width: 7;
+	animation: paradis-bot-face-show 1.2s var(--paradis-bot-face-since);
+}
+
+.paradis-bot-face[data-transition="shiver"] .paradis-bot-face-motion {
+	animation: paradis-bot-face-shiver 0.5s var(--paradis-bot-face-since) ease-in-out 3;
+}
+
+.paradis-bot-face[data-transition="hop"] .paradis-bot-face-motion {
+	animation: paradis-bot-face-hop 0.6s var(--paradis-bot-face-since) ease-in-out;
 }
 
 @keyframes paradis-bot-face-blink {
@@ -292,10 +480,146 @@
 	96% { transform: scaleY(0.08); }
 }
 
+@keyframes paradis-bot-face-blink-quick {
+	0%, 100% { transform: scaleY(1); }
+	50% { transform: scaleY(0.08); }
+}
+
+@keyframes paradis-bot-face-breathe {
+	0%, 100% { transform: scale(1); }
+	50% { transform: scale(1.03, 0.98); }
+}
+
+@keyframes paradis-bot-face-look {
+	0%, 100% { transform: translate(7px, -7px); }
+	33% { transform: translate(-7px, -7px); }
+	66% { transform: translate(0, -8px); }
+}
+
+@keyframes paradis-bot-face-scan {
+	0%, 100% { transform: translateX(-8px); }
+	50% { transform: translateX(8px); }
+}
+
+@keyframes paradis-bot-face-nod {
+	0%, 100% { transform: rotate(0); }
+	50% { transform: rotate(3deg); }
+}
+
+@keyframes paradis-bot-face-hop-sometimes {
+	0%, 15%, 100% { transform: translateY(0); }
+	5% { transform: translateY(-12%) scale(0.97, 1.04); }
+}
+
+@keyframes paradis-bot-face-hop {
+	0%, 100% { transform: translateY(0) scale(1.05, 0.92); }
+	40% { transform: translateY(-16%) scale(0.96, 1.06); }
+}
+
+@keyframes paradis-bot-face-dot {
+	0%, 100% { opacity: 0.35; }
+	50% { opacity: 1; }
+}
+
+@keyframes paradis-bot-face-float {
+	0%, 100% { transform: translateY(0); }
+	50% { transform: translateY(-4px); }
+}
+
+@keyframes paradis-bot-face-drip {
+	0% { transform: translateY(0); opacity: 1; }
+	80% { transform: translateY(8px); opacity: 1; }
+	100% { transform: translateY(10px); opacity: 0; }
+}
+
+@keyframes paradis-bot-face-stretch {
+	0%, 100% { transform: scale(1); }
+	45% { transform: scale(0.95, 1.1); }
+}
+
+@keyframes paradis-bot-face-bounce {
+	0%, 100% { transform: translateY(0); }
+	40% { transform: translateY(-12%); }
+}
+
+@keyframes paradis-bot-face-shiver {
+	0%, 100% { transform: translateX(0); }
+	25% { transform: translateX(-4%); }
+	75% { transform: translateX(4%); }
+}
+
+@keyframes paradis-bot-face-show {
+	0%, 100% { opacity: 1; }
+}
+
+@keyframes paradis-bot-face-hide {
+	0%, 100% { opacity: 0; }
+}
+
+/*
+	Motion off (the OS setting, or workbench.reduceMotion through .monaco-reduce-motion; also the still swatches): every
+	animation stops and the resting look above stays, so the eyes and the props still tell the state. Transitions do not
+	play (the happy eyes and the check only show while their animation runs).
+*/
+.paradis-bot-face[data-still="true"] *,
+.monaco-reduce-motion .paradis-bot-face * {
+	animation: none !important;
+	transition: none !important;
+}
+
+/*
+	With motion off the 18px faces (props="attention") lose the motion that told waiting, working and patrolling apart, so
+	they also show the state's prop (dots, magnifier, "z z", pause bars), a little larger. Both paths: the workbench class
+	(workbench.reduceMotion, and "auto" follows the OS) and the OS media query.
+*/
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+	display: inline;
+	transform: scale(1.5);
+	transform-box: fill-box;
+	transform-origin: 30% 70%;
+}
+
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+	fill: var(--vscode-descriptionForeground);
+	stroke: none;
+}
+
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz {
+	stroke-width: 7;
+}
+
 @media (prefers-reduced-motion: reduce) {
-	.paradis-bot-face-body,
-	.paradis-bot-face-eye {
+	.paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+	.paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+	.paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz,
+	.paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+		display: inline;
+		transform: scale(1.5);
+		transform-box: fill-box;
+		transform-origin: 30% 70%;
+	}
+
+	.paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+	.paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+		fill: var(--vscode-descriptionForeground);
+		stroke: none;
+	}
+
+	.paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+	.paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz {
+		stroke-width: 7;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.paradis-bot-face * {
 		animation: none !important;
+		transition: none !important;
 	}
 }
 
@@ -341,6 +665,92 @@
 .paradis-bot-create .pbcd-face > .paradis-bot-face {
 	width: 34px;
 	height: 34px;
+}
+
+/* The face picker under the name (Q690 option B): 8 colors and 6 shapes always shown, in a raised box. */
+.paradis-bot-create .pbcd-picker {
+	margin-top: var(--vscode-spacing-size100);
+	padding: var(--vscode-spacing-size100) var(--vscode-spacing-size120);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--vscode-cornerRadius-large, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-create .pbcd-pick-head {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	margin: var(--vscode-spacing-size100) 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-bot-create .pbcd-pick-head:first-child {
+	margin-top: 0;
+}
+
+.paradis-bot-create .pbcd-pick-title {
+	flex: none;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-create .pbcd-pick-value {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-create .pbcd-pick-reset {
+	flex: none;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font: inherit;
+	cursor: pointer;
+}
+
+.paradis-bot-create .pbcd-pick-reset:disabled {
+	color: var(--vscode-disabledForeground);
+	cursor: default;
+}
+
+.paradis-bot-create .pbcd-swatches {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size60);
+}
+
+.paradis-bot-create .pbcd-swatch {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	background: transparent;
+	cursor: pointer;
+}
+
+.paradis-bot-create .pbcd-swatch:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-bot-create .pbcd-swatch[aria-checked="true"] {
+	border-color: var(--vscode-focusBorder);
+	background: var(--vscode-paradis-overlay);
+}
+
+.paradis-bot-create .pbcd-swatch > .paradis-bot-face {
+	width: 20px;
+	height: 20px;
 }
 
 .monaco-workbench .paradis-bot-create .paradis-field.pbcd-role {
@@ -396,9 +806,12 @@
 .paradis-bots-group-faces {
 	display: flex;
 	flex: none;
+	/* The faces are stacked left over right (z-index set per face), kept inside this row. */
+	isolation: isolate;
 }
 
 .paradis-bots-group-faces > .paradis-bot-face {
+	position: relative;
 	width: 14px;
 	height: 14px;
 }

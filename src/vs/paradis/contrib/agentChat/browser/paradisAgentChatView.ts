@@ -249,6 +249,8 @@ export class ParadisAgentChatView extends Disposable {
 	private lastScrollTop = 0;
 	private visible = false;
 	private readonly renderScheduler = this._register(new RunOnceScheduler(() => this.render(), 0));
+	/** 発言の顔のうち、今の様子を表す 1 つ（いちばん新しいもの）を決め直す（描いた発言が画面へ付いた後に）。 */
+	private readonly personaFaceScheduler = this._register(new RunOnceScheduler(() => this.refreshPersonaFaces(false), 0));
 	private readonly ticker = this._register(new IntervalTimer());
 
 	constructor(
@@ -863,7 +865,7 @@ export class ParadisAgentChatView extends Disposable {
 	 * エージェントの発言の形（左に小さい丸い顔、右に吹き出し）。吹き出しの下（column）に画像と時刻を足す。
 	 * 生成中の返答も同じ形で描き、確定したときに形が跳ねないようにする。
 	 */
-	private renderAgentMessage(state: IParadisAgentChatState | undefined): { element: HTMLElement; column: HTMLElement; bubble: HTMLElement } {
+	private renderAgentMessage(state: IParadisAgentChatState | undefined, live = false): { element: HTMLElement; column: HTMLElement; bubble: HTMLElement } {
 		const element = $('.paradis-agent-chat-message.assistant');
 		const face = append(element, $('.paradis-agent-chat-face'));
 		face.setAttribute('aria-hidden', 'true');
@@ -872,7 +874,10 @@ export class ParadisAgentChatView extends Disposable {
 		const logo = state === undefined ? undefined : paradisAgentDescriptor(state.agent)?.logo;
 		if (persona !== undefined) {
 			face.classList.add(PERSONA_FACE_CLASS);
-			persona.renderFace(face);
+			// 生成中の返答は今の顔で描く（印のない顔を一瞬も見せない）。ほかはいったん静かな顔で描き、画面へ付いた後に今の顔を決め直す
+			face.dataset.current = String(live);
+			persona.renderFace(face, live);
+			this.personaFaceScheduler.schedule();
 			if (this.personaFaces.size >= PERSONA_FACE_PRUNE_SIZE) {
 				// 外れた発言の顔を溜めない
 				for (const old of [...this.personaFaces]) {
@@ -899,15 +904,33 @@ export class ParadisAgentChatView extends Disposable {
 
 	/** 持ち主の顔が変わった（様子が変わった）ら、描いてある顔だけを描き直す（発言の吹き出しは作り直さない）。 */
 	private redrawPersonaFaces(): void {
+		this.refreshPersonaFaces(true);
+	}
+
+	/**
+	 * いちばん新しい発言の顔（生成中の返答があればそれ）だけを今の顔にし、ほかは静かな顔にする。`all` が false なら、
+	 * 今の顔かどうかが変わった顔だけを描き直す。
+	 */
+	private refreshPersonaFaces(all: boolean): void {
 		const persona = this.persona();
+		let latest: HTMLElement | undefined;
 		for (const face of [...this.personaFaces]) {
 			if (!face.isConnected) {
 				// 描き直し・切り替えで外れた発言の顔は忘れる
 				this.personaFaces.delete(face);
 				continue;
 			}
-			clearNode(face);
-			persona?.renderFace(face);
+			if (latest === undefined || latest.compareDocumentPosition(face) & Node.DOCUMENT_POSITION_FOLLOWING) {
+				latest = face;
+			}
+		}
+		for (const face of this.personaFaces) {
+			const current = face === latest;
+			if (all || face.dataset.current !== String(current)) {
+				face.dataset.current = String(current);
+				clearNode(face);
+				persona?.renderFace(face, current);
+			}
 		}
 	}
 
@@ -1810,7 +1833,7 @@ export class ParadisAgentChatView extends Disposable {
 		const bubble = append(this.liveElement, $('.paradis-agent-chat-live'));
 		bubble.dataset.phase = live.phase;
 		if (live.phase === 'message' && live.text !== undefined && live.text.length > 0) {
-			const message = this.renderAgentMessage(state);
+			const message = this.renderAgentMessage(state, true);
 			bubble.classList.add('with-face');
 			bubble.appendChild(message.element);
 			const body = append(message.bubble, $('.paradis-agent-chat-markdown'));

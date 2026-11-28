@@ -12,7 +12,7 @@
 
 import { localize } from '../../../../nls.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape, paradisSanitizeBotName } from './paradisBots.js';
+import { PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape, paradisBotDefaultFace, paradisSanitizeBotName } from './paradisBots.js';
 import { IParadisBotSummary } from './paradisBotsApi.js';
 
 /** Bot の行を押したときに呼ぶコマンド（引数は Bot の id）。中身（Bot のページを開く）は後の PR が同じ id で登録する。 */
@@ -87,15 +87,17 @@ export function paradisBotsBandRows(bots: readonly IParadisBotSummary[], open: b
  * 一覧の高さ。開いているときは覚えた高さ（無ければ既定）を、行が少なければ行の分まで縮める。閉じているときは
  * ピン留めの行の分だけ（無ければ 0）。どちらもビューの高さの {@link PARADIS_BOTS_BAND_SIZES.maxViewShare} を超えない
  * （超える分は帯の中でスクロールする）。
+ * @param groupRowCount `rowCount` のうちグループの節の行（見出しを含む）。高さを覚えていなければ、既定の高さ（Bot の 4 行分）に
+ * この分を足す（Bot が 3 体を超えると、グループの行がスクロールの外に隠れて気づけなかった）。
  */
-export function paradisBotsBandListHeight(state: IParadisBotsBandState, rowCount: number, viewHeight: number): number {
+export function paradisBotsBandListHeight(state: IParadisBotsBandState, rowCount: number, viewHeight: number, groupRowCount = 0): number {
 	const sizes = PARADIS_BOTS_BAND_SIZES;
 	if (rowCount === 0) {
 		// 開いていれば空の案内の 1 行、閉じていれば一覧を出さない
 		return state.open ? sizes.row + sizes.listPadding : 0;
 	}
 	const content = rowCount * sizes.row + sizes.listPadding;
-	const wanted = state.open ? Math.min(content, state.listHeight ?? sizes.defaultList) : content;
+	const wanted = state.open ? Math.min(content, state.listHeight ?? sizes.defaultList + groupRowCount * sizes.row) : content;
 	const cap = Math.max(sizes.row + sizes.listPadding, Math.floor(viewHeight * sizes.maxViewShare));
 	return Math.max(0, Math.min(wanted, cap));
 }
@@ -153,20 +155,151 @@ export function paradisBotStatusLine(bot: IParadisBotSummary): string {
 
 // ---- 顔 -------------------------------------------------------------------------------------------
 
-/** 顔の動き。`ask` は跳ねる、`work` は揺れる、`paused` は止まって薄い。 */
-export type ParadisBotFaceState = 'idle' | 'work' | 'ask' | 'paused';
+/**
+ * 顔の様子（目の形・印・動き）。帯の文（{@link paradisBotStatusLine}）と同じく 停止中 → あなたの番 → 活動 → 止まっている理由 の順で決める。
+ * - `idle` 待機中: 開いた目でまばたきし、ゆっくり息をする
+ * - `work` 作業中（考え中も含む。台帳の `working` は 1 つ）: 目が右上・左上・上を見回し、上に 3 つの点
+ * - `patrol` 見回り中（定期実行の見回りも同じ顔）: 目が左右を見て、うなずく。虫めがねが浮く
+ * - `ask` あなたの番: 開いた目で 4 秒に 1 回跳ね、右上に「?」
+ * - `need` 操作が要ります: 細めた目と汗
+ * - `halt` 終了しました・見つかりません: 細めた目と薄い体
+ * - `sleep` 眠っています: 閉じた目（下向きの弧）でゆっくり息をし、「z z」が浮く
+ * - `off` 起動していません: 横の線の目で動かず、薄い体
+ * - `paused` 停止中: 開いた目でまばたきせず、薄い体と右上に一時停止の 2 本線
+ */
+export type ParadisBotFaceState = 'idle' | 'work' | 'patrol' | 'ask' | 'need' | 'halt' | 'sleep' | 'off' | 'paused';
+
+/**
+ * 様子が変わったときに 1 回だけ出すつなぎ。`wake` 起きる（まばたき 2 回と伸び）、`done` できた（閉じた目の笑顔で 2 回弾み、
+ * チェックが光る）、`shiver` 操作が要る・終了に入ったときに 3 回震える、`hop` あなたの番に入ったときにすぐ 1 回跳ねる。
+ */
+export type ParadisBotFaceTransition = 'wake' | 'done' | 'shiver' | 'hop';
+
+/** つなぎの長さ（ミリ秒。CSS のアニメーションの長さと同じ）。 */
+export const PARADIS_BOT_FACE_TRANSITION_MS: Readonly<Record<ParadisBotFaceTransition, number>> = Object.freeze({
+	wake: 800,
+	done: 1200,
+	shiver: 1500,
+	hop: 600,
+});
 
 export interface IParadisBotFace {
 	/** 体の形と色の名前（台帳の faceShape・faceColor。色の値は CSS がテーマの色から決める）。 */
 	readonly shape: ParadisBotFaceShape;
 	readonly color: ParadisBotFaceColor;
 	readonly state: ParadisBotFaceState;
+	/** Bot の id（まばたきの位相をずらし、様子の変わり目のつなぎを場所をまたいで揃える）。 */
+	readonly id?: string;
 }
 
-/** 顔の形と色は台帳のまま、動きは今の様子から決める。 */
-export function paradisBotFace(bot: Pick<IParadisBotSummary, 'faceShape' | 'faceColor' | 'paused' | 'needsYou' | 'activity'>): IParadisBotFace {
-	const state: ParadisBotFaceState = bot.paused ? 'paused' : bot.needsYou > 0 ? 'ask' : bot.activity === 'working' || bot.activity === 'patrolling' ? 'work' : 'idle';
-	return { shape: bot.faceShape, color: bot.faceColor, state };
+/** 台帳の様子から顔の様子を決める。 */
+export function paradisBotFaceState(bot: Pick<IParadisBotSummary, 'paused' | 'needsYou' | 'activity' | 'halt' | 'sleeping'>): ParadisBotFaceState {
+	if (bot.paused) {
+		return 'paused';
+	}
+	if (bot.needsYou > 0) {
+		return 'ask';
+	}
+	switch (bot.activity) {
+		case 'working': return 'work';
+		// 眠っている会話の横で見回りのペインが動いているときも、見回りの顔にする（文の方が「眠っています・見回り中」と両方を出す）
+		case 'patrolling': return 'patrol';
+		case 'idle':
+			if (bot.sleeping === true) {
+				return 'sleep';
+			}
+			switch (bot.halt?.kind) {
+				case 'needsUser': return 'need';
+				case 'exited':
+				case 'notFound': return 'halt';
+				default: return 'idle';
+			}
+		default: return bot.sleeping === true ? 'sleep' : 'off';
+	}
+}
+
+/** 前の様子から次の様子へ移るときのつなぎ（無ければ undefined。初めて描くときは前の様子が無いので出さない）。 */
+export function paradisBotFaceTransition(previous: ParadisBotFaceState | undefined, next: ParadisBotFaceState): ParadisBotFaceTransition | undefined {
+	if (previous === undefined || previous === next) {
+		return undefined;
+	}
+	if (next === 'need' || next === 'halt') {
+		return previous === 'need' || previous === 'halt' ? undefined : 'shiver';
+	}
+	if (previous === 'sleep' || previous === 'off') {
+		return next === 'idle' || next === 'work' || next === 'patrol' || next === 'ask' ? 'wake' : undefined;
+	}
+	if (previous === 'work' && next === 'idle') {
+		return 'done';
+	}
+	return next === 'ask' ? 'hop' : undefined;
+}
+
+/**
+ * Bot ごとの最後の様子と、そこへ移ったときのつなぎ。描くたびに {@link observe} を呼ぶと、様子が変わった最初の 1 回でつなぎを
+ * 始め、つなぎの長さの間は同じつなぎと経った時間を返す（描き直した顔・別の場所の顔も同じ所から続ける）。
+ */
+export class ParadisBotFaceTransitionLedger {
+	private readonly last = new Map<string, { readonly state: ParadisBotFaceState; readonly kind?: ParadisBotFaceTransition; readonly at: number }>();
+
+	observe(id: string, state: ParadisBotFaceState, now: number): { readonly kind: ParadisBotFaceTransition; readonly elapsedMs: number } | undefined {
+		let entry = this.last.get(id);
+		if (entry?.state !== state) {
+			entry = { state, kind: paradisBotFaceTransition(entry?.state, state), at: now };
+			this.last.set(id, entry);
+		}
+		const elapsedMs = now - entry.at;
+		return entry.kind !== undefined && elapsedMs < PARADIS_BOT_FACE_TRANSITION_MS[entry.kind] ? { kind: entry.kind, elapsedMs } : undefined;
+	}
+}
+
+/** Bot ごとの動きの位相（0〜3.9 秒）。帯に並んだ Bot が一斉にまばたきしないよう、id から決めてずらす（ParaDot と同じ幅）。 */
+export function paradisBotFacePhaseSeconds(id: string): number {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < id.length; index++) {
+		hash = Math.imul(hash ^ id.charCodeAt(index), 0x01000193) >>> 0;
+	}
+	return (hash % 40) / 10;
+}
+
+/** 顔の形と色は台帳のまま、様子は今の台帳から決める。 */
+export function paradisBotFace(bot: Pick<IParadisBotSummary, 'id' | 'faceShape' | 'faceColor' | 'paused' | 'needsYou' | 'activity' | 'halt' | 'sleeping'>): IParadisBotFace {
+	return { shape: bot.faceShape, color: bot.faceColor, state: paradisBotFaceState(bot), id: bot.id };
+}
+
+/** 顔の色の日本語の名前（色だけで見分けないよう、選ぶ欄の文字・ホバー・読み上げに出す）。 */
+export function paradisBotFaceColorLabel(color: ParadisBotFaceColor): string {
+	switch (color) {
+		case 'blue': return localize('paradis.bots.faceColor.blue', "青");
+		case 'teal': return localize('paradis.bots.faceColor.teal', "青緑");
+		case 'green': return localize('paradis.bots.faceColor.green', "緑");
+		case 'amber': return localize('paradis.bots.faceColor.amber', "山吹");
+		case 'pink': return localize('paradis.bots.faceColor.pink', "桃");
+		case 'violet': return localize('paradis.bots.faceColor.violet', "紫");
+		case 'red': return localize('paradis.bots.faceColor.red', "赤");
+		case 'orange': return localize('paradis.bots.faceColor.orange', "橙");
+	}
+}
+
+/** 顔の形の日本語の名前。 */
+export function paradisBotFaceShapeLabel(shape: ParadisBotFaceShape): string {
+	switch (shape) {
+		case 'circle': return localize('paradis.bots.faceShape.circle', "丸");
+		case 'squircle': return localize('paradis.bots.faceShape.squircle', "角丸");
+		case 'hex': return localize('paradis.bots.faceShape.hex', "六角");
+		case 'blob': return localize('paradis.bots.faceShape.blob', "もち");
+		case 'drop': return localize('paradis.bots.faceShape.drop', "しずく");
+		case 'penta': return localize('paradis.bots.faceShape.penta', "五角");
+	}
+}
+
+/**
+ * 作成の画面の顔。手で選んだ色・形はそのまま使い、選んでいない方は名前から決まる（{@link paradisBotDefaultFace}）。名前が
+ * まだ空なら `seed`（「新」）から決める。
+ */
+export function paradisBotCreateFace(name: string, seed: string, picked: { readonly color?: ParadisBotFaceColor; readonly shape?: ParadisBotFaceShape }): { readonly faceColor: ParadisBotFaceColor; readonly faceShape: ParadisBotFaceShape } {
+	const fallback = paradisBotDefaultFace(name.trim() || seed);
+	return { faceColor: picked.color ?? fallback.faceColor, faceShape: picked.shape ?? fallback.faceShape };
 }
 
 // ---- 作成 -----------------------------------------------------------------------------------------

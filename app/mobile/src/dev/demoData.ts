@@ -58,8 +58,8 @@ function demoWorkspace(): WorkspaceState {
 			terminal(8, 'demo-notes', '調査メモ', 'ws-docs'),
 			{ ...terminal(9, 'demo-bot-release', 'リリース係', 'ws-para'), botId: 'bot-release' },
 		],
-		// Bot の節（bots.page.v1）と要対応の台帳（human-ask.v1）を見るための広告だけ
-		capabilities: ['bots.page.v1', 'human-ask.v1'],
+		// Bot の節（bots.page.v1）と様子（bots.status.v1）、要対応の台帳（human-ask.v1）を見るための広告だけ
+		capabilities: ['bots.page.v1', 'bots.status.v1', 'human-ask.v1'],
 		bots: DEMO_BOTS,
 		battery: { level: 82, charging: true },
 		pcName: 'MacBook Pro',
@@ -184,7 +184,10 @@ export function installDemoData(): void {
 const DEMO_BOTS: MobileBot[] = [
 	{ id: 'bot-release', name: 'リリース係', agent: 'claude', modelId: 'opus', permissionId: 'default', faceColor: 'blue', faceShape: 'drop', paused: false, pinned: true, needsYou: 1, openItems: 4, openSuggestions: 1, activity: 'idle', lastActivityAt: 0 },
 	{ id: 'bot-review', name: 'レビュー係', agent: 'codex', faceColor: 'teal', faceShape: 'squircle', paused: false, pinned: false, needsYou: 1, openItems: 2, openSuggestions: 0, activity: 'working', lastActivityAt: 0 },
-	{ id: 'bot-patrol', name: '見回り係', agent: 'claude', faceColor: 'amber', faceShape: 'hex', paused: false, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'patrolling', lastActivityAt: 0 },
+	{ id: 'bot-patrol', name: '見回り係', agent: 'claude', faceColor: 'amber', faceShape: 'hex', paused: false, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'patrolling', sleeping: true, lastActivityAt: 0 },
+	{ id: 'bot-sleep', name: '整理係', agent: 'claude', faceColor: 'green', faceShape: 'circle', paused: false, pinned: false, needsYou: 0, openItems: 1, openSuggestions: 0, activity: 'stopped', sleeping: true, lastActivityAt: 0 },
+	{ id: 'bot-exited', name: '計測係', agent: 'codex', faceColor: 'pink', faceShape: 'penta', paused: false, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'idle', halt: { kind: 'exited', exitCode: 1 }, lastActivityAt: 0 },
+	{ id: 'bot-off', name: '集計係', agent: 'claude', faceColor: 'orange', faceShape: 'drop', paused: false, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'stopped', lastActivityAt: 0 },
 	{ id: 'bot-translate', name: '翻訳係', agent: 'claude', faceColor: 'violet', faceShape: 'blob', paused: true, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'stopped', lastActivityAt: 0 },
 ];
 

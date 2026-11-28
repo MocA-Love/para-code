@@ -22,11 +22,12 @@ export interface IParadisBotChatPersona extends IParadisAgentChatPersona {
 }
 
 /** その Bot の顔（帯と同じ部品。様子で動く）と、Para Code が送った指示の印。 */
-export function paradisBotChatPersona(bot: Pick<IParadisBotSummary, 'faceShape' | 'faceColor' | 'paused' | 'needsYou' | 'activity'>): IParadisBotChatPersona {
+export function paradisBotChatPersona(bot: Pick<IParadisBotSummary, 'id' | 'faceShape' | 'faceColor' | 'paused' | 'needsYou' | 'activity' | 'halt' | 'sleeping'>): IParadisBotChatPersona {
 	const face = paradisBotFace(bot);
 	return {
 		key: `${face.shape}/${face.color}/${face.state}`,
-		renderFace: parent => { renderParadisBotFace(parent, face); },
+		// 今の顔だけ様子で動かし小道具を出す。過去の発言の顔は形と色だけの静かな顔（並んだ顔が一斉に動かず、負荷も減る）
+		renderFace: (parent, current) => { renderParadisBotFace(parent, current ? { ...face, props: 'all' } : { shape: face.shape, color: face.color, props: 'none', still: true }); },
 		promptLabel: text => {
 			const label = paradisBotPromptLabel(text);
 			return label === 'greeting' ? localize('paradis.botChat.greetingPrompt', "Bot を作ったので、自己紹介を頼みました") : undefined;

@@ -131,7 +131,7 @@ suite('ParadisAgentChatView', () => {
 		}]);
 		const before = [...container.querySelectorAll('.paradis-agent-chat-face')].map(face => face.className);
 		const persona = (state: string): IParadisAgentChatPersona => ({
-			renderFace: parent => { parent.appendChild(mainWindow.document.createElement('i')).dataset.state = state; },
+			renderFace: (parent, current) => { parent.appendChild(mainWindow.document.createElement('i')).dataset.state = current ? state : 'still'; },
 			promptLabel: text => text === 'SENT BY PARA CODE' ? 'Bot に挨拶を頼みました' : undefined,
 		});
 		host.persona = persona('idle');
@@ -151,6 +151,24 @@ suite('ParadisAgentChatView', () => {
 			notes: ['Bot に挨拶を頼みました'],
 			user: ['よろしく'],
 		});
+	});
+
+	test('only the newest message\'s face shows the owner\'s current state; older faces are drawn still', async () => {
+		const { host, container } = await createView([{
+			token: 'pane', agent: 'claude', epoch: 'e', rev: 3, reset: true, busy: false, live: null, interaction: null,
+			messages: [
+				{ rev: 0, role: 'assistant', kind: 'text', text: 'one' },
+				{ rev: 1, role: 'user', kind: 'text', text: 'ok' },
+				{ rev: 2, role: 'assistant', kind: 'text', text: 'two' },
+				{ rev: 3, role: 'assistant', kind: 'text', text: 'three' },
+			],
+		}]);
+		const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+		host.persona = { renderFace: (parent, current) => { parent.appendChild(mainWindow.document.createElement('i')).dataset.state = current ? 'work' : 'still'; }, promptLabel: () => undefined };
+		host.personaChanged.fire(1);
+		await settle();
+		await settle();
+		assert.deepStrictEqual([...container.querySelectorAll('.paradis-agent-chat-face-persona > i')].map(face => (face as HTMLElement).dataset.state), ['still', 'still', 'work']);
 	});
 
 	test('shows the OpenCode identity in its own conversation header', async () => {

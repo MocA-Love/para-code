@@ -336,12 +336,18 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return this.pinnedInstances.has(instanceId) || (this.enabled && this.insightsService.getForInstance(instanceId) !== undefined);
 	}
 
-	pinChatMode(instanceId: number, moveFocus: boolean): void {
+	pinChatMode(instanceId: number, moveFocus: boolean, show = true): void {
 		// 設定がオフでも控える（Bot の会話はいつも吹き出しで見せる）
 		if (this.terminalService.getInstanceFromId(instanceId) === undefined) {
 			return;
 		}
 		this.pinnedInstances.add(instanceId);
+		if (!show) {
+			// 控えるだけ（切り替えの口は使えるようにし、表示はターミナルのまま）
+			this.updateAll();
+			this.watchScheduler.schedule();
+			return;
+		}
 		this.setChatMode(instanceId, true, moveFocus && this.isActiveInstance(instanceId));
 	}
 

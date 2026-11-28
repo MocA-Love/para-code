@@ -37,6 +37,9 @@ export function paradisMobileBotOf(bot: IParadisBotSummary): IParadisMobileBot {
 		openSuggestions: bot.openSuggestions,
 		activity: bot.activity,
 		lastActivityAt: bot.lastActivityAt,
+		// 帯の文と顔の元（bots.status.v1）。帯と同じ判定をアプリでもできるよう、値をそのまま写す
+		...(bot.sleeping === true ? { sleeping: true } : {}),
+		...(bot.halt !== undefined ? { halt: bot.halt } : {}),
 	};
 }
 

@@ -234,8 +234,9 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 
 	/** 一覧の高さを入れる。帯の高さが変わったら true。 */
 	private applyHeight(): boolean {
-		const rows = paradisBotsBandRows(this.bots, this.state.open).length + this.groupRowCount();
-		const listHeight = paradisBotsBandListHeight(this.state, rows, this.viewHeight);
+		const groupRows = this.groupRowCount();
+		const rows = paradisBotsBandRows(this.bots, this.state.open).length + groupRows;
+		const listHeight = paradisBotsBandListHeight(this.state, rows, this.viewHeight, groupRows);
 		this.list.style.height = `${listHeight}px`;
 		this.list.classList.toggle('hidden', listHeight === 0);
 		this.sash.state = this.state.open && rows > 0 ? SashState.Enabled : SashState.Disabled;
@@ -508,8 +509,10 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		row.tabIndex = first ? 0 : -1;
 		row.dataset.groupId = group.id;
 		const faces = DOM.append(row, $('span.paradis-bots-group-faces'));
-		for (const bot of members.slice(0, 3)) {
-			renderParadisBotFace(faces, paradisBotFace(bot));
+		const shown = members.slice(0, 3);
+		for (const [index, bot] of shown.entries()) {
+			// 左の顔を上に重ねる（右上の印が右隣の顔に隠れないように）
+			renderParadisBotFace(faces, paradisBotFace(bot)).style.zIndex = String(shown.length - index);
 		}
 		const names = members.map(bot => bot.name).join('・');
 		DOM.append(row, $('span.paradis-bots-row-name')).textContent = group.name;

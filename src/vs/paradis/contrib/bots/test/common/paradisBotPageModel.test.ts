@@ -10,7 +10,8 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText } from '../../common/paradisBotPageModel.js';
+import type { IParadisBotSummary } from '../../common/paradisBotsApi.js';
+import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotLaunchShowsChat, paradisBotStripHeader, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -83,6 +84,32 @@ suite('Paradis bots page', () => {
 		]);
 	});
 
+	test('見出しの状態: 台帳で利用者を待っている（操作が要ります・あなたの番）なら、見出しの値が無くても待ちの文として目立たせる（狭い幅でも最後まで残す）', () => {
+		const bot = (fields: Partial<IParadisBotSummary>) => ({ id: 'b', name: 'A', agent: 'claude', needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'idle', lastActivityAt: 0, ...fields }) as IParadisBotSummary;
+		const strip = (fields: Partial<IParadisBotSummary>, header?: Parameters<typeof paradisBotStripHeader>[1]) => {
+			const value = paradisBotStripHeader(bot(fields), header);
+			return `${value.status}${value.attention ? '（待ち）' : ''}${value.busy ? '（動いている）' : ''}`;
+		};
+		assert.deepStrictEqual([
+			strip({}),
+			strip({ halt: { kind: 'needsUser' } }),
+			strip({ needsYou: 2 }),
+			strip({ activity: 'working' }),
+			// 見出しの値があればそれを使う
+			strip({ halt: { kind: 'needsUser' } }, { status: '許可を待っています', attention: true, busy: false, model: '' }),
+			strip({ needsYou: 1 }, { status: '考えています', attention: false, busy: true, model: '' }),
+			strip({ halt: { kind: 'needsUser' } }, { status: '', attention: false, busy: false, model: '' }),
+		], [
+			'待機中',
+			'操作が要ります（待ち）',
+			'2 件があなたの番（待ち）',
+			'作業中',
+			'許可を待っています（待ち）',
+			'考えています（動いている）',
+			'操作が要ります（待ち）',
+		]);
+	});
+
 	test('会話が見つかるまでの案内: 止まっている理由があるか、しばらく見つからなければ「ターミナルを開く」の帯を出す', () => {
 		const guide = (halt: Parameters<typeof paradisBotChatGuide>[0]['halt'], waitedLong = false, agent: 'claude' | 'codex' | 'antigravity' = 'codex') => {
 			const value = paradisBotChatGuide({ agent, halt }, waitedLong);
@@ -106,5 +133,33 @@ suite('Paradis bots page', () => {
 			'まだ会話はありません / Codex が見つかりません / ターミナルで確かめてください',
 			'まだ会話はありません / エージェントは終了しました / ターミナルで確かめてください',
 		]);
+	});
+	test('会話の表示は Bot ごとに覚える（ターミナルを選んだ Bot だけ。吹き出しに戻した Bot・もういない Bot は消し、壊れた値は既定に戻す）', () => {
+		const one = paradisBotViewsStringify(new Map(), 'release', 'terminal', ['release', 'review']);
+		const two = paradisBotViewsStringify(paradisBotViewsParse(one), 'review', 'terminal', ['release', 'review']);
+		const back = paradisBotViewsStringify(paradisBotViewsParse(two), 'release', 'chat', ['release', 'review']);
+		const gone = paradisBotViewsStringify(paradisBotViewsParse(two), 'ci', 'chat', ['ci']);
+		assert.deepStrictEqual({
+			one, two, back, gone,
+			read: [...paradisBotViewsParse(two)],
+			broken: [paradisBotViewsParse('{'), paradisBotViewsParse('[1]'), paradisBotViewsParse('{"a":"chat","b":"x","c":"terminal"}'), paradisBotViewsParse(undefined)].map(views => [...views]),
+		}, {
+			one: '{"release":"terminal"}',
+			two: '{"release":"terminal","review":"terminal"}',
+			back: '{"review":"terminal"}',
+			gone: undefined,
+			read: [['release', 'terminal'], ['review', 'terminal']],
+			broken: [[], [], [['c', 'terminal']], []],
+		});
+	});
+	test('起こした Bot のペインは、ターミナルを選んだ Bot だけターミナルで開き、吹き出しを選んだ Bot・選んでいない Bot・壊れた値は吹き出し', () => {
+		const stored = paradisBotViewsStringify(new Map(), 'release', 'terminal', ['release', 'review']);
+		assert.deepStrictEqual([
+			paradisBotLaunchShowsChat(stored, 'release'),
+			paradisBotLaunchShowsChat(paradisBotViewsStringify(paradisBotViewsParse(stored), 'release', 'chat', ['release']), 'release'),
+			paradisBotLaunchShowsChat(stored, 'review'),
+			paradisBotLaunchShowsChat(undefined, 'release'),
+			paradisBotLaunchShowsChat('{', 'release'),
+		], [false, true, true, true, true]);
 	});
 });

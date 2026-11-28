@@ -24,6 +24,7 @@ import { IParadisInboxClampSize } from '../../../notificationInbox/browser/parad
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
+import { InMemoryStorageService, IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentChatPersona, IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisAgentChatGuide } from '../../../agentChat/common/paradisAgentChat.js';
@@ -33,6 +34,7 @@ import { paradisRequestBotPageTab } from '../../browser/paradisBotPageTabRequest
 import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
+import { PARADIS_BOT_VIEWS_STORAGE_KEY } from '../../common/paradisBotPageModel.js';
 import { PARADIS_BOT_GREETING_PROMPT } from '../../common/paradisBotTools.js';
 
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
@@ -63,7 +65,7 @@ suite('Paradis bots page overlay', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(items: IParadisBotItem[] = ITEMS, entries: IParadisHumanAskEntry[] = [ASK], measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined, patrol?: IParadisBotPatrolPort) {
+	function setup(items: IParadisBotItem[] = ITEMS, entries: IParadisHumanAskEntry[] = [ASK], measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined, patrol?: IParadisBotPatrolPort, storage?: IStorageService) {
 		let header: { status: string; attention: boolean; busy: boolean; model: string; agent: undefined; agentName: string } | undefined;
 		const disposables = store.add(new DisposableStore());
 		const instantiation = disposables.add(new TestInstantiationService());
@@ -125,8 +127,9 @@ suite('Paradis bots page overlay', () => {
 		const guides = new Map<number, IParadisAgentChatGuide | undefined>();
 		const personas = new Map<number, IParadisAgentChatPersona | undefined>();
 		instantiation.stub(IParadisAgentChatService, {
-			pinChatMode: (id: number, moveFocus: boolean) => { pinned.add(id); chatCalls.push(`pin ${id} ${moveFocus}`); },
+			pinChatMode: (id: number, moveFocus: boolean, show?: boolean) => { pinned.add(id); chatCalls.push(`pin ${id} ${moveFocus}${show === false ? ' (terminal)' : ''}`); },
 			isChatPinned: (id: number) => pinned.has(id),
+			isChatMode: (id: number) => chatActive.has(id),
 			setChatGuide: (id: number, guide: IParadisAgentChatGuide | undefined) => guides.set(id, guide),
 			setChatPersona: (id: number, persona: IParadisAgentChatPersona | undefined) => { personas.set(id, persona); },
 			insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; },
@@ -182,6 +185,7 @@ suite('Paradis bots page overlay', () => {
 			return patrolPanes.has(instanceId);
 		};
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId), isPatrolPane };
+		instantiation.stub(IStorageService, storage ?? disposables.add(new InMemoryStorageService()));
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
 		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, chatCalls, guides, personas, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
@@ -206,7 +210,8 @@ suite('Paradis bots page overlay', () => {
 		page.setInstance(1);
 		await settle();
 		const button = () => container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
-		const look = () => [button().hidden, button().disabled, button().textContent];
+		// 狭い幅では封筒と数だけになるので、文は読み上げの名前で見る
+		const look = () => [button().hidden, button().disabled, button().getAttribute('aria-label'), button().getElementsByClassName('paradis-bot-page-inbox-count')[0].textContent];
 		const idle = look();
 		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
 		button().click();
@@ -223,10 +228,10 @@ suite('Paradis bots page overlay', () => {
 		paradisRequestBotPageTab('release', 'chat');
 		const selectedAfterRequest = (container.getElementsByClassName('paradis-bot-page-tab selected')[0] as HTMLElement).textContent;
 		assert.deepStrictEqual({ idle, selectedAfterAsk, sent: calls.filter(call => call.startsWith('message')), working, empty, selectedAfterRequest }, {
-			idle: [false, false, '受け箱に 2 通あります。読ませる'],
+			idle: [false, false, '受け箱に 2 通あります。読ませる', '2'],
 			selectedAfterAsk: '会話',
 			sent: ['message 1 受け箱（bot_inbox）を見て、ほかの Bot から届いた伝言に対応してください。'],
-			working: [false, true, '受け箱に 2 通'],
+			working: [false, true, '受け箱に 2 通', '2'],
 			empty: true,
 			selectedAfterRequest: '会話',
 		});
@@ -240,7 +245,7 @@ suite('Paradis bots page overlay', () => {
 		const button = container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
 		button.click();
 		await settle();
-		assert.deepStrictEqual([button.hidden, button.disabled, button.textContent, calls.filter(call => call.startsWith('message'))], [false, true, '受け箱に 2 通', []]);
+		assert.deepStrictEqual([button.hidden, button.disabled, button.getAttribute('aria-label'), calls.filter(call => call.startsWith('message'))], [false, true, '受け箱に 2 通', []]);
 	});
 
 	test('見回りのペインかを引けなくても、帯は出し続ける（会話のペインとみなす）', async () => {
@@ -564,7 +569,7 @@ suite('Paradis bots page overlay', () => {
 			status: container.getElementsByClassName('paradis-bot-page-status')[0]?.textContent,
 			attention: container.getElementsByClassName('paradis-bot-page-status')[0]?.classList.contains('attention'),
 			model: (container.getElementsByClassName('paradis-bot-page-model')[0] as HTMLElement | undefined)?.hidden ? '' : container.getElementsByClassName('paradis-bot-page-model')[0]?.textContent,
-			terminal: !(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).hidden,
+			view: !(container.getElementsByClassName('paradis-bot-page-view')[0] as HTMLElement).hidden,
 		});
 		page.setInstance(1);
 		await settle();
@@ -572,18 +577,18 @@ suite('Paradis bots page overlay', () => {
 		const terminalView = strip();
 		setChatActive(1, true);
 		const chatView = strip();
-		// 項目のタブで下の会話が覆われている間は、戻るボタンを出さない
+		// 切り替えは項目のタブでも出したまま
 		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
-		const itemsTab = strip().terminal;
+		const itemsTab = strip().view;
 		(container.getElementsByClassName('paradis-bot-page-tab')[0] as HTMLElement).click();
-		// 戻るボタンはタブ列の左（帯が収まらない幅では右端から切れるため）
-		const beforeTabs = (container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).nextElementSibling?.classList.contains('paradis-bot-page-tabs');
+		// 切り替えはタブ列の左（帯が収まらない幅では右端から切れるため）
+		const beforeTabs = (container.getElementsByClassName('paradis-bot-page-view')[0] as HTMLElement).nextElementSibling?.classList.contains('paradis-bot-page-tabs');
 		// 会話が替わった（チャット表示の側が畳みを戻した）ときも、見出しの知らせで畳み直す
 		setHeader({ status: '入力を待っています', attention: false, busy: false, model: 'claude-opus-4-5 · high', agent: undefined, agentName: 'Claude Code' });
 		// 見出しの値が変わらなくても、ペインのトークンが替われば Bot の照らし直しで畳み直す
 		changed.fire();
 		await settle();
-		(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).click();
+		(container.getElementsByClassName('paradis-bot-page-view-option')[1] as HTMLElement).click();
 		setChatActive(1, false);
 		const backToTerminal = strip();
 		setChatActive(1, true);
@@ -591,19 +596,19 @@ suite('Paradis bots page overlay', () => {
 		await settle();
 		page.dispose();
 		assert.deepStrictEqual({ terminalView, chatView, itemsTab, beforeTabs, backToTerminal, calls: headerCalls }, {
-			itemsTab: false,
+			itemsTab: true,
 			beforeTabs: true,
-			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: true },
-			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', terminal: true },
-			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', terminal: true },
+			terminalView: { status: '1 件があなたの番', attention: true, model: '', view: true },
+			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', view: true },
+			backToTerminal: { status: '1 件があなたの番', attention: true, model: '', view: true },
 			calls: ['hide 1 #1', 'hide 1 #2', 'unhide 1 #1', 'hide 1 #3', 'unhide 1 #2', 'terminal 1', 'unhide 1 #3', 'hide 1 #4', 'unhide 1 #4'],
 		});
 	});
 
-	test('Bot の会話のペインはいつもチャット表示にし（ペインごとに 1 回）、会話が見つかるまで止まっている理由の案内を出す。ターミナルを開いた後は帯のボタンでチャットへ戻る。見回りのペインは控えない', async () => {
-		const { container, page, chatCalls, guides, bots, botsChanged, setChatActive, patrolPanes, panes, changed } = setup();
-		const button = () => container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLButtonElement;
-		const look = () => [button().hidden, button().getAttribute('aria-label')];
+	test('Bot の会話のペインはいつもチャット表示にし（ペインごとに 1 回）、会話が見つかるまで止まっている理由の案内を出す。見出しの 2 つのボタンで切り替え、押されている側が今の表示。見回りのペインは控えない', async () => {
+		const { container, page, chatCalls, headerCalls, guides, bots, botsChanged, setChatActive, patrolPanes, panes, changed } = setup();
+		const option = (index: number) => container.getElementsByClassName('paradis-bot-page-view-option')[index] as HTMLButtonElement;
+		const look = () => [(container.getElementsByClassName('paradis-bot-page-view')[0] as HTMLElement).hidden, ...[0, 1].filter(index => option(index).getAttribute('aria-checked') === 'true').map(index => option(index).getAttribute('aria-label'))];
 		page.setInstance(1);
 		await settle();
 		const waking = guides.get(1);
@@ -612,10 +617,10 @@ suite('Paradis bots page overlay', () => {
 		await settle();
 		setChatActive(1, true);
 		const chatButton = look();
-		button().click();
+		option(1).click();
 		setChatActive(1, false);
 		const terminalButton = look();
-		button().click();
+		option(0).click();
 		bots[0] = { ...bots[0], halt: { kind: 'needsUser' } };
 		botsChanged.fire();
 		const needsUser = guides.get(1);
@@ -633,10 +638,11 @@ suite('Paradis bots page overlay', () => {
 		panes.delete(1);
 		changed.fire();
 		await settle();
-		assert.deepStrictEqual({ waking, chatButton, terminalButton, needsUser, notFound, patrolGuide: guides.get(2), cleared: guides.get(1), calls: chatCalls }, {
+		assert.deepStrictEqual({ waking, chatButton, terminalButton, needsUser, notFound, patrolGuide: guides.get(2), cleared: guides.get(1), calls: chatCalls, terminal: headerCalls.filter(call => call.startsWith('terminal')) }, {
 			waking: { notice: '起こしています…', sendable: true },
-			chatButton: [false, 'ターミナルを開く'],
-			terminalButton: [false, 'チャットに戻る'],
+			chatButton: [false, '吹き出し'],
+			terminalButton: [false, 'ターミナル'],
+			terminal: ['terminal 1'],
 			needsUser: { notice: 'まだ会話はありません', band: { title: 'ターミナルで操作が要ります', detail: '初回設定・ログイン・許可の画面で止まっています' } },
 			notFound: 'Claude Code が見つかりません',
 			patrolGuide: undefined,
@@ -645,16 +651,63 @@ suite('Paradis bots page overlay', () => {
 		});
 	});
 
+	test('見出しのボタンで選んだ表示だけを Bot ごとに覚え、開き直し（再起動）でもその表示で控える。帯の「ターミナルを開く」で一時的に開いても覚えない', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const first = setup(undefined, undefined, undefined, undefined, storage);
+		first.page.setInstance(1);
+		await settle();
+		first.setChatActive(1, true);
+		// 「ターミナルで操作が要ります」の帯のボタン（チャット表示の側がターミナルへ切り替える）
+		first.setChatActive(1, false);
+		const afterBand = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
+		(first.container.getElementsByClassName('paradis-bot-page-view-option')[1] as HTMLElement).click();
+		const afterButton = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
+		first.page.dispose();
+		// 再起動の後: ターミナルのまま控える（吹き出しへ切り替えない）
+		const second = setup(undefined, undefined, undefined, undefined, storage);
+		second.page.setInstance(1);
+		await settle();
+		const checked = () => [...second.container.getElementsByClassName('paradis-bot-page-view-option')].filter(option => option.getAttribute('aria-checked') === 'true').map(option => option.getAttribute('aria-label'));
+		const restored = checked();
+		// 項目のタブから「吹き出し」を押すと、会話のタブへ移して吹き出しにする
+		(second.container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		(second.container.getElementsByClassName('paradis-bot-page-view-option')[0] as HTMLElement).click();
+		const tab = (second.container.getElementsByClassName('paradis-bot-page-tab')[0] as HTMLElement).getAttribute('aria-selected');
+		second.setChatActive(1, true);
+		const afterChat = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
+		const chatNow = checked();
+		second.page.dispose();
+		// ほかの Bot の分（もういない Bot）は書き直すときに消える
+		storage.store(PARADIS_BOT_VIEWS_STORAGE_KEY, '{"gone":"terminal"}', StorageScope.APPLICATION, StorageTarget.MACHINE);
+		const third = setup(undefined, undefined, undefined, undefined, storage);
+		third.page.setInstance(1);
+		await settle();
+		(third.container.getElementsByClassName('paradis-bot-page-view-option')[1] as HTMLElement).click();
+		const pruned = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
+		third.page.dispose();
+		assert.deepStrictEqual({ afterBand, afterButton, restored, tab, afterChat, chatNow, pruned, first: first.chatCalls, second: second.chatCalls }, {
+			afterBand: undefined,
+			afterButton: '{"release":"terminal"}',
+			restored: ['ターミナル'],
+			tab: 'true',
+			afterChat: undefined,
+			chatNow: ['吹き出し'],
+			pruned: '{"release":"terminal"}',
+			first: ['pin 1 true'],
+			second: ['pin 1 true (terminal)', 'pin 1 true'],
+		});
+	});
+
 	test('Bot の会話のペインの吹き出しの顔はその Bot の顔（様子が変われば渡し直す）。作った直後の挨拶の頼みは印にし、利用者の文はそのまま。見回りのペインには渡さない', async () => {
 		const { page, personas, bots, botsChanged, patrolPanes, panes } = setup();
-		const face = (persona: IParadisAgentChatPersona | undefined) => {
+		const face = (persona: IParadisAgentChatPersona | undefined, current = true) => {
 			if (persona === undefined) {
 				return undefined;
 			}
 			const parent = document.createElement('div');
-			persona.renderFace(parent);
+			persona.renderFace(parent, current);
 			const element = parent.firstElementChild as HTMLElement;
-			return `${element.className} ${element.dataset.color} ${element.dataset.state}`;
+			return `${element.className} ${element.dataset.color} ${element.dataset.state} ${element.dataset.props}${element.dataset.still === 'true' ? ' still' : ''}`;
 		};
 		bots[0] = { ...bots[0], needsYou: 0 };
 		page.setInstance(1);
@@ -670,12 +723,15 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual({
 			idle: face(idle),
 			working: face(working),
+			// 過去の発言の顔は動かさず、小道具も出さない
+			past: face(working, false),
 			greeting: idle?.promptLabel(`${PARADIS_BOT_GREETING_PROMPT}\n`),
 			user: idle?.promptLabel('こんにちは'),
 			patrol: personas.get(2),
 		}, {
-			idle: 'paradis-bot-face blue idle',
-			working: 'paradis-bot-face blue work',
+			idle: 'paradis-bot-face blue idle all',
+			working: 'paradis-bot-face blue work all',
+			past: 'paradis-bot-face blue idle none still',
 			greeting: 'Bot を作ったので、自己紹介を頼みました',
 			user: undefined,
 			patrol: undefined,

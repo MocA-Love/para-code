@@ -32,6 +32,8 @@ import {
 	botItemStatusLabel,
 	botRefusalText,
 	botFieldChange,
+	botConfirmMessage,
+	botFaceState,
 	botStatusLine,
 	newBotOpId,
 	type BotChanges,
@@ -77,6 +79,7 @@ export function BotScreen() {
 	const botId = typeof params.botId === 'string' ? params.botId : undefined;
 	const active = status === 'active';
 	const supported = useAppStore(s => active && pcHasCapability(s.workspace, PcCapability.BotsPage));
+	const statusKnown = useAppStore(s => active && pcHasCapability(s.workspace, PcCapability.BotsStatus));
 	const bot = useAppStore(s => (active && botId !== undefined ? s.workspace?.bots?.find(candidate => candidate.id === botId) : undefined));
 	const connected = pc?.connection === 'online';
 	const [tab, setTabState] = useState<Tab>(() => (botId !== undefined ? lastTabs.get(botId) : undefined) ?? 'items');
@@ -90,7 +93,7 @@ export function BotScreen() {
 
 	const meta = bot !== undefined ? (
 		<View style={styles.meta}>
-			<BotFace color={bot.faceColor} shape={bot.faceShape} size={16} dim={bot.paused} />
+			<BotFace color={bot.faceColor} shape={bot.faceShape} size={16} dim={bot.paused} state={botFaceState(bot, statusKnown)} />
 			<Text style={styles.metaText} numberOfLines={1}>{`${botAgentLabel(bot.agent)} · ${botStatusLine(bot)}`}</Text>
 		</View>
 	) : undefined;
@@ -480,7 +483,7 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 			<ConfirmDrawer
 				visible={confirmVisible}
 				title={`${bot.name} の設定を変えますか`}
-				message={`${confirmText.wider ? '権限が広がります。\n\n' : ''}${confirmText.detail}`}
+				message={botConfirmMessage(confirmText.detail, confirmText.wider)}
 				confirmLabel="変える"
 				destructive={confirmText.wider}
 				onConfirm={() => botSendConfirmedChange(heldChange.current, (changes, confirmed, opId) => void send(changes, confirmed, opId))}

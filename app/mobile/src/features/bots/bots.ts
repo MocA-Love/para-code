@@ -29,7 +29,17 @@ export interface MobileBot {
 	/** `stopped`・`idle`・`working`・`patrolling`（知らない値もそのまま）。 */
 	readonly activity: string;
 	readonly lastActivityAt: number;
+	/** 会話が眠っている（PC の帯の「眠っています」。`bots.status.v1` の PC だけが送る）。 */
+	readonly sleeping?: true;
+	/** 会話のエージェントが止まっている理由（`bots.status.v1` の PC だけが、`activity` が `idle` のときに送る）。 */
+	readonly halt?: BotHalt;
 }
+
+/** {@link MobileBot.halt}（PC の `ParadisBotPaneHalt`）。 */
+export type BotHalt =
+	| { readonly kind: 'notFound' }
+	| { readonly kind: 'exited'; readonly exitCode?: number }
+	| { readonly kind: 'needsUser' };
 
 export const BOT_FACE_COLORS = ['blue', 'teal', 'green', 'amber', 'pink', 'violet', 'red', 'orange'] as const;
 export const BOT_FACE_SHAPES = ['circle', 'squircle', 'hex', 'blob', 'drop', 'penta'] as const;
@@ -163,7 +173,23 @@ function parseBot(value: unknown): MobileBot | undefined {
 		openSuggestions: count(input.openSuggestions),
 		activity: str(input.activity, 40) ?? 'stopped',
 		lastActivityAt: num(input.lastActivityAt) ?? 0,
+		...(input.sleeping === true ? { sleeping: true as const } : {}),
+		...optional('halt', parseBotHalt(input.halt)),
 	};
+}
+
+/** 止まっている理由。知らない種類は無いものとして読む（帯の文が「待機中」に戻るだけ）。 */
+function parseBotHalt(value: unknown): BotHalt | undefined {
+	const input = record(value);
+	switch (input?.kind) {
+		case 'notFound': return { kind: 'notFound' };
+		case 'needsUser': return { kind: 'needsUser' };
+		case 'exited': {
+			const exitCode = num(input.exitCode);
+			return exitCode !== undefined && Number.isInteger(exitCode) ? { kind: 'exited', exitCode } : { kind: 'exited' };
+		}
+		default: return undefined;
+	}
 }
 
 /** State の `bots`。配列でなければ undefined（届いていない）、壊れた 1 件だけを捨てる。同じ id は先の 1 件だけ。 */
@@ -206,19 +232,72 @@ export function botSectionRows(bots: readonly MobileBot[], query: string): { rea
 	return { active: ordered.filter(bot => !bot.paused), paused: ordered.filter(bot => bot.paused) };
 }
 
-/** 行の名前の下に出す今の様子（PC の帯の `paradisBotStatusLine` と同じ順。PC の「あなたの番」はスマホでは「要対応」）。 */
-export function botStatusLine(bot: Pick<MobileBot, 'paused' | 'needsYou' | 'activity'>): string {
+/**
+ * 行の名前の下に出す今の様子（PC の帯の `paradisBotStatusLine` と同じ順。PC の「あなたの番」はスマホでは「要対応」、
+ * 「停止中」は「一時停止中」）。`sleeping`・`halt` は `bots.status.v1` の PC だけが送るので、古い PC では今までの文のまま。
+ */
+export function botStatusLine(bot: Pick<MobileBot, 'paused' | 'needsYou' | 'activity' | 'sleeping' | 'halt'>): string {
 	if (bot.paused) {
 		return '一時停止中';
 	}
 	if (bot.needsYou > 0) {
 		return `${bot.needsYou} 件が要対応`;
 	}
+	// 会話が眠っていれば、見回りのペインが動いていても会話の状態を主にする（PC の帯と同じ）
+	const asleep = bot.sleeping === true;
 	switch (bot.activity) {
 		case 'working': return '作業中';
-		case 'patrolling': return '見回り中';
-		case 'idle': return '待機中';
-		default: return '起動していません';
+		case 'patrolling': return asleep ? '眠っています・見回り中' : '見回り中';
+		case 'idle': return asleep ? '眠っています' : botHaltLine(bot.halt) ?? '待機中';
+		default: return asleep ? '眠っています' : '起動していません';
+	}
+}
+
+function botHaltLine(halt: BotHalt | undefined): string | undefined {
+	switch (halt?.kind) {
+		case 'notFound': return '見つかりません';
+		case 'exited': return halt.exitCode !== undefined && halt.exitCode !== 0 ? `終了しました（コード ${halt.exitCode}）` : '終了しました';
+		case 'needsUser': return '操作が要ります';
+		default: return undefined;
+	}
+}
+
+/**
+ * 顔の様子（PC の `ParadisBotFaceState`）。`idle` 待機中・`work` 作業中・`patrol` 見回り中・`ask` 要対応・`need` 操作が要る・
+ * `halt` 終了した・見つからない・`sleep` 眠っている・`off` 起動していない・`paused` 一時停止中。
+ */
+export type BotFaceState = 'idle' | 'work' | 'patrol' | 'ask' | 'need' | 'halt' | 'sleep' | 'off' | 'paused';
+
+/**
+ * 顔の様子を決める（PC の `paradisBotFaceState` と同じ順）。`statusKnown` は PC が `bots.status.v1` を広告しているか。
+ * 広告しない古い PC は眠っているかを送らないので、止まっている Bot を「起動していない」と決められない。そのときは
+ * undefined を返し、今までの顔（開いた目。一時停止中だけ薄い）のままにする。
+ */
+export function botFaceState(bot: Pick<MobileBot, 'paused' | 'needsYou' | 'activity' | 'sleeping' | 'halt'>, statusKnown: boolean): BotFaceState | undefined {
+	if (!statusKnown) {
+		return undefined;
+	}
+	if (bot.paused) {
+		return 'paused';
+	}
+	if (bot.needsYou > 0) {
+		return 'ask';
+	}
+	switch (bot.activity) {
+		case 'working': return 'work';
+		// 眠っている会話の横で見回りが動いているときも見回りの顔（文の方が両方を出す）
+		case 'patrolling': return 'patrol';
+		case 'idle':
+			if (bot.sleeping === true) {
+				return 'sleep';
+			}
+			switch (bot.halt?.kind) {
+				case 'needsUser': return 'need';
+				case 'exited':
+				case 'notFound': return 'halt';
+				default: return 'idle';
+			}
+		default: return bot.sleeping === true ? 'sleep' : 'off';
 	}
 }
 
@@ -544,6 +623,16 @@ export class BotHeldChoice<T> {
 export function botConfirmedItemAction(held: BotHeldChoice<'done' | 'cancel'>): BotItemAction | undefined {
 	const action = held.take();
 	return action === undefined ? undefined : { action };
+}
+
+const BOT_WIDER_NOTICE = '権限が広がります。';
+
+/**
+ * 設定の変更の確認の本文。権限が広がるときは先頭に「権限が広がります。」を置く。今の PC は `detail` に同じ文を
+ * 入れて返すので、そのときは足さない（足すのは本文に無い古い PC のときだけ。足すと同じ文が 2 回出る）。
+ */
+export function botConfirmMessage(detail: string, wider: boolean): string {
+	return wider && !detail.includes(BOT_WIDER_NOTICE) ? `${BOT_WIDER_NOTICE}\n\n${detail}` : detail;
 }
 
 /**

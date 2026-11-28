@@ -15,7 +15,7 @@ import type { IParadisAgentChatGuide } from '../../agentChat/common/paradisAgent
 import { paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
 import type { IParadisBotSummary } from './paradisBotsApi.js';
 import type { IParadisBotGithubView } from './paradisBotGithub.js';
-import { paradisBotStatusLine } from './paradisBotsBandModel.js';
+import { paradisBotFaceState, paradisBotStatusLine } from './paradisBotsBandModel.js';
 import { IParadisBotItem, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
 
 /** ページの上のタブ。`chat` は下にある会話（チャット表示かターミナル）をそのまま見せる。 */
@@ -98,13 +98,18 @@ export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number
 /**
  * 帯の状態・モデル。`header` はチャット表示の見出しの値（チャット表示を見ている間だけ渡す）。見出しの状態の文があれば
  * それ（許可待ち・質問待ちは attention）、無ければ Bot の台帳の 1 行。モデルは見出しの値だけ（台帳には実際のモデルが無い）。
+ * 台帳でも利用者を待っている（操作が要ります・あなたの番）なら attention にする。待ちの文は、狭い幅でも最後まで残す（#1240）。
  */
 export function paradisBotStripHeader(bot: IParadisBotSummary, header: Pick<IParadisAgentChatHeaderState, 'status' | 'attention' | 'busy' | 'model'> | undefined): { readonly status: string; readonly attention: boolean; readonly busy: boolean; readonly model: string } {
 	const line = paradisBotStatusLine(bot);
+	const face = paradisBotFaceState(bot);
+	const waiting = face === 'need' || face === 'ask';
 	if (header === undefined) {
-		return { status: line, attention: false, busy: false, model: '' };
+		return { status: line, attention: waiting, busy: false, model: '' };
 	}
-	return { status: header.status || line, attention: header.attention, busy: header.busy && !header.attention, model: header.model };
+	// 見出しに文が無く台帳の 1 行を出すときは、台帳の待ちで決める
+	const attention = header.status ? header.attention : header.attention || waiting;
+	return { status: header.status || line, attention, busy: header.busy && !attention, model: header.model };
 }
 
 /**
@@ -167,4 +172,59 @@ export function paradisBotSuggestionText(text: string, multiline: boolean): stri
 		.replace(/\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])?/g, '')
 		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 	return multiline ? plain : plain.replace(/\s*\n\s*/g, ' ').trim();
+}
+
+// ---- 会話の表示（吹き出し・ターミナル）の記憶 ----------------------------------------------------------
+
+/** Bot の会話をどちらで見るか。既定は吹き出し（`chat`）。 */
+export type ParadisBotConversationView = 'chat' | 'terminal';
+
+/** Bot ごとに選んだ表示を覚えるキー（APPLICATION。どの窓でも、再起動の後も同じ表示にする）。 */
+export const PARADIS_BOT_VIEWS_STORAGE_KEY = 'paradis.bots.conversationView.v1';
+
+/** 保存した値を読む。壊れた値・知らない値は捨てる（覚えているのはターミナルを選んだ Bot だけ）。 */
+export function paradisBotViewsParse(raw: string | undefined): ReadonlyMap<string, ParadisBotConversationView> {
+	const views = new Map<string, ParadisBotConversationView>();
+	if (raw === undefined) {
+		return views;
+	}
+	try {
+		const value: unknown = JSON.parse(raw);
+		if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+			for (const [botId, view] of Object.entries(value)) {
+				if (view === 'terminal') {
+					views.set(botId, view);
+				}
+			}
+		}
+	} catch {
+		// 壊れていれば、すべて既定（吹き出し）に戻す
+	}
+	return views;
+}
+
+/**
+ * その Bot の表示を替えた後に保存する値。既定（吹き出し）に戻した Bot と、もういない Bot は消す（`liveBotIds`）。
+ * 何も覚えていなければ undefined（キーごと消す）。
+ */
+export function paradisBotViewsStringify(views: ReadonlyMap<string, ParadisBotConversationView>, botId: string, view: ParadisBotConversationView, liveBotIds: readonly string[]): string | undefined {
+	const live = new Set(liveBotIds);
+	const next: Record<string, ParadisBotConversationView> = {};
+	for (const [id, value] of views) {
+		if (id !== botId && live.has(id) && value === 'terminal') {
+			next[id] = value;
+		}
+	}
+	if (view === 'terminal' && live.has(botId)) {
+		next[botId] = view;
+	}
+	return Object.keys(next).length > 0 ? JSON.stringify(next) : undefined;
+}
+
+/**
+ * Bot を起こしたペインを吹き出しで見せるか（起こす経路の `pinChatMode` の `show`）。ターミナルを選んだ Bot だけ false で、
+ * 吹き出しを選んだ Bot・選んでいない Bot・壊れた値は true。`raw` は {@link PARADIS_BOT_VIEWS_STORAGE_KEY} の保存の値。
+ */
+export function paradisBotLaunchShowsChat(raw: string | undefined, botId: string): boolean {
+	return paradisBotViewsParse(raw).get(botId) !== 'terminal';
 }

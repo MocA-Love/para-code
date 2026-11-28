@@ -16,6 +16,8 @@
 // - エージェントの管理の道具（start_bot・remove_bot）から呼ばれるチャネル {@link PARADIS_BOTS_WINDOW_CHANNEL}。
 //   道具からの起動は利用者のフォーカスを奪わず（裏のタブ）、削除は利用者の確認を通す。
 
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
+import { paradisBotLaunchShowsChat, PARADIS_BOT_VIEWS_STORAGE_KEY } from '../common/paradisBotPageModel.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -54,7 +56,7 @@ import { ParadisBotSleepingChatEditorInput } from '../browser/paradisBotSleeping
 import '../browser/paradisBotSleepingChatEditor.contribution.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { paradisBotFirstPrompt } from '../common/paradisBotTools.js';
-import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
+import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisDisposeBotPane, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
@@ -117,6 +119,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const editorService = accessor.get(IEditorService);
 	const paradisDialogService = accessor.get(IParadisDialogService);
 	const notificationService = accessor.get(INotificationService);
+	const storageService = accessor.get(IStorageService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -134,7 +137,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		const ended = summary?.activity === 'idle' && (summary.halt?.kind === 'exited' || summary.halt?.kind === 'notFound');
 		if (existing !== undefined && ended) {
 			// エージェントが終わってシェルだけが残っている。話しかけられたので、そのペインを閉じて起こし直す
-			existing.instance.dispose(TerminalExitReason.User);
+			await paradisDisposeBotPane(botsService, paneTokenService.getTokenForInstance(existing.instanceId), existing.instance);
 			await paradisWaitForBotChatRelease(botsService, botId);
 		} else if (existing !== undefined) {
 			// 前に出す依頼に応えなかったペインがこのウィンドウにあった（生きていた）なら、会話のペインとして結び付け直す
@@ -201,8 +204,9 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			paradisAddTerminalHiddenOnClose(outcome.terminal.instanceId);
 			// どのスペースにも属さないペインとして控える（スペースを切り替えても退避せず、着いたスペースの画面へ持ち越す）
 			paradisMarkTerminalSpaceFree(outcome.terminal.instanceId);
-			// 会話はいつも吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ
-			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent);
+			// 会話は吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ。
+			// 利用者がこの Bot でターミナルを選んでいたら、控えるだけでターミナルのまま見せる（Bot のページの見出しで選んだ表示）
+			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent, paradisBotLaunchShowsChat(storageService.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION), botId));
 		}
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };
@@ -741,8 +745,9 @@ class ParadisBotsWindowWorker extends Disposable {
 				}
 			}
 			if (instance !== undefined && !instance.isDisposed) {
-				// 確認のダイアログは出さない（止めると決めたのは利用者で、閉じるのは Bot のターミナルだけ）
-				instance.dispose(TerminalExitReason.User);
+				// 確認のダイアログは出さない（止めると決めたのは利用者で、閉じるのは Bot のターミナルだけ）。結び付けもここで外す
+				// （「止めて起こし直す」は、外れたのを見て起こす）
+				await paradisDisposeBotPane(this.botsService, this.paneTokenService.getTokenForInstance(instanceId), instance);
 			}
 		}
 	}
