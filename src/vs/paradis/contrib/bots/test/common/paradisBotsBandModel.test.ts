@@ -113,6 +113,16 @@ suite('Paradis bots band', () => {
 		].map(paradisBotStatusLine).concat(paradisBotStatusDetail(bot('x', 'x', { activity: 'idle', halt: { kind: 'notFound' } }))), ['見つかりません', '終了しました（コード 1）', '終了しました', '操作が要ります', '待機中', 'エージェントのコマンドが見つかりません']);
 	});
 
+	test('会話のペインが無く前の会話が残っていれば、見回りのペインが動いていても会話の状態（眠っています）を主にする', () => {
+		assert.deepStrictEqual([
+			bot('x', 'x', { activity: 'idle', sleeping: true }),
+			bot('x', 'x', { activity: 'patrolling', sleeping: true }),
+			bot('x', 'x', { activity: 'stopped', sleeping: true }),
+			bot('x', 'x', { activity: 'idle' }),
+			bot('x', 'x', { activity: 'patrolling' }),
+		].map(paradisBotStatusLine), ['眠っています', '眠っています・見回り中', '眠っています', '待機中', '見回り中']);
+	});
+
 	test('顔は台帳の形と色、動きは様子から', () => {
 		assert.deepStrictEqual([
 			paradisBotFace(bot('x', 'x', { faceColor: 'pink', faceShape: 'hex', needsYou: 1 })),
