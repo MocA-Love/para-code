@@ -215,3 +215,11 @@ export function paradisBotViewsStringify(views: ReadonlyMap<string, ParadisBotCo
 	}
 	return Object.keys(next).length > 0 ? JSON.stringify(next) : undefined;
 }
+
+/**
+ * Bot を起こしたペインを吹き出しで見せるか（起こす経路の `pinChatMode` の `show`）。ターミナルを選んだ Bot だけ false で、
+ * 吹き出しを選んだ Bot・選んでいない Bot・壊れた値は true。`raw` は {@link PARADIS_BOT_VIEWS_STORAGE_KEY} の保存の値。
+ */
+export function paradisBotLaunchShowsChat(raw: string | undefined, botId: string): boolean {
+	return paradisBotViewsParse(raw).get(botId) !== 'terminal';
+}

@@ -563,6 +563,55 @@
 	transition: none !important;
 }
 
+/*
+	With motion off the 18px faces (props="attention") lose the motion that told waiting, working and patrolling apart, so
+	they also show the state's prop (dots, magnifier, "z z", pause bars), a little larger. Both paths: the workbench class
+	(workbench.reduceMotion, and "auto" follows the OS) and the OS media query.
+*/
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+	display: inline;
+	transform: scale(1.5);
+	transform-box: fill-box;
+	transform-origin: 30% 70%;
+}
+
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+	fill: var(--vscode-descriptionForeground);
+	stroke: none;
+}
+
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+.monaco-reduce-motion .paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz {
+	stroke-width: 7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+	.paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+	.paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz,
+	.paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+		display: inline;
+		transform: scale(1.5);
+		transform-box: fill-box;
+		transform-origin: 30% 70%;
+	}
+
+	.paradis-bot-face[data-props="attention"][data-state="work"] .paradis-bot-face-dots,
+	.paradis-bot-face[data-props="attention"][data-state="paused"] .paradis-bot-face-pause {
+		fill: var(--vscode-descriptionForeground);
+		stroke: none;
+	}
+
+	.paradis-bot-face[data-props="attention"][data-state="patrol"] .paradis-bot-face-lens,
+	.paradis-bot-face[data-props="attention"][data-state="sleep"] .paradis-bot-face-zz {
+		stroke-width: 7;
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.paradis-bot-face * {
 		animation: none !important;

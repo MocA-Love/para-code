@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../../common/paradisBotPageModel.js';
+import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotLaunchShowsChat, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -124,5 +124,15 @@ suite('Paradis bots page', () => {
 			read: [['release', 'terminal'], ['review', 'terminal']],
 			broken: [[], [], [['c', 'terminal']], []],
 		});
+	});
+	test('起こした Bot のペインは、ターミナルを選んだ Bot だけターミナルで開き、吹き出しを選んだ Bot・選んでいない Bot・壊れた値は吹き出し', () => {
+		const stored = paradisBotViewsStringify(new Map(), 'release', 'terminal', ['release', 'review']);
+		assert.deepStrictEqual([
+			paradisBotLaunchShowsChat(stored, 'release'),
+			paradisBotLaunchShowsChat(paradisBotViewsStringify(paradisBotViewsParse(stored), 'release', 'chat', ['release']), 'release'),
+			paradisBotLaunchShowsChat(stored, 'review'),
+			paradisBotLaunchShowsChat(undefined, 'release'),
+			paradisBotLaunchShowsChat('{', 'release'),
+		], [false, true, true, true, true]);
 	});
 });

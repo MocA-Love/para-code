@@ -9,11 +9,20 @@
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { Event } from '../../../../../base/common/event.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
+import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
+import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
+import { AccessibilityService } from '../../../../../platform/accessibility/browser/accessibilityService.js';
 import { renderParadisBotFace } from '../../browser/paradisBotFace.js';
+import { ParadisBotFaceState } from '../../common/paradisBotsBandModel.js';
 
 suite('Paradis bot face', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function look(face: HTMLElement) {
 		return {
@@ -43,5 +52,41 @@ suite('Paradis bot face', () => {
 			// 描き直しても同じつなぎの続き（経った時間だけ進む）
 			{ state: 'idle', props: 'attention', still: undefined, transition: 'done', clock: true, since: true, parts: [] },
 		]);
+	});
+
+	/**
+	 * 動きを止めた表示で、帯の 18px の顔が目の形と印だけで見分けられるか。止めるかは本物の AccessibilityService が決める
+	 * （`workbench.reduceMotion` の on・off と、auto のときは OS の `prefers-reduced-motion` を matchMedia で読む）。
+	 */
+	function readRow(reduceMotion: 'on' | 'off' | 'auto') {
+		const instantiation = store.add(new TestInstantiationService());
+		instantiation.stub(IConfigurationService, new TestConfigurationService({ 'workbench.reduceMotion': reduceMotion, 'workbench.reduceTransparency': 'off', 'editor.accessibilitySupport': 'off', 'accessibility.underlineLinks': false }));
+		instantiation.stub(IContextKeyService, store.add(new MockContextKeyService()));
+		const container = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
+		instantiation.stub(ILayoutService, { mainContainer: container, activeContainer: container, containers: [container], getContainer: () => container, onDidAddContainer: Event.None, onDidLayoutContainer: Event.None });
+		store.add(instantiation.createInstance(AccessibilityService));
+		const states: ParadisBotFaceState[] = ['idle', 'work', 'patrol', 'ask', 'need', 'halt', 'sleep', 'off', 'paused'];
+		const row = states.map(state => {
+			const face = renderParadisBotFace(container, { shape: 'circle', color: 'blue', state, id: `paradis-bot-face-row-${state}` });
+			const shown = [...face.getElementsByClassName('paradis-bot-face-prop')].filter(prop => mainWindow.getComputedStyle(prop).display !== 'none').map(prop => prop.getAttribute('class')!.replace('paradis-bot-face-prop paradis-bot-face-', ''));
+			const eye = face.getElementsByClassName('paradis-bot-face-eye')[0];
+			return `${state}:${shown.join('+') || '-'}${mainWindow.getComputedStyle(eye).animationName === 'none' ? '' : '~'}`;
+		});
+		const reduced = container.classList.contains('monaco-reduce-motion');
+		container.remove();
+		return { reduced, row };
+	}
+
+	test('動きを止めた表示では、18px の顔にも様子の印を足す（設定の on と、auto で OS の設定に従う経路）', () => {
+		const os = mainWindow.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const still = ['idle:-', 'work:dots', 'patrol:lens', 'ask:ask', 'need:sweat', 'halt:-', 'sleep:zz', 'off:-', 'paused:pause'];
+		// 動いているときは、印は注意の 2 つだけ（目の動きで分かる）。止まっている様子（need・halt・off・paused）は元から瞬きしない
+		const moving = ['idle:-~', 'work:-~', 'patrol:-~', 'ask:ask~', 'need:sweat', 'halt:-', 'sleep:-~', 'off:-~', 'paused:-'];
+		assert.deepStrictEqual({ on: readRow('on'), off: readRow('off'), auto: readRow('auto') }, {
+			on: { reduced: true, row: still },
+			// off でも OS の設定が「減らす」なら、メディアクエリの方で止める
+			off: { reduced: false, row: os ? still : moving },
+			auto: { reduced: os, row: os ? still : moving },
+		});
 	});
 });

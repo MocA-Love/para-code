@@ -17,7 +17,7 @@
 //   道具からの起動は利用者のフォーカスを奪わず（裏のタブ）、削除は利用者の確認を通す。
 
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
-import { PARADIS_BOT_VIEWS_STORAGE_KEY, paradisBotViewsParse } from '../common/paradisBotPageModel.js';
+import { paradisBotLaunchShowsChat, PARADIS_BOT_VIEWS_STORAGE_KEY } from '../common/paradisBotPageModel.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -206,8 +206,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			paradisMarkTerminalSpaceFree(outcome.terminal.instanceId);
 			// 会話は吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ。
 			// 利用者がこの Bot でターミナルを選んでいたら、控えるだけでターミナルのまま見せる（Bot のページの見出しで選んだ表示）
-			const view = paradisBotViewsParse(storageService.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION)).get(botId) ?? 'chat';
-			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent, view === 'chat');
+			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent, paradisBotLaunchShowsChat(storageService.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION), botId));
 		}
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };
