@@ -78,6 +78,27 @@
 	padding-right: 142px;
 }
 
+/*
+	On a narrow tab the strip has no room to spare for the ring and the countdown: they give way (the share dot stays),
+	so the room goes to the waiting-for-you status and the tabs. The tab is a container only while it shows a bot page.
+*/
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active {
+	container: paradis-bot-tab / inline-size;
+}
+
+@container paradis-bot-tab (max-width: 520px) {
+	.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active .paradis-prompt-cache-badge,
+	.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active .paradis-context-usage-badge {
+		display: none;
+	}
+
+	.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active:not(.paradis-bot-page-items):has(> .paradis-context-usage-badge:not(.hidden)) > .paradis-bot-page-strip,
+	.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active:not(.paradis-bot-page-items):has(.paradis-prompt-cache-badge:not(.hidden)) > .paradis-bot-page-strip,
+	.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active:not(.paradis-bot-page-items):has(> .paradis-context-usage-badge:not(.hidden)):has(.paradis-prompt-cache-badge:not(.hidden)) > .paradis-bot-page-strip {
+		padding-right: 28px;
+	}
+}
+
 /* The restored tab banner is not a corner item: it stays below the strip. */
 .monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active > .paradis-terminal-resume-banner {
 	top: 48px;
@@ -184,7 +205,7 @@
 .paradis-bot-page-model[hidden],
 /*
 	Chat / terminal (Q690 option A): two buttons right of the title, before the tabs. The pressed one is what the
-	conversation shows; it stays on every tab. Below 900px only the icons remain (the rules at the end of this file).
+	conversation shows; it stays on every tab. On a narrow strip only the icons remain (the rules at the end of this file).
 */
 .paradis-bot-page-view[hidden] {
 	display: none;
@@ -981,10 +1002,11 @@ button.paradis-bot-page-link:hover {
 
 /*
 	Narrow strip, in this order: the view buttons and the inbox button keep only their icons (and the inbox count), then
-	the tabs keep only their icons, then the status line other than waiting-for-you and the model give way, then the
-	name. The waiting-for-you status stays to the end (#1240).
+	the tabs keep only their icons, then the status line other than waiting-for-you and the model give way, and the name
+	is cut. The waiting-for-you status stays to the end (#1240). With unread messages the inbox button needs room too,
+	so the labels give way earlier.
 */
-@container paradis-bot-strip (max-width: 900px) {
+@container paradis-bot-strip (max-width: 760px) {
 	.paradis-bot-page-view-label,
 	.paradis-bot-page-inbox-label {
 		display: none;
@@ -999,12 +1021,33 @@ button.paradis-bot-page-link:hover {
 	}
 }
 
-@container paradis-bot-strip (max-width: 700px) {
+@container paradis-bot-strip (max-width: 900px) {
+	.paradis-bot-page-inbox:not([hidden]) ~ .paradis-bot-page-view .paradis-bot-page-view-label,
+	.paradis-bot-page-inbox-label {
+		display: none;
+	}
+
+	.paradis-bot-page-inbox-count {
+		display: inline;
+	}
+}
+
+@container paradis-bot-strip (max-width: 640px) {
 	.paradis-bot-page-tab-label {
 		display: none;
 	}
 
 	.paradis-bot-page-tab {
+		padding: 0 var(--vscode-spacing-size60);
+	}
+}
+
+@container paradis-bot-strip (max-width: 760px) {
+	.paradis-bot-page-inbox:not([hidden]) ~ .paradis-bot-page-tabs .paradis-bot-page-tab-label {
+		display: none;
+	}
+
+	.paradis-bot-page-inbox:not([hidden]) ~ .paradis-bot-page-tabs .paradis-bot-page-tab {
 		padding: 0 var(--vscode-spacing-size60);
 	}
 }
@@ -1024,8 +1067,8 @@ button.paradis-bot-page-link:hover {
 }
 
 /*
-	While the bot waits for you on a narrow strip, the waiting-for-you status keeps its full width: the name gives way to
-	it, and the title no longer shrinks (the tabs, already icons, shrink instead).
+	While the bot waits for you on a narrow strip, the waiting-for-you status keeps its full width: the title no longer
+	shrinks, and the name, the face, then the chat / terminal buttons (⇧⌘J also switches) give way to it.
 */
 @container paradis-bot-strip (max-width: 400px) {
 	.paradis-bot-page-title:has(> .paradis-bot-page-status.attention) {
@@ -1037,8 +1080,24 @@ button.paradis-bot-page-link:hover {
 	}
 }
 
-/* Very narrow: the face and the chat / terminal buttons (⇧⌘J also switches) give way. The name is only cut. */
-@container paradis-bot-strip (max-width: 280px) {
+@container paradis-bot-strip (max-width: 330px) {
+	.paradis-bot-page-face:has(+ .paradis-bot-page-title > .paradis-bot-page-status.attention) {
+		display: none;
+	}
+}
+
+@container paradis-bot-strip (max-width: 290px) {
+	.paradis-bot-page-title:has(> .paradis-bot-page-status.attention) ~ .paradis-bot-page-view {
+		display: none;
+	}
+
+	.paradis-bot-page-title:has(> .paradis-bot-page-status.attention) ~ .paradis-bot-page-view + .paradis-bot-page-tabs {
+		margin-left: auto;
+	}
+}
+
+/* Very narrow: the face and the chat / terminal buttons give way. The name is only cut. */
+@container paradis-bot-strip (max-width: 260px) {
 	.paradis-bot-page-face,
 	.paradis-bot-page-view {
 		display: none;
@@ -1048,7 +1107,6 @@ button.paradis-bot-page-link:hover {
 		margin-left: auto;
 	}
 }
-
 
 /*
 	Results of the bot's scheduled tasks, over the top right of the conversation below the strip. They are not part of the
