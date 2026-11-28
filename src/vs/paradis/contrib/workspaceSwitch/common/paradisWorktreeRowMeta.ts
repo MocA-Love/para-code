@@ -22,7 +22,7 @@ import { localize } from '../../../../nls.js';
 export const PARADIS_WORKTREE_ROW_META_SETTING_ID = 'paradis.workspaceSwitch.rowMeta';
 
 /** メタ段に並べられる情報の種類。 */
-export type ParadisWorktreeMetaId = 'pr' | 'issues' | 'diff' | 'notes' | 'promptCache';
+export type ParadisWorktreeMetaId = 'pr' | 'origin' | 'issues' | 'diff' | 'notes' | 'promptCache';
 
 /** メタ段の中での寄せ方向。left は左端から、right は右端から詰める。 */
 export type ParadisWorktreeMetaAlign = 'left' | 'right';
@@ -36,6 +36,8 @@ export interface IParadisWorktreeMetaEntry {
 /** その行が実際にその情報を持っているか (設定による表示/非表示とは独立)。 */
 export interface IParadisWorktreeMetaPresence {
 	readonly pr: boolean;
+	/** スペースを作った元の Issue（PR から作ったスペースで、その PR を pr のチップが出していないときも含む）。 */
+	readonly origin: boolean;
 	readonly issues: boolean;
 	readonly diff: boolean;
 	readonly notes: boolean;
@@ -43,12 +45,14 @@ export interface IParadisWorktreeMetaPresence {
 	readonly promptCache: boolean;
 }
 
-export const PARADIS_WORKTREE_META_IDS: readonly ParadisWorktreeMetaId[] = ['pr', 'issues', 'diff', 'notes', 'promptCache'];
+export const PARADIS_WORKTREE_META_IDS: readonly ParadisWorktreeMetaId[] = ['pr', 'origin', 'issues', 'diff', 'notes', 'promptCache'];
 
 // 設定レジストリの default としても、正規化の戻り値としても使う同じ実体なので凍結する。
 // (getValue 経由で受け取った側が書き換えると、以降の既定値が全ウィンドウで壊れる)
 export const PARADIS_DEFAULT_WORKTREE_ROW_META: readonly IParadisWorktreeMetaEntry[] = Object.freeze([
 	Object.freeze({ id: 'pr', visible: true, align: 'left' }),
+	// PR のチップのすぐ右（q.html Q691）
+	Object.freeze({ id: 'origin', visible: true, align: 'left' }),
 	Object.freeze({ id: 'issues', visible: true, align: 'left' }),
 	Object.freeze({ id: 'diff', visible: true, align: 'right' }),
 	Object.freeze({ id: 'notes', visible: true, align: 'right' }),
@@ -61,7 +65,7 @@ export const PARADIS_DEFAULT_WORKTREE_ROW_META: readonly IParadisWorktreeMetaEnt
  * **非表示で**末尾へ足す。すべて非表示にして 2 段表示を選んでいた人の行が、更新しただけで
  * 勝手に 3 段へ伸びないようにするため。設定を触っていない人には既定どおり表示で出る。
  */
-const PARADIS_WORKTREE_META_ADDED_LATER: ReadonlySet<ParadisWorktreeMetaId> = new Set(['promptCache']);
+const PARADIS_WORKTREE_META_ADDED_LATER: ReadonlySet<ParadisWorktreeMetaId> = new Set(['promptCache', 'origin']);
 
 /** メタ段を持たない行 (2段) の高さ。 */
 export const PARADIS_WORKTREE_ROW_HEIGHT = 44;
@@ -74,6 +78,8 @@ export function paradisWorktreeMetaLabel(id: ParadisWorktreeMetaId): string {
 	switch (id) {
 		// allow-any-unicode-next-line
 		case 'pr': return localize('paradis.rowMeta.pr', "プルリクエスト");
+		// allow-any-unicode-next-line
+		case 'origin': return localize('paradis.rowMeta.origin', "作成元の Issue");
 		// allow-any-unicode-next-line
 		case 'issues': return localize('paradis.rowMeta.issues', "Issue 件数");
 		// allow-any-unicode-next-line

@@ -13,6 +13,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisScopeRetirementPreparation } from './paradisEditorScope.js';
+import type { IParadisWorktreeOrigin } from './paradisWorktreeOrigin.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 export const IParadisWorkspaceSwitchService = createDecorator<IParadisWorkspaceSwitchService>('paradisWorkspaceSwitchService');
@@ -92,6 +93,8 @@ export interface IParadisWorktree {
 	 * worktree 単位ではなく repositoryId をそのまま使う。
 	 */
 	readonly isMainCheckout?: boolean;
+	/** スペースを作った元の Issue・PR（作成の流れが既知のスペースの台帳に残したもの。q.html Q691）。 */
+	readonly origin?: IParadisWorktreeOrigin;
 }
 
 export const IParadisWorktreeService = createDecorator<IParadisWorktreeService>('paradisWorktreeService');

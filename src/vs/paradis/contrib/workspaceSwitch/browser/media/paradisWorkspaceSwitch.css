@@ -484,6 +484,26 @@
 }
 
 /* allow-any-unicode-next-line */
+/* スペースを作った元の Issue のチップ（q.html Q691）。形と青は上の Issue のマークのまま（クラスを共有）、番号は
+ * PR のチップと同じ薄い文字。閉じた Issue だけ、GitHub と同じく紫にする。 */
+.paradis-workspaces-list .paradis-worktree-issue > .paradis-worktree-origin-number {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-list .paradis-worktree-origin.paradis-worktree-origin-closed {
+	color: var(--vscode-paradis-prMerged);
+	background-color: color-mix(in srgb, var(--vscode-paradis-prMerged) 12%, transparent);
+}
+
+.paradis-workspaces-list .paradis-worktree-origin.paradis-worktree-origin-closed:hover {
+	background-color: color-mix(in srgb, var(--vscode-paradis-prMerged) 28%, transparent);
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-origin.paradis-worktree-origin-closed > .codicon {
+	color: var(--vscode-paradis-prMerged);
+}
+
+/* allow-any-unicode-next-line */
 /* メモ (paradisSpaceNotesPanel) の未完了件数バッジ。未完了が0件の行では非表示にして
  * 行の情報量を増やさない。他のメタ情報 (PR / Issue / 差分) と同じメタ段に置く
  * (エージェントのドット列だけは、行の主語である名前と同じ1段目に残している)。 */

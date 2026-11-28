@@ -275,6 +275,72 @@
 	color: var(--vscode-paradis-textStrong);
 }
 
+/* The instruction's heading row: the label, then the prompt templates on the right (q.html Q691). The chips use the row's
+ * free space, so the dialog does not grow; chips that do not fit are hidden by the dialog and listed under "その他". */
+.paradis-create-worktree-dialog.pcw-d .pcw-d-prompt-head {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-prompt-head > label {
+	flex: none;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-templates {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--vscode-spacing-size40);
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-template {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	flex: none;
+	max-width: 140px;
+	height: 20px;
+	padding: 0 var(--vscode-spacing-size80);
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--paradis-radius-control);
+	background: transparent;
+	color: var(--vscode-paradis-text);
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-template > span:not(.codicon) {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-template > .codicon {
+	flex: none;
+	font-size: 12px;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-template:hover {
+	background: var(--vscode-paradis-fillHover);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-template.pcw-d-template-more {
+	color: var(--vscode-paradis-textMuted);
+}
+
 /* The help under a field sits 4px below it, like the space details (the field adds its gap, so take it back). */
 .paradis-create-worktree-dialog.pcw-d .pcw-d-help {
 	margin-top: calc(var(--vscode-spacing-size40) - var(--vscode-spacing-size60));

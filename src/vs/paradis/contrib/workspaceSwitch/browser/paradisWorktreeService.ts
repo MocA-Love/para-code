@@ -23,6 +23,7 @@ import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWo
 import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
 import { ParadisCoalescedRun } from '../../../common/paradisCoalescedRun.js';
 import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
+import { IParadisWorktreeOrigin, paradisParseWorktreeOrigin } from '../common/paradisWorktreeOrigin.js';
 
 /**
  * 1リポジトリ分のスキャン結果。
@@ -41,6 +42,13 @@ interface ISerializedKnownWorktree {
 	/** worktree ディレクトリの URI 文字列 */
 	readonly path: string;
 	readonly name: string;
+	/** スペースを作った元の Issue・PR（作成の流れが書く。読むときは paradisParseWorktreeOrigin を通す）。 */
+	readonly origin?: IParadisWorktreeOrigin;
+}
+
+/** 既知の 1 件の作成元を、一覧の 1 件へ写すための形（無ければ何も足さない）。 */
+function originOf(known: ISerializedKnownWorktree): { readonly origin?: IParadisWorktreeOrigin } {
+	return known.origin ? { origin: known.origin } : {};
 }
 
 /**
@@ -232,10 +240,13 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	addKnownWorktree(worktree: IParadisWorktree): void {
 		const path = worktree.uri.toString();
 		const index = this._known.findIndex(known => known.repositoryId === worktree.repositoryId && known.path === path);
+		// 名前の変更など、作成元を持たない値で書き直すときは、前に残した作成元を引き継ぐ
+		const origin = paradisParseWorktreeOrigin(worktree.origin) ?? (index >= 0 ? this._known[index].origin : undefined);
+		const entry: ISerializedKnownWorktree = { repositoryId: worktree.repositoryId, path, name: worktree.name, ...(origin ? { origin } : {}) };
 		if (index >= 0) {
-			this._known[index] = { repositoryId: worktree.repositoryId, path, name: worktree.name };
+			this._known[index] = entry;
 		} else {
-			this._known.push({ repositoryId: worktree.repositoryId, path, name: worktree.name });
+			this._known.push(entry);
 		}
 		this.saveKnown();
 		this._refreshScheduler.schedule();
@@ -409,7 +420,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			for (const worktree of scanned) {
 				const known = knownForRepository.find(known => known.path === worktree.uri.toString());
 				if (known || autoImport) {
-					list.push(known ? { ...worktree, name: known.name } : worktree);
+					list.push(known ? { ...worktree, name: known.name, ...originOf(known) } : worktree);
 					if (!known) {
 						this._known.push({ repositoryId: repository.id, path: worktree.uri.toString(), name: worktree.name });
 						knownChanged = true;
@@ -426,7 +437,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						// switchToWorktree も弾かれるため、前回どおり使える扱いで残す。
 						// ブランチ名も前回の値を引き継ぐ (読めない間だけ表示が消えるのを防ぐ)
 						const previous = this._worktrees.get(repository.id)?.find(worktree => worktree.uri.toString() === known.path);
-						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), branch: previous?.branch });
+						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), branch: previous?.branch, ...originOf(known) });
 						continue;
 					}
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
@@ -644,7 +655,18 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			return [];
 		}
 		try {
-			return JSON.parse(raw);
+			const parsed: unknown = JSON.parse(raw);
+			if (!Array.isArray(parsed)) {
+				return [];
+			}
+			// 作成元は台帳を手で書き換えても外のブラウザで開く URL になるので、読むときに確かめ直す
+			return parsed.map((entry: ISerializedKnownWorktree) => {
+				if (entry?.origin === undefined) {
+					return entry;
+				}
+				const origin = paradisParseWorktreeOrigin(entry.origin);
+				return { repositoryId: entry.repositoryId, path: entry.path, name: entry.name, ...(origin ? { origin } : {}) };
+			});
 		} catch {
 			return [];
 		}

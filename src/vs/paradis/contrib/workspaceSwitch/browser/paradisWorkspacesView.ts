@@ -71,6 +71,7 @@ import { paradisScopeSubagentsHoverMarkdown } from '../../agentInsights/browser/
 import { IParadisPromptCacheChip, ParadisPromptCacheChips } from '../../agentInsights/browser/paradisPromptCacheChips.js';
 import { ParadisSpaceDetailsDialog } from './paradisSpaceDetailsDialog.js';
 import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_REPOSITORY_ROW_HEIGHT, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
+import { IParadisWorktreeOrigin, paradisIssueUrlsWithoutOrigin, paradisWorktreeOriginToShow } from '../common/paradisWorktreeOrigin.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
@@ -362,6 +363,12 @@ interface IWorktreeTemplateData {
 	readonly issue: HTMLElement;
 	readonly issueCount: HTMLElement;
 	readonly issueHover: IManagedHover;
+	/** スペースを作った元の Issue（PR）のチップ（q.html Q691）。押すと PR のチップと同じく開く */
+	readonly origin: HTMLElement;
+	readonly originIcon: HTMLElement;
+	readonly originNumber: HTMLElement;
+	readonly originHover: IManagedHover;
+	readonly originContext: { url?: string };
 	/** メモの未完了件数バッジ (paradisSpaceNotesPanel と同じ内容の要約表示) */
 	readonly note: HTMLElement;
 	readonly noteCount: HTMLElement;
@@ -450,7 +457,7 @@ function prStateLabel(state: ParadisPrState): string {
 }
 
 /** メタを1つも持たない行の presence (毎回オブジェクトを作らないよう共有する)。 */
-const PARADIS_NO_WORKTREE_META: IParadisWorktreeMetaPresence = Object.freeze({ pr: false, issues: false, diff: false, notes: false, promptCache: false });
+const PARADIS_NO_WORKTREE_META: IParadisWorktreeMetaPresence = Object.freeze({ pr: false, origin: false, issues: false, diff: false, notes: false, promptCache: false });
 
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
 
@@ -1115,6 +1122,8 @@ interface IWorktreeRowDelegate {
 	/** そのスペースのペインでエージェントが対話から検出した Issue URL (未検出なら空配列)。 */
 	getIssueUrls(worktree: IParadisWorktree): readonly string[];
 	getIssueStatus(url: string): IParadisIssueStatus | undefined;
+	/** 行に出す作成元（作成元が無い、または PR のチップが同じ PR を出しているなら undefined）。 */
+	getOrigin(worktree: IParadisWorktree): IParadisWorktreeOrigin | undefined;
 	getNoteSummary(worktree: IParadisWorktree): IParadisSpaceNoteSummary;
 	getRepositoryColorHex(repositoryId: string): string | undefined;
 	/** バックグラウンド作成が進行中なら、その工程ラベル (ブランチ名の代わりに出す) */
@@ -1197,6 +1206,14 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const prContext: { url?: string } = {};
 		addRowButtonListeners(templateDisposables, pr, () => prContext.url, url => this.delegate.openPrUrl(url));
 		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
+		// 作成元の Issue のチップ。形は PR のチップ、色は下の Issue のマークと同じ青。押すと PR のチップと同じ開き方で開く
+		const origin = DOM.append(meta, DOM.$('.paradis-worktree-issue.paradis-worktree-origin'));
+		origin.setAttribute('role', 'button');
+		const originIcon = DOM.append(origin, DOM.$('.codicon'));
+		const originNumber = DOM.append(origin, DOM.$('span.paradis-worktree-origin-number'));
+		const originContext: { url?: string } = {};
+		addRowButtonListeners(templateDisposables, origin, () => originContext.url, url => this.delegate.openPrUrl(url));
+		const originHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), origin, ''));
 		// 検出済み Issue のマーク。PR チップのすぐ隣 (同じ下段) に置く。番号は持たず、
 		// アイコン＋件数のみ（メモ件数バッジと同じ語彙）。行の切り替えには繋げず、
 		// クリックでホバーカードを即時表示する (ホバー待ちが長いというフィードバックへの対応。
@@ -1243,7 +1260,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		DOM.append(more, DOM.$(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
 		templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, moreLabel));
 		addRowButtonListeners(templateDisposables, more, () => pinContext.worktree, worktree => this.delegate.showWorktreeMenu(worktree, more));
-		return { more, row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note], ['promptCache', promptCache.element]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, promptCache, pin, pinIcon, pinHover, pinContext, templateDisposables };
+		return { more, row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['origin', origin], ['issues', issue], ['diff', diff], ['notes', note], ['promptCache', promptCache.element]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, origin, originIcon, originNumber, originHover, originContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, promptCache, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -1363,6 +1380,34 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			templateData.prIcon.className = 'codicon';
 			templateData.prNumber.textContent = '';
 			templateData.prHover.update('');
+		}
+
+		// 作成元の Issue（PR）。状態は会話から拾った Issue と同じ gh の問い合わせで取れていれば使い、
+		// 取れていなければ開いている扱いで出す（題名は作ったときに残したもの）
+		const origin = worktree.missing ? undefined : this.delegate.getOrigin(worktree);
+		templateData.origin.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'origin'));
+		templateData.originContext.url = origin?.url;
+		if (origin) {
+			const status = origin.kind === 'issue' ? this.delegate.getIssueStatus(origin.url) : undefined;
+			const closed = status?.state === 'closed';
+			templateData.origin.classList.toggle('paradis-worktree-origin-closed', closed);
+			templateData.originIcon.className = ThemeIcon.asClassName(origin.kind === 'pr' ? Codicon.gitPullRequest : closed ? Codicon.issueClosed : Codicon.issueOpened);
+			templateData.originNumber.textContent = `#${origin.number}`;
+			const title = status?.title ?? origin.title;
+			const tooltip = origin.kind === 'pr'
+				// allow-any-unicode-next-line
+				? (title ? localize('paradis.workspaceSwitch.originPrTooltip', "このスペースを作った PR #{0} — {1}", origin.number, title) : localize('paradis.workspaceSwitch.originPrTooltipNoTitle', "このスペースを作った PR #{0}", origin.number))
+				// allow-any-unicode-next-line
+				: (title ? localize('paradis.workspaceSwitch.originIssueTooltip', "このスペースを作った Issue #{0} {1} — {2}", origin.number, issueStateLabel(status?.state ?? 'open'), title) : localize('paradis.workspaceSwitch.originIssueTooltipNoTitle', "このスペースを作った Issue #{0}", origin.number));
+			templateData.originHover.update(tooltip);
+			templateData.origin.ariaLabel = tooltip;
+		} else {
+			// テンプレート再利用時に前の行の番号・状態が残らないようにする（PR のチップと同じ後始末）
+			templateData.origin.classList.remove('paradis-worktree-origin-closed');
+			templateData.originIcon.className = 'codicon';
+			templateData.originNumber.textContent = '';
+			templateData.originHover.update('');
+			templateData.origin.ariaLabel = '';
 		}
 
 		// Issueマーク: そのスペースにペイン(生存中、一時的なアイドルも含む)があるときだけ出す。
@@ -1823,8 +1868,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			getBreakdown,
 			getDiffStat: worktree => this._diffStats.get(worktree.uri.fsPath),
 			getPrStatus: worktree => this._prStatuses.get(worktree.uri.fsPath),
-			getIssueUrls: worktree => this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)),
+			getIssueUrls: worktree => this.detectedIssueUrls(worktree),
 			getIssueStatus: url => this._issueStatuses.get(url),
+			getOrigin: worktree => this.originToShow(worktree),
 			getNoteSummary: worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
 			getRepositoryColorHex,
 			getPendingStage: worktree => this.pendingStageFor(worktree),
@@ -2231,8 +2277,11 @@ export class ParadisWorkspacesView extends ViewPane {
 		// 検出した Issue が一覧には表示されるのに永遠に番号・タイトルへ解決されなくなる
 		// (実機で確認: 表示側は worktreeStateKeyFor(合成行) を見るのに、ポーリング側は
 		// getWorktrees() だけを見ていて main checkout を素通りしていた)。liveSpaces() は本体も返す。
-		for (const { uri, stateKey } of this.liveSpaces()) {
-			const issueUrls = this.agentStatusStore.getScopeIssueUrls(stateKey);
+		for (const { uri, stateKey, worktree } of this.liveSpaces()) {
+			// 作成元の Issue も、開いているか閉じたかを同じ問い合わせで取る（会話に出ていなくても）
+			const origin = worktree?.origin?.kind === 'issue' ? worktree.origin.url : undefined;
+			const detected = this.agentStatusStore.getScopeIssueUrls(stateKey);
+			const issueUrls = origin !== undefined && !detected.includes(origin) ? [origin, ...detected] : detected;
 			if (issueUrls.length > 0) {
 				targets.push({ resource: uri, issueUrls });
 			}
@@ -2733,8 +2782,14 @@ export class ParadisWorkspacesView extends ViewPane {
 				if (pr) {
 					parts.push(localize('paradis.workspaceSwitch.ariaPr', "PR #{0} {1}", pr.number, prStateLabel(pr.state)));
 				}
+			} else if (entry.id === 'origin') {
+				const origin = this.originToShow(worktree);
+				if (origin) {
+					// allow-any-unicode-next-line
+					parts.push(origin.kind === 'pr' ? localize('paradis.workspaceSwitch.ariaOriginPr', "作成元 PR #{0}", origin.number) : localize('paradis.workspaceSwitch.ariaOriginIssue', "作成元 Issue #{0}", origin.number));
+				}
 			} else if (entry.id === 'issues') {
-				const issues = this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)).length;
+				const issues = this.detectedIssueUrls(worktree).length;
 				// allow-any-unicode-next-line
 				parts.push(localize('paradis.workspaceSwitch.ariaIssues', "Issue {0} 件", issues));
 			} else if (entry.id === 'diff') {
@@ -2749,6 +2804,16 @@ export class ParadisWorkspacesView extends ViewPane {
 			}
 		}
 		return parts;
+	}
+
+	/** 行に出す作成元。PR のチップが同じ PR を出しているときは出さない。 */
+	private originToShow(worktree: IParadisWorktree): IParadisWorktreeOrigin | undefined {
+		return paradisWorktreeOriginToShow(worktree.origin, this._prStatuses.get(worktree.uri.fsPath)?.number);
+	}
+
+	/** 会話から拾った Issue の URL。作成元と同じ Issue は「作成元」のチップが出すので数えない。 */
+	private detectedIssueUrls(worktree: IParadisWorktree): readonly string[] {
+		return paradisIssueUrlsWithoutOrigin(this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)), worktree.origin);
 	}
 
 	/** 作った Map を引く。まだ無い行 (作成中など) は「メタ無し」= 2段扱い。 */
@@ -2768,7 +2833,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		const noteSummary = this.spaceNotesService.summary(stateKey);
 		return {
 			pr: this._prStatuses.has(worktree.uri.fsPath),
-			issues: this.agentStatusStore.getScopeIssueUrls(stateKey).length > 0,
+			origin: this.originToShow(worktree) !== undefined,
+			issues: this.detectedIssueUrls(worktree).length > 0,
 			diff: !!diffStat && (diffStat.insertions > 0 || diffStat.deletions > 0),
 			notes: noteSummary.open > 0,
 			promptCache: this.promptCacheChips?.hasScope(stateKey) ?? false,
