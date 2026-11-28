@@ -244,7 +244,11 @@
 .paradis-bot-face[data-color="teal"] { color: var(--vscode-terminal-ansiCyan); }
 .paradis-bot-face[data-color="green"] { color: var(--vscode-charts-green); }
 .paradis-bot-face[data-color="amber"] { color: var(--vscode-charts-yellow); }
-.paradis-bot-face[data-color="pink"] { color: var(--vscode-terminal-ansiMagenta); }
+/*
+	Pink leans toward red: the themes' magenta (Houston, Dark Modern) sits next to charts-purple, and the two faces looked
+	the same. Mixing a little less than half of the bright red into the bright magenta keeps it pink in light, dark and Houston, between red and violet.
+*/
+.paradis-bot-face[data-color="pink"] { color: color-mix(in srgb, var(--vscode-terminal-ansiBrightRed) 45%, var(--vscode-terminal-ansiBrightMagenta)); }
 .paradis-bot-face[data-color="violet"] { color: var(--vscode-charts-purple); }
 .paradis-bot-face[data-color="red"] { color: var(--vscode-charts-red); }
 .paradis-bot-face[data-color="orange"] { color: var(--vscode-charts-orange); }

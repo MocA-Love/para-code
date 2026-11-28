@@ -234,8 +234,9 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 
 	/** 一覧の高さを入れる。帯の高さが変わったら true。 */
 	private applyHeight(): boolean {
-		const rows = paradisBotsBandRows(this.bots, this.state.open).length + this.groupRowCount();
-		const listHeight = paradisBotsBandListHeight(this.state, rows, this.viewHeight);
+		const groupRows = this.groupRowCount();
+		const rows = paradisBotsBandRows(this.bots, this.state.open).length + groupRows;
+		const listHeight = paradisBotsBandListHeight(this.state, rows, this.viewHeight, groupRows);
 		this.list.style.height = `${listHeight}px`;
 		this.list.classList.toggle('hidden', listHeight === 0);
 		this.sash.state = this.state.open && rows > 0 ? SashState.Enabled : SashState.Disabled;

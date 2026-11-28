@@ -210,7 +210,8 @@ suite('Paradis bots page overlay', () => {
 		page.setInstance(1);
 		await settle();
 		const button = () => container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
-		const look = () => [button().hidden, button().disabled, button().textContent];
+		// 狭い幅では封筒と数だけになるので、文は読み上げの名前で見る
+		const look = () => [button().hidden, button().disabled, button().getAttribute('aria-label'), button().getElementsByClassName('paradis-bot-page-inbox-count')[0].textContent];
 		const idle = look();
 		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
 		button().click();
@@ -227,10 +228,10 @@ suite('Paradis bots page overlay', () => {
 		paradisRequestBotPageTab('release', 'chat');
 		const selectedAfterRequest = (container.getElementsByClassName('paradis-bot-page-tab selected')[0] as HTMLElement).textContent;
 		assert.deepStrictEqual({ idle, selectedAfterAsk, sent: calls.filter(call => call.startsWith('message')), working, empty, selectedAfterRequest }, {
-			idle: [false, false, '受け箱に 2 通あります。読ませる'],
+			idle: [false, false, '受け箱に 2 通あります。読ませる', '2'],
 			selectedAfterAsk: '会話',
 			sent: ['message 1 受け箱（bot_inbox）を見て、ほかの Bot から届いた伝言に対応してください。'],
-			working: [false, true, '受け箱に 2 通'],
+			working: [false, true, '受け箱に 2 通', '2'],
 			empty: true,
 			selectedAfterRequest: '会話',
 		});
@@ -244,7 +245,7 @@ suite('Paradis bots page overlay', () => {
 		const button = container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
 		button.click();
 		await settle();
-		assert.deepStrictEqual([button.hidden, button.disabled, button.textContent, calls.filter(call => call.startsWith('message'))], [false, true, '受け箱に 2 通', []]);
+		assert.deepStrictEqual([button.hidden, button.disabled, button.getAttribute('aria-label'), calls.filter(call => call.startsWith('message'))], [false, true, '受け箱に 2 通', []]);
 	});
 
 	test('見回りのペインかを引けなくても、帯は出し続ける（会話のペインとみなす）', async () => {
@@ -597,9 +598,9 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual({ terminalView, chatView, itemsTab, beforeTabs, backToTerminal, calls: headerCalls }, {
 			itemsTab: true,
 			beforeTabs: true,
-			terminalView: { status: '1 件があなたの番', attention: false, model: '', view: true },
+			terminalView: { status: '1 件があなたの番', attention: true, model: '', view: true },
 			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', view: true },
-			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', view: true },
+			backToTerminal: { status: '1 件があなたの番', attention: true, model: '', view: true },
 			calls: ['hide 1 #1', 'hide 1 #2', 'unhide 1 #1', 'hide 1 #3', 'unhide 1 #2', 'terminal 1', 'unhide 1 #3', 'hide 1 #4', 'unhide 1 #4'],
 		});
 	});

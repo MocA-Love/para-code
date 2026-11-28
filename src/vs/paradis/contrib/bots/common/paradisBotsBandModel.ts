@@ -87,15 +87,17 @@ export function paradisBotsBandRows(bots: readonly IParadisBotSummary[], open: b
  * 一覧の高さ。開いているときは覚えた高さ（無ければ既定）を、行が少なければ行の分まで縮める。閉じているときは
  * ピン留めの行の分だけ（無ければ 0）。どちらもビューの高さの {@link PARADIS_BOTS_BAND_SIZES.maxViewShare} を超えない
  * （超える分は帯の中でスクロールする）。
+ * @param groupRowCount `rowCount` のうちグループの節の行（見出しを含む）。高さを覚えていなければ、既定の高さ（Bot の 4 行分）に
+ * この分を足す（Bot が 3 体を超えると、グループの行がスクロールの外に隠れて気づけなかった）。
  */
-export function paradisBotsBandListHeight(state: IParadisBotsBandState, rowCount: number, viewHeight: number): number {
+export function paradisBotsBandListHeight(state: IParadisBotsBandState, rowCount: number, viewHeight: number, groupRowCount = 0): number {
 	const sizes = PARADIS_BOTS_BAND_SIZES;
 	if (rowCount === 0) {
 		// 開いていれば空の案内の 1 行、閉じていれば一覧を出さない
 		return state.open ? sizes.row + sizes.listPadding : 0;
 	}
 	const content = rowCount * sizes.row + sizes.listPadding;
-	const wanted = state.open ? Math.min(content, state.listHeight ?? sizes.defaultList) : content;
+	const wanted = state.open ? Math.min(content, state.listHeight ?? sizes.defaultList + groupRowCount * sizes.row) : content;
 	const cap = Math.max(sizes.row + sizes.listPadding, Math.floor(viewHeight * sizes.maxViewShare));
 	return Math.max(0, Math.min(wanted, cap));
 }
