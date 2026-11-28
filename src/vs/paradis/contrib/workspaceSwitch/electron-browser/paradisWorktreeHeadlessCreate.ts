@@ -68,6 +68,7 @@ import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpenin
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisGithubReferenceResolver, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeNameReference, paradisDecideWorktreeNaming } from '../common/paradisWorktreeNaming.js';
+import { paradisParseWorktreeOrigin } from '../common/paradisWorktreeOrigin.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisResumeAgentLabel } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisPrepareAgentResumeCommand } from '../../sessionResume/electron-browser/paradisClaudeCodeModeResume.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -922,11 +923,14 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		}
 	}
 
+	// 元になった Issue・PR を残し、一覧の行に「作成元」のチップとして出す（q.html Q691）
+	const origin = paradisParseWorktreeOrigin(naming.origin);
 	const createdWorktree: IParadisWorktree = {
 		repositoryId: repository.id,
 		name: displayName,
 		branch,
 		uri: worktreeUri,
+		...(origin ? { origin } : {}),
 	};
 	worktreeService.addKnownWorktree(createdWorktree);
 	if (request.sectionId !== undefined) {

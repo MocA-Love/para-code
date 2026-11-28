@@ -17,6 +17,8 @@ suite('worktree naming from a pasted issue or pull request', () => {
 	const ISSUE_URL = 'https://github.com/acme/app/issues/2236';
 	// allow-any-unicode-next-line
 	const TITLE = 'テンプレートJSONの重説マッピング';
+	/** 作成元として残る Issue（題名は取れたときだけ）。 */
+	const origin = (title?: string) => ({ url: ISSUE_URL, number: 2236, kind: 'issue' as const, ...(title !== undefined ? { title } : {}) });
 	const found: ParadisGithubReferenceLookup = { kind: 'ok', info: { kind: 'issue', owner: 'acme', repo: 'app', number: 2236, title: TITLE, url: ISSUE_URL, state: 'open' } };
 
 	/** 決め方を走らせ、結果と、外へ出た呼び出し（gh・命名のモデル）を返す。 */
@@ -47,6 +49,8 @@ suite('worktree naming from a pasted issue or pull request', () => {
 				// allow-any-unicode-next-line
 				spaceName: '#2236 テンプレートJSONの重説マッピング',
 				suggestedTitle: 'model title',
+				// 作ったスペースに残す作成元（一覧の行のチップ）
+				origin: origin(TITLE),
 			},
 			// 取るのは最初の URL だけ。題名は命名のモデルへの入力にだけ入る（結果に指示は無く、エージェントへ渡る指示は変わらない）
 			calls: [`gh ${ISSUE_URL}`, `model ${TITLE}\n${prompt}`],
@@ -63,11 +67,12 @@ suite('worktree naming from a pasted issue or pull request', () => {
 			both: await decide({ prompt: ISSUE_URL, name: typedName, branch: 'my-branch' }, { lookup: found }),
 		}, {
 			// 名前は打ったもの、番号はブランチ名にだけ使う
-			name: { naming: { branch: '2236-mapping', spaceName: typedName, suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026' }, calls: [`gh ${ISSUE_URL}`, `model ${TITLE}\n${ISSUE_URL}`] },
+			name: { naming: { branch: '2236-mapping', spaceName: typedName, suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026', origin: origin(TITLE) }, calls: [`gh ${ISSUE_URL}`, `model ${TITLE}\n${ISSUE_URL}`] },
 			// ブランチ名を打っていれば番号も足さず、命名のモデルも呼ばない
 			// allow-any-unicode-next-line
-			branch: { naming: { branch: 'my-branch', spaceName: '#2236 テンプレートJSONの重説マッピング' }, calls: [`gh ${ISSUE_URL}`] },
-			both: { naming: { branch: 'my-branch', spaceName: typedName }, calls: [] },
+			branch: { naming: { branch: 'my-branch', spaceName: '#2236 テンプレートJSONの重説マッピング', origin: origin(TITLE) }, calls: [`gh ${ISSUE_URL}`] },
+			// 取りに行かなくても、作成元は残す（題名は無い）
+			both: { naming: { branch: 'my-branch', spaceName: typedName, origin: origin() }, calls: [] },
 		});
 	});
 
@@ -82,14 +87,14 @@ suite('worktree naming from a pasted issue or pull request', () => {
 			noModel: await decide({ prompt: ISSUE_URL }, { lookup: found }),
 		}, {
 			// ダイアログが選んだ PR（指示の最初の URL ではない）を使い、取り直さない。モデルが使えなければ英字の題名から作る
-			fetched: { naming: { branch: '2241-fix-the-mapping', spaceName: '#2241 Fix the mapping', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026' }, calls: [`model Fix the mapping\n${ISSUE_URL}`] },
+			fetched: { naming: { branch: '2241-fix-the-mapping', spaceName: '#2241 Fix the mapping', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026', origin: dialogReference }, calls: [`model Fix the mapping\n${ISSUE_URL}`] },
 			dismissed: { naming: { branch: 'from-prompt', spaceName: '', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026' }, calls: [`model ${ISSUE_URL}`] },
 			// 取れなければ今までの付け方（作成は止めない）
-			failed: { naming: { branch: `fallback(|${ISSUE_URL})`, spaceName: '', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026' }, calls: [`gh ${ISSUE_URL}`, `model ${ISSUE_URL}`] },
-			timedOut: { naming: { branch: `fallback(Typed|${ISSUE_URL})`, spaceName: 'Typed', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026' }, calls: [`gh ${ISSUE_URL}`, `model ${ISSUE_URL}`] },
+			failed: { naming: { branch: `fallback(|${ISSUE_URL})`, spaceName: '', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026', origin: origin() }, calls: [`gh ${ISSUE_URL}`, `model ${ISSUE_URL}`] },
+			timedOut: { naming: { branch: `fallback(Typed|${ISSUE_URL})`, spaceName: 'Typed', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026', origin: origin() }, calls: [`gh ${ISSUE_URL}`, `model ${ISSUE_URL}`] },
 			// 日本語の題名でモデルも使えないときは、URL の文字からではなく番号から作る
 			// allow-any-unicode-next-line
-			noModel: { naming: { branch: 'issue-2236', spaceName: '#2236 テンプレートJSONの重説マッピング', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026' }, calls: [`gh ${ISSUE_URL}`, `model ${TITLE}\n${ISSUE_URL}`] },
+			noModel: { naming: { branch: 'issue-2236', spaceName: '#2236 テンプレートJSONの重説マッピング', suggestedTitle: ISSUE_URL.slice(0, 24) + '\u2026', origin: origin(TITLE) }, calls: [`gh ${ISSUE_URL}`, `model ${TITLE}\n${ISSUE_URL}`] },
 		});
 	});
 

@@ -53,6 +53,11 @@ export interface IParadisWorktreeNaming {
 	readonly spaceName: string;
 	/** 命名のモデルの見出しか、指示の 1 行目。 */
 	readonly suggestedTitle?: string;
+	/**
+	 * 作ったスペースの元になった Issue・PR（ダイアログのカードで選んだもの、無ければ指示に最初に出てくる URL）。
+	 * カードを閉じた（`skipReference`）ときと、指示に URL が無いときは無い。名前を打って取りに行かなかったときも残す。
+	 */
+	readonly origin?: IParadisWorktreeNameReference;
 }
 
 /**
@@ -68,12 +73,12 @@ export async function paradisDecideWorktreeNaming(input: IParadisWorktreeNamingI
 	const typedName = input.name.trim();
 	let branch = input.branch;
 	let reference: { readonly number: number; readonly kind: ParadisGithubReferenceKind; readonly title: string } | undefined;
+	const hint: IParadisWorktreeNameReference | undefined = input.skipReference === true ? undefined : input.reference ?? paradisExtractGithubReferences(input.prompt, 1).at(0);
 	// スペース名もブランチ名も決まっていれば、取りに行かない
-	if (input.skipReference !== true && (typedName.length === 0 || !branch)) {
-		const hint: IParadisWorktreeNameReference | undefined = input.reference ?? paradisExtractGithubReferences(input.prompt, 1).at(0);
-		if (hint?.title !== undefined) {
+	if (hint !== undefined && (typedName.length === 0 || !branch)) {
+		if (hint.title !== undefined) {
 			reference = { number: hint.number, kind: hint.kind, title: hint.title };
-		} else if (hint !== undefined) {
+		} else {
 			host.onNaming();
 			const found = await host.lookupReference(hint.url);
 			if (found?.kind === 'ok') {
@@ -102,5 +107,11 @@ export async function paradisDecideWorktreeNaming(input: IParadisWorktreeNamingI
 			: branch ?? host.fallbackBranchName([input.name, input.prompt]);
 	}
 	const spaceName = typedName || (reference !== undefined ? paradisToReferenceWorktreeTitle(reference.number, reference.title) : '');
-	return { branch, spaceName, ...(suggestedTitle !== undefined ? { suggestedTitle } : {}) };
+	const origin: IParadisWorktreeNameReference | undefined = hint === undefined ? undefined : {
+		url: hint.url,
+		number: hint.number,
+		kind: hint.kind,
+		...(reference !== undefined || hint.title !== undefined ? { title: reference?.title ?? hint.title } : {}),
+	};
+	return { branch, spaceName, ...(suggestedTitle !== undefined ? { suggestedTitle } : {}), ...(origin !== undefined ? { origin } : {}) };
 }

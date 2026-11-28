@@ -20,7 +20,7 @@ import { IReadFileOptions } from '../../../../../platform/files/common/files.js'
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
+import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { ParadisWorktreeService } from '../../browser/paradisWorktreeService.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../../common/paradisWorkspaceSwitch.js';
 
@@ -78,5 +78,51 @@ suite('ParadisWorktreeService scan', () => {
 			repositories.map(repository => service.getDetectedWorktrees(repository.id).map(worktree => `${worktree.repositoryId}/${basename(worktree.uri)}:${worktree.branch}`)),
 			repositories.map(repository => names.map(name => `${repository.id}/${name}:${name}`)),
 		);
+	});
+
+	// Q691: 作成元の Issue は既知の 1 件に残り、名前を変えても消えない。台帳を手で書き換えた値は確かめ直す
+	test('keeps the origin issue of a known worktree across a rename and drops an origin that is not a github.com URL', async () => {
+		const disposables = store.add(new DisposableStore());
+		const fileService = disposables.add(new FileService(new NullLogService()));
+		disposables.add(fileService.registerProvider('file', disposables.add(new InMemoryFileSystemProvider())));
+		const repository: IParadisWorkspaceRepository = { id: 'repo', name: 'repo', uri: URI.file('/repos/repo') };
+		await fileService.writeFile(joinPath(repository.uri, '.git', 'HEAD'), VSBuffer.fromString('ref: refs/heads/main\n'));
+		for (const name of ['a', 'b']) {
+			const worktree = URI.file(`/worktrees/${name}`);
+			await fileService.writeFile(joinPath(worktree, '.git'), VSBuffer.fromString(`gitdir: ${repository.uri.path}/.git/worktrees/${name}\n`));
+			await fileService.writeFile(joinPath(repository.uri, '.git', 'worktrees', name, 'gitdir'), VSBuffer.fromString(`${worktree.path}/.git\n`));
+			await fileService.writeFile(joinPath(repository.uri, '.git', 'worktrees', name, 'HEAD'), VSBuffer.fromString(`ref: refs/heads/${name}\n`));
+		}
+		const storage = disposables.add(new InMemoryStorageService());
+		const issue = { kind: 'issue', url: 'https://github.com/acme/app/issues/1234', number: 1234, title: 'Fix the list' };
+		storage.store('paradis.workspaceSwitch.knownWorktrees', JSON.stringify([
+			{ repositoryId: 'repo', path: URI.file('/worktrees/a').toString(), name: 'A', origin: issue },
+			{ repositoryId: 'repo', path: URI.file('/worktrees/b').toString(), name: 'B', origin: { kind: 'issue', url: 'https://example.com/x/y/issues/1', number: 1 } },
+		]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const service = disposables.add(new ParadisWorktreeService(
+			fileService,
+			upcastPartial<IParadisWorkspaceSwitchService>({
+				repositories: [repository],
+				pendingCommittedRetirementStateKeys: [],
+				activeStateKey: undefined,
+				onDidChangeRepositories: Event.None,
+				onDidSwitchScope: Event.None,
+			}),
+			storage,
+			new TestConfigurationService(),
+			new NullLogService(),
+		));
+		await service.initializationBarrier;
+		const listed = () => service.getWorktrees('repo').map(worktree => ({ name: worktree.name, origin: worktree.origin?.number }));
+		const before = listed();
+		// 名前の変更は作成元を持たない値で書き直す（一覧の行の値をそのまま渡す経路もある）
+		const a = service.getWorktrees('repo').find(worktree => worktree.name === 'A')!;
+		service.addKnownWorktree({ repositoryId: a.repositoryId, name: 'A2', uri: a.uri, branch: a.branch });
+		const saved = JSON.parse(storage.get('paradis.workspaceSwitch.knownWorktrees', StorageScope.WORKSPACE) ?? '[]');
+
+		assert.deepStrictEqual({ before, saved: saved.map((entry: { name: string; origin?: unknown }) => ({ name: entry.name, origin: entry.origin })) }, {
+			before: [{ name: 'A', origin: 1234 }, { name: 'B', origin: undefined }],
+			saved: [{ name: 'A2', origin: issue }, { name: 'B', origin: undefined }],
+		});
 	});
 });

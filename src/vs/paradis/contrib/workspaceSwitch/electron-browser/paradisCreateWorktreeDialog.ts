@@ -16,13 +16,14 @@
 import './media/paradisCreateWorktreeDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ByteSize, IFileService } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -73,6 +74,10 @@ import { Schemas } from '../../../../base/common/network.js';
 import { PASTED_IMAGE_DIR } from '../../terminalImagePaste/browser/paradisTerminalImagePaste.js';
 import { paradisAgentImageMode, PARADIS_WORKTREE_IMAGE_MAX_BYTES, PARADIS_WORKTREE_IMAGE_MAX_COUNT, paradisWorktreeImageFileName } from '../common/paradisWorktreeImageAttach.js';
 import { ParadisWorktreeImageBlock, ParadisWorktreeImageComposer } from '../browser/paradisWorktreeImageComposer.js';
+import { IParadisPromptTemplate, paradisInsertPromptTemplate, paradisPromptTemplateName } from '../common/paradisPromptTemplates.js';
+import { IParadisPresetService, paradisPresetAction } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IContextMenuService, IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 
 const $ = dom.$;
 
@@ -228,6 +233,18 @@ const STR_REF_VIA_LOCAL = localize('paradis.createWorktree.refViaLocal', "手元
 const STR_REF_FALLBACK = localize('paradis.createWorktree.refFallback', "スペース名は今までどおり指示から付けます");
 // allow-any-unicode-next-line
 const STR_GROUP_PULL_REQUEST = localize('paradis.createWorktree.groupPullRequest', "プルリクエスト（fork）");
+// allow-any-unicode-next-line
+const STR_TEMPLATES_ARIA = localize('paradis.createWorktree.templatesAria', "指示のテンプレート");
+// allow-any-unicode-next-line
+const STR_TEMPLATES_MENU = localize('paradis.createWorktree.templatesMenu', "テンプレート");
+// allow-any-unicode-next-line
+const STR_TEMPLATES_MORE = localize('paradis.createWorktree.templatesMore', "その他");
+// allow-any-unicode-next-line
+const STR_TEMPLATES_SAVE = localize('paradis.createWorktree.templatesSave', "今の指示をテンプレートとして保存");
+// allow-any-unicode-next-line
+const STR_TEMPLATES_MANAGE = localize('paradis.createWorktree.templatesManage', "テンプレートを管理…");
+/** コマンドプリセットの管理を開くコマンド（paradisTerminalPresets.contribution.ts の Action2）。 */
+const PARADIS_CONFIGURE_PRESETS_COMMAND_ID = 'paradis.terminal.configurePresets';
 /** 指示の入力が止まってから Issue・PR を取りに行くまでの時間（q.html Q684 の D2）。 */
 const REFERENCE_DEBOUNCE_MS = 500;
 
@@ -316,6 +333,41 @@ export function paradisResolveCreateWorktreeForm(prefill: IParadisHeadlessWorktr
 	return { form: prefill.sectionId !== undefined ? { ...rest, sectionId: prefill.sectionId } : rest, restored: true };
 }
 
+/** ダイアログがテンプレートを読む・作る・管理を開く口（プリセットの service はダイアログの外で包む）。 */
+export interface IParadisPromptTemplateSource {
+	readonly onDidChange: Event<void>;
+	/** そのリポジトリで使えるテンプレート（リポジトリの絞り込みと `.paracode.json` はそのリポジトリで読む）。 */
+	list(repositoryUri: URI): Promise<readonly IParadisPromptTemplate[]>;
+	/** 今の指示を、自分だけのテンプレートとして足す。 */
+	save(name: string, prompt: string): Promise<void>;
+	/** テンプレートを直す・消す画面（コマンドプリセットの管理）を開く。 */
+	manage(): void;
+	/** 「その他」のメニューを出す（ダイアログの上に重なるメニュー）。 */
+	showMenu(anchor: HTMLElement, actions: readonly IAction[]): void;
+}
+
+
+/**
+ * 指示のテンプレートの読み書きを、コマンドプリセットの「エージェント向けプロンプト」で包む（q.html Q691）。
+ * 新しい保存先を作らず、作る・直す・消すは既存のコマンドプリセットの管理に任せる。
+ */
+function paradisPromptTemplateSource(accessor: ServicesAccessor): IParadisPromptTemplateSource {
+	const presetService = accessor.get(IParadisPresetService);
+	const commandService = accessor.get(ICommandService);
+	const contextMenuService = accessor.get(IContextMenuService);
+	return {
+		onDidChange: presetService.onDidChangePresets,
+		list: async repositoryUri => (await presetService.getPresetsForFolder(repositoryUri))
+			// 接続先が違うものは、ターミナルの右クリックと同じく出さない
+			.filter(preset => paradisPresetAction(preset) === 'agent-prompt' && !preset.envInactive && typeof preset.prompt === 'string' && preset.prompt.trim().length > 0)
+			.map(preset => ({ key: preset.key, name: preset.name, prompt: preset.prompt! })),
+		// 自分だけのものとして足す。タブバーのボタンには出さない（ダイアログのためのテンプレートなので）
+		save: (name, prompt) => presetService.savePreset({ name, action: 'agent-prompt', prompt, pinned: false }, 'user'),
+		manage: () => { void commandService.executeCommand(PARADIS_CONFIGURE_PRESETS_COMMAND_ID); },
+		showMenu: (anchor, actions) => contextMenuService.showContextMenu({ getAnchor: () => anchor, getActions: () => actions }),
+	};
+}
+
 export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, preselectedRepositoryId?: string, prefill?: IParadisHeadlessWorktreeRequest): void {
 	const dialog = new ParadisCreateWorktreeDialog(
 		accessor.get(ILayoutService),
@@ -338,6 +390,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		paradisWorktreeGitWriteHostResolver(accessor),
 		paradisGithubReferenceResolver(accessor),
 		accessor.get(IParadisSpaceSectionsService),
+		paradisPromptTemplateSource(accessor),
 	);
 	// ダイアログは自身の close で自己 dispose する
 	void dialog;
@@ -455,6 +508,17 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _refPullRequestBranch: { readonly name: string; readonly number: number } | undefined;
 	/** 選んだリポジトリの origin（github.com の `owner/repo`）。 */
 	private _originRepository: { readonly repositoryId: string; readonly value: Promise<string | undefined> } | undefined;
+	/** 見出しの右に並べる指示のテンプレート（選んでいるリポジトリで読んだもの）。 */
+	private _templates: readonly IParadisPromptTemplate[] = [];
+	private _templatesEl: HTMLElement | undefined;
+	/** 並べたチップ（入らないものは hidden にして「その他」に回す）と「その他」のボタン。 */
+	private _templateChips: { readonly template: IParadisPromptTemplate; readonly element: HTMLElement }[] = [];
+	private _templateMore: HTMLElement | undefined;
+	private readonly _templateStore = this._register(new DisposableStore());
+	/** テンプレートの読み込みの番号（リポジトリを選び直したとき、古い答えで上書きしない）。 */
+	private _templatesRequest = 0;
+	/** 指示の欄に一度でも触ったか（触っていなければテンプレートは末尾へ足す）。 */
+	private _promptTouched = false;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -477,6 +541,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly lookupReference?: ParadisGithubReferenceResolver,
 		/** スペースのセクションの一覧。省くと「セクション」の欄を出さない。 */
 		private readonly spaceSections?: Pick<IParadisSpaceSectionsService, 'sectionsOf'>,
+		/** 指示のテンプレート（q.html Q691）。省くと見出しの右のチップを出さない。 */
+		private readonly promptTemplates?: IParadisPromptTemplateSource,
 	) {
 		super();
 
@@ -516,6 +582,11 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// インストール済み CLI のモデル候補を取り直し、届いたら選択を保ったまま並べ直す
 		this._register(this.modelCatalogService.onDidChange(() => this._onAgentTemplatesChanged()));
 		this.modelCatalogService.refresh();
+		if (this.promptTemplates) {
+			this._register(this.promptTemplates.onDidChange(() => void this._loadPromptTemplates()));
+			// 窓の幅で入るチップの数が変わる
+			this._register(dom.addDisposableListener(dom.getWindow(this._dialog), 'resize', () => this._fitPromptTemplates()));
+		}
 	}
 
 	override dispose(): void {
@@ -703,7 +774,14 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// 画像を添えられるよう、指示の欄・サムネイル・クリップを 1 つの枠にまとめる（Q615 の案 B）。枠の中にボタンがあるので
 		// 箱を label で包まず、見出しの label の `for` で欄を指す（見出しを押すと欄へ移る）
 		const promptField = dom.append(body, $('.pcw-d-field'));
-		const promptLabel = dom.append(promptField, $('label')) as HTMLLabelElement;
+		// 見出しの右に指示のテンプレートのチップを並べる（q.html Q691）。テンプレートを渡されていなければ今までどおり見出しだけ
+		const promptHead = this.promptTemplates ? dom.append(promptField, $('.pcw-d-prompt-head')) : promptField;
+		const promptLabel = dom.append(promptHead, $('label')) as HTMLLabelElement;
+		if (this.promptTemplates) {
+			this._templatesEl = dom.append(promptHead, $('.pcw-d-templates'));
+			this._templatesEl.setAttribute('role', 'group');
+			this._templatesEl.setAttribute('aria-label', STR_TEMPLATES_ARIA);
+		}
 		promptLabel.htmlFor = `paradis-create-worktree-prompt-${id}`;
 		promptLabel.textContent = STR_PROMPT_FIELD;
 		this._imageComposer = this._register(new ParadisWorktreeImageComposer(promptField, {
@@ -719,6 +797,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._refSlot.setAttribute('role', 'group');
 		this._refSlot.setAttribute('aria-label', STR_REFS_ARIA);
 		this._promptInput = this._imageComposer.textarea;
+		this._promptTouched = false;
+		this._register(dom.addDisposableListener(this._promptInput, 'focus', () => { this._promptTouched = true; }));
 		this._register(this._imageComposer.onDidChange(() => {
 			this._updateCommandPreview();
 			this._updateCreateEnabled();
@@ -1104,8 +1184,132 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		}
 	}
 
+	/** 選んでいるリポジトリで使える指示のテンプレートを読み、見出しの右に並べ直す。 */
+	private async _loadPromptTemplates(): Promise<void> {
+		const source = this.promptTemplates;
+		const repository = this._selectedRepository;
+		if (!source || !this._templatesEl) {
+			return;
+		}
+		const request = ++this._templatesRequest;
+		let templates: readonly IParadisPromptTemplate[] = [];
+		if (repository) {
+			try {
+				templates = await source.list(repository.uri);
+			} catch (error) {
+				this.logService.warn('[ParadisCreateWorktreeDialog] reading the prompt templates failed', error);
+			}
+		}
+		if (request !== this._templatesRequest || this._store.isDisposed) {
+			return;
+		}
+		this._templates = templates;
+		this._renderPromptTemplates();
+	}
+
+	private _renderPromptTemplates(): void {
+		const container = this._templatesEl;
+		if (!container) {
+			return;
+		}
+		this._templateStore.clear();
+		dom.clearNode(container);
+		this._templateChips = [];
+		for (const template of this._templates) {
+			const chip = dom.append(container, $('button.pcw-d-template.paradis-focus-ring')) as HTMLButtonElement;
+			chip.type = 'button';
+			this._templateChips.push({ template, element: chip });
+			dom.append(chip, $(ThemeIcon.asCSSSelector(Codicon.symbolSnippet)));
+			dom.append(chip, $('span')).textContent = template.name;
+			this._templateStore.add(this.hoverService.setupDelayedHover(chip, () => ({ content: template.prompt })));
+			// 押してもカーソルと選んでいる文字を欄に残す（フォーカスが移ると、どこへ入れるかが分からなくなる）
+			this._templateStore.add(dom.addDisposableListener(chip, 'mousedown', e => e.preventDefault()));
+			this._templateStore.add(dom.addDisposableListener(chip, 'click', () => this._insertPromptTemplate(template)));
+		}
+		const more = dom.append(container, $('button.pcw-d-template.pcw-d-template-more.paradis-focus-ring')) as HTMLButtonElement;
+		more.type = 'button';
+		more.setAttribute('aria-haspopup', 'menu');
+		this._templateMore = more;
+		dom.append(more, $('span')).textContent = this._templates.length > 0 ? STR_TEMPLATES_MORE : STR_TEMPLATES_MENU;
+		dom.append(more, $(ThemeIcon.asCSSSelector(Codicon.chevronDown)));
+		this._templateStore.add(dom.addDisposableListener(more, 'mousedown', e => e.preventDefault()));
+		this._templateStore.add(dom.addDisposableListener(more, 'click', () => this._showPromptTemplateMenu(more)));
+		this._fitPromptTemplates();
+	}
+
+	/** 見出しの行に入らないチップを隠す（隠したものは「その他」に出す）。後ろのチップから隠す。 */
+	private _fitPromptTemplates(): void {
+		const container = this._templatesEl;
+		if (!container) {
+			return;
+		}
+		const chips = this._templateChips.map(chip => chip.element);
+		const more = this._templateMore;
+		chips.forEach(chip => chip.classList.remove('hidden'));
+		const gap = parseFloat(dom.getComputedStyle(container).columnGap) || 0;
+		const needed = () => [...chips.filter(chip => !chip.classList.contains('hidden')), ...(more ? [more] : [])]
+			.reduce((width, element) => width + element.offsetWidth + gap, -gap);
+		for (let index = chips.length - 1; index >= 0 && needed() > container.clientWidth; index--) {
+			chips[index].classList.add('hidden');
+		}
+	}
+
+	private _showPromptTemplateMenu(anchor: HTMLElement): void {
+		const source = this.promptTemplates;
+		if (!source) {
+			return;
+		}
+		const hidden = this._templateChips.filter(chip => chip.element.classList.contains('hidden')).map(chip => chip.template);
+		const prompt = this._promptInput.value;
+		const name = paradisPromptTemplateName(prompt, this._templates.map(template => template.name));
+		const actions: IAction[] = hidden.map(template => toAction({ id: `paradis.createWorktree.template.${template.key}`, label: template.name, run: () => this._insertPromptTemplate(template) }));
+		if (actions.length > 0) {
+			actions.push(new Separator());
+		}
+		actions.push(toAction({
+			id: 'paradis.createWorktree.template.save',
+			label: name ? localize('paradis.createWorktree.templatesSaveAs', "今の指示をテンプレートとして保存（{0}）", name) : STR_TEMPLATES_SAVE,
+			enabled: name !== undefined,
+			run: async () => {
+				if (name === undefined) {
+					return;
+				}
+				try {
+					await source.save(name, prompt);
+				} catch (error) {
+					this._showError(error);
+				}
+			},
+		}));
+		actions.push(toAction({
+			id: 'paradis.createWorktree.template.manage',
+			label: STR_TEMPLATES_MANAGE,
+			// 管理の画面はこのダイアログの上に出せないので、書きかけを下書きに残して閉じてから開く
+			run: () => {
+				this.dispose();
+				source.manage();
+			},
+		}));
+		source.showMenu(anchor, actions);
+	}
+
+	/** テンプレートを指示の欄へ入れる（カーソルの位置、選んだ文字は置き換え、最初の穴を選ぶ）。 */
+	private _insertPromptTemplate(template: IParadisPromptTemplate): void {
+		const textarea = this._promptInput;
+		// チップは押してもフォーカスを奪わないので、欄にフォーカスがあれば今のカーソルの位置へ入れる
+		const touched = this._promptTouched || dom.isActiveElement(textarea);
+		const next = paradisInsertPromptTemplate(textarea.value, textarea.selectionStart, textarea.selectionEnd, touched, template.prompt);
+		textarea.value = next.value;
+		textarea.focus();
+		textarea.setSelectionRange(next.selectionStart, next.selectionEnd);
+		this._promptTouched = true;
+		// 打ったときと同じ流れ（コマンドのプレビュー・作成ボタン・Issue・PR のカード）を通す
+		textarea.dispatchEvent(new InputEvent('input', { bubbles: true }));
+	}
+
 	private _onRepositoryChanged(prefillRunSetup?: boolean, sectionId?: string): void {
 		this._loadSections(sectionId);
+		void this._loadPromptTemplates();
 		this._imageComposer.setRemote(this._selectedRepository?.uri.scheme === Schemas.vscodeRemote);
 		void this._loadBranches();
 		void this._loadSetupScript(prefillRunSetup);

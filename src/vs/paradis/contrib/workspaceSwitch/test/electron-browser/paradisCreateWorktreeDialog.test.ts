@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
+import { IAction } from '../../../../../base/common/actions.js';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Event } from '../../../../../base/common/event.js';
@@ -25,7 +26,7 @@ import { InMemoryStorageService } from '../../../../../platform/storage/common/s
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceSection } from '../../common/paradisSpaceSections.js';
-import { ParadisCreateWorktreeDialog, paradisResolveCreateWorktreeForm } from '../../electron-browser/paradisCreateWorktreeDialog.js';
+import { IParadisPromptTemplateSource, ParadisCreateWorktreeDialog, paradisResolveCreateWorktreeForm } from '../../electron-browser/paradisCreateWorktreeDialog.js';
 import { IParadisWorktreeGitHost, ParadisGithubReferenceResult } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
 import { IParadisGithubReferenceInfo } from '../../../../common/paradisIssueDetection.js';
 import { IParadisWorktreeCreateQueueService } from '../../electron-browser/paradisWorktreeCreateQueue.js';
@@ -369,6 +370,8 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 		/** 2 つ目のリポジトリ（詳細オプションで選び替える）。 */
 		readonly secondRepository?: boolean;
 		readonly worktrees?: readonly { readonly name: string; readonly path: string }[];
+		/** 指示のテンプレート（q.html Q691）。 */
+		readonly templates?: IParadisPromptTemplateSource;
 	}
 
 	function open(container: HTMLElement, options: IOpenOptions = {}) {
@@ -417,6 +420,8 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 				lookedUp.push(url);
 				return options.lookups?.[url] ?? { kind: 'failed', reason: 'notFound', via: 'local' };
 			},
+			undefined,
+			options.templates,
 		);
 		const modal = container.querySelector<HTMLElement>('.paradis-create-worktree-dialog')!;
 		const cards = () => [...modal.querySelectorAll<HTMLElement>('.pcw-d-ref')].map(card => ({
@@ -693,6 +698,49 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 				// 別のリポジトリの PR なので、元のブランチは当てず、番号を足す付け方に戻る
 				second: { name: '#2241 Fix the mapping', branch: '2241-(自動生成)', mode: '新しいブランチ', path: URI.file('/other-worktrees/2241-(自動生成)').fsPath },
 				chosen: '',
+			});
+		});
+	});
+
+	test('a prompt template chip inserts at the caret and selects the first hole; the menu saves the prompt as a template and opens the manager', async () => {
+		const saved: string[] = [];
+		const managed: string[] = [];
+		let menu: readonly IAction[] = [];
+		const templates: IParadisPromptTemplateSource = {
+			onDidChange: Event.None,
+			// allow-any-unicode-next-line
+			list: async () => [{ key: 'fix', name: 'Issue を直す', prompt: '直す: {{Issue の URL}}' }],
+			save: async (name, prompt) => { saved.push(`${name}=${prompt}`); },
+			manage: () => { managed.push('manage'); },
+			showMenu: (_anchor, actions) => { menu = actions; },
+		};
+		await withDialog({ templates }, async dialog => {
+			await timeout(0);
+			const textarea = dialog.modal.querySelector<HTMLTextAreaElement>('textarea')!;
+			const chips = [...dialog.modal.querySelectorAll<HTMLElement>('.pcw-d-template')].map(chip => chip.textContent);
+			textarea.focus();
+			// allow-any-unicode-next-line
+			textarea.value = 'まず: ';
+			textarea.setSelectionRange(4, 4);
+			dialog.modal.querySelector<HTMLElement>('.pcw-d-template')!.click();
+			const inserted = { value: textarea.value, selected: textarea.value.slice(textarea.selectionStart, textarea.selectionEnd) };
+			dialog.modal.querySelector<HTMLElement>('.pcw-d-template-more')!.click();
+			const labels = menu.filter(action => action.id.endsWith('.save') || action.id.endsWith('.manage')).map(action => action.label);
+			await menu.find(action => action.id.endsWith('.save'))!.run();
+			// 管理を開くときは、書きかけを下書きに残してダイアログを閉じる
+			await menu.find(action => action.id.endsWith('.manage'))!.run();
+			const closed = dialog.modal.isConnected === false;
+			assert.deepStrictEqual({ chips, inserted, labels, saved, managed, closed }, {
+				// allow-any-unicode-next-line
+				chips: ['Issue を直す', 'その他'],
+				// allow-any-unicode-next-line
+				inserted: { value: 'まず: 直す: {{Issue の URL}}', selected: '{{Issue の URL}}' },
+				// allow-any-unicode-next-line
+				labels: ['今の指示をテンプレートとして保存（まず: 直す: {{Issue の URL}}）', 'テンプレートを管理…'],
+				// allow-any-unicode-next-line
+				saved: ['まず: 直す: {{Issue の URL}}=まず: 直す: {{Issue の URL}}'],
+				managed: ['manage'],
+				closed: true,
 			});
 		});
 	});
