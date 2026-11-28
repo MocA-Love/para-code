@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import Svg, { Circle, Ellipse, G, Path, Polygon, Rect } from 'react-native-svg';
-import { colors } from '../../theme.js';
+import { colors, status } from '../../theme.js';
 import type { BotFaceColor, BotFaceShape, BotFaceState } from './bots.js';
 
 /** 顔の色（PC の `.paradis-bot-face[data-color]` に当たるアプリの色）。 */
@@ -49,7 +49,7 @@ const PROPS_ALL_MIN = 22;
  *
  * `state`（`bots.status.v1` の PC のときだけ。{@link botFaceState}）があれば、PC の帯の顔の止まった姿（動きを切ったときに残る
  * 形）を描く: 眠っている＝閉じた目と「z z」、起動していない＝横の線の目と薄い体、作業中＝上を見る目と 3 つの点、見回り中＝
- * 横を見る目と虫めがね、要対応＝「?」、操作が要る＝細めた目と汗、終了した＝細めた目と薄い体、一時停止中＝薄い体と 2 本線。
+ * 横を見る目と虫めがね、要対応＝「?」（アプリの要対応の色）、操作が要る＝細めた目と汗、終了した＝細めた目と薄い体、一時停止中＝薄い体と 2 本線。
  * 小道具が枠の外（上）にはみ出すので、そのときは枠を上と右へ広げる（同じ置き場所では様子が変わっても体の大きさは変えない）。
  * `state` が無いとき（古い PC）は今までどおり開いた目で、`dim` なら薄くする。
  */
@@ -132,8 +132,8 @@ export const BotFace = memo(function BotFace({ color, shape, size, dim = false, 
 			case 'ask': return attentionProps ? (
 				<G>
 					<Circle cx="86" cy="16" r="16" fill={colors.bg} />
-					<Path d="M80 11Q80 4 86 4Q92 4 92 10Q92 14 86 17V20" {...prop} stroke={colors.amber} strokeWidth={5.5} />
-					<Circle cx="86" cy="27" r="2.6" fill={colors.amber} />
+					<Path d="M80 11Q80 4 86 4Q92 4 92 10Q92 14 86 17V20" {...prop} stroke={status.attention.color} strokeWidth={5.5} />
+					<Circle cx="86" cy="27" r="2.6" fill={status.attention.color} />
 				</G>
 			) : null;
 			case 'need': return attentionProps ? (
