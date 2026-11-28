@@ -15,7 +15,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IParadisMobileBotsFeed } from '../../../mobileRelay/node/paradisMobileBotsFeed.js';
 import { ParadisMobileTerminalRegistry } from '../../../mobileRelay/node/paradisMobileTerminalRegistry.js';
 import { IParadisBotSummary, IParadisBotsSnapshot, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
-import { ParadisBotsMobileFeed } from '../../node/paradisBotsMobileFeed.js';
+import { ParadisBotsMobileFeed, paradisMobileBotOf } from '../../node/paradisBotsMobileFeed.js';
 import { paradisBotPaneTokenHash } from '../../node/paradisBotPanes.js';
 
 const BOT: IParadisBotSummary = {
@@ -56,6 +56,22 @@ suite('Paradis bots mobile feed', () => {
 			[{ id: 'bot-1', name: 'リリース係', agent: 'claude', faceColor: 'blue', faceShape: 'drop', paused: false, pinned: true, needsYou: 1, openItems: 3, openSuggestions: 2, activity: 'idle', lastActivityAt: 9 }],
 			['bot-1', undefined],
 			undefined,
+		]);
+	});
+
+	test('眠っている・止まっている理由（bots.status.v1）は帯と同じ値をそのまま写し、無ければ載せない', () => {
+		const sleeping: IParadisBotSummary = { ...BOT, needsYou: 0, activity: 'patrolling', sleeping: true };
+		const exited: IParadisBotSummary = { ...BOT, needsYou: 0, halt: { kind: 'exited', exitCode: 2 } };
+		const needsUser: IParadisBotSummary = { ...BOT, needsYou: 0, halt: { kind: 'needsUser' } };
+		const pick = (bot: IParadisBotSummary) => {
+			const row = paradisMobileBotOf(bot);
+			return { activity: row.activity, sleeping: row.sleeping, halt: row.halt, keys: Object.keys(row).filter(key => key === 'sleeping' || key === 'halt') };
+		};
+		assert.deepStrictEqual([pick(BOT), pick(sleeping), pick(exited), pick(needsUser)], [
+			{ activity: 'idle', sleeping: undefined, halt: undefined, keys: [] },
+			{ activity: 'patrolling', sleeping: true, halt: undefined, keys: ['sleeping'] },
+			{ activity: 'idle', sleeping: undefined, halt: { kind: 'exited', exitCode: 2 }, keys: ['halt'] },
+			{ activity: 'idle', sleeping: undefined, halt: { kind: 'needsUser' }, keys: ['halt'] },
 		]);
 	});
 

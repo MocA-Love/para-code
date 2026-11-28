@@ -309,6 +309,12 @@ export const ParadisMobileCapability = {
 	 * 要求は `code: 'disabled'` で断る）。
 	 */
 	BotsPage: 'bots.page.v1',
+	/**
+	 * Bot の一覧の 1 行に、PC の帯と同じ様子の元（`sleeping`: 会話が眠っている、`halt`: 会話のエージェントが止まっている理由）を
+	 * 載せる。PC だけが広告し、`bots.page.v1` と一緒に出し入れする。アプリは広告している PC でだけ「眠っています」「終了しました」
+	 * などを出し、顔を `sleeping` の有無で眠り・止まりに分ける（広告しない古い PC では今までの文と顔のまま）。
+	 */
+	BotsStatus: 'bots.status.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -376,15 +382,16 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsFindDir,
 	ParadisMobileCapability.AgentLiveAppendV2,
 	ParadisMobileCapability.BotsPage,
+	ParadisMobileCapability.BotsStatus,
 	ParadisMobileCapability.HumanAsk,
 ];
 
 /**
- * State で広告する capability。設定でオン・オフする機能（`bots.page.v1` は `paradis.bots.enabled`）は、オンの間だけ
+ * State で広告する capability。設定でオン・オフする機能（`bots.page.v1`・`bots.status.v1` は `paradis.bots.enabled`）は、オンの間だけ
  * 広告する（オフの PC に Bot の画面を出させない。設定が変わると State が送り直され、広告も変わる）。
  */
 export function paradisMobilePcCapabilities(options: { readonly botsPage: boolean }): readonly string[] {
-	return options.botsPage ? PARADIS_MOBILE_PC_CAPABILITIES : PARADIS_MOBILE_PC_CAPABILITIES.filter(capability => capability !== ParadisMobileCapability.BotsPage);
+	return options.botsPage ? PARADIS_MOBILE_PC_CAPABILITIES : PARADIS_MOBILE_PC_CAPABILITIES.filter(capability => capability !== ParadisMobileCapability.BotsPage && capability !== ParadisMobileCapability.BotsStatus);
 }
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
