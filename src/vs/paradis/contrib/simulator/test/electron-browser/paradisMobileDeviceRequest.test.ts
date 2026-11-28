@@ -80,6 +80,28 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 		});
 	});
 
+	// 別のスペースのペインからの要求は、どのスペースのものか・画面はそのスペースに開くことを書く
+	test('says which space the pane belongs to when it is not the current space', async () => {
+		const asked: string[][] = [];
+		const make = (otherSpace: string | undefined) => new ParadisMobileDeviceRequestChannel(
+			{
+				approvalBlock: () => undefined,
+				askApproval: async (_token: string, request: IParadisAgentApprovalRequest) => {
+					asked.push([...request.detail]);
+					return 'approve';
+				},
+			},
+			{ getInstanceForToken: () => 7 },
+			{ getStateKeyForInstance: () => 'space-2' },
+			Date.now, 60_000, undefined, undefined,
+			() => otherSpace,
+		);
+		await make(`repo${RIGHT_TO_LEFT_OVERRIDE}-b`).call(undefined, 'requestDevice', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }]);
+		await make(undefined).call(undefined, 'requestDevice', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }]);
+		const note = asked[0].find(line => line.includes('repo'));
+		assert.deepStrictEqual({ lines: asked.map(lines => lines.length), names: note?.split('「repo -b」').length, sanitised: !note?.includes(RIGHT_TO_LEFT_OVERRIDE) }, { lines: [4, 3], names: 3, sanitised: true });
+	});
+
 	// 上限まで持っているペインでは、外す 1 台を利用者が選ぶ。選んだ id を返す（台帳がそのペインの端末かを確かめる）
 	test('a pane that holds the maximum asks which device to detach and returns the choice', async () => {
 		const devices = Array.from({ length: 12 }, (_, index) => ({ id: `ios:sim-${index}`, name: `Sim${RIGHT_TO_LEFT_OVERRIDE} ${index}` }));

@@ -24,16 +24,16 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisIsSimulatorUdid, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
-import { IParadisAndroidDeviceSummary, paradisAndroidAvdOf, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
+import { IParadisAndroidDeviceSummary, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
 import { ParadisAndroidEditor } from './paradisAndroidEditor.js';
 import { PARADIS_ANDROID_EDITOR_ID, PARADIS_ANDROID_INPUT_TYPE_ID, ParadisAndroidEditorInput, ParadisAndroidEditorInputSerializer } from './paradisAndroidEditorInput.js';
 import { ParadisSimulatorEditor } from './paradisSimulatorEditor.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
-import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, PARADIS_SIMULATOR_INPUT_TYPE_ID, PARADIS_SIMULATOR_SCHEME, ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer } from './paradisSimulatorEditorInput.js';
 import { paradisOpenAndroidEditor, paradisOpenSimulatorEditor } from './paradisSimulatorPlacement.js';
+import { IParadisSimulatorPaneOpener } from './paradisSimulatorPaneOpener.js';
 import './paradisSimulatorProbe.contribution.js';
 import './paradisSimulatorTabLabels.contribution.js';
 
@@ -121,38 +121,12 @@ registerAction2(class ParadisOpenSimulatorAction extends Action2 {
 });
 
 // エージェントの端末の要求を承認したとき（paradisMobileDeviceRequest.contribution.ts から）。
-// その端末の画面をペインのターミナルの右に開き、止まっていれば起動する。
+// その端末の画面を、頼んだペインのスペースで、そのターミナルの右に開き、止まっていれば起動する（paradisSimulatorPaneOpener.ts）。
 CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, async (accessor, paneToken: unknown, deviceId: unknown) => {
-	const configurationService = accessor.get(IConfigurationService);
 	if (typeof paneToken !== 'string' || typeof deviceId !== 'string') {
 		return;
 	}
-	const client = accessor.get(IParadisSimulatorClient);
-	const notificationService = accessor.get(INotificationService);
-	const udid = paradisSimulatorUdidOfDeviceId(deviceId);
-	const serial = paradisAndroidSerialOf(deviceId);
-	if (serial) {
-		// 動いている Android の端末: その画面をペインのターミナルの右に開く
-		const editorService = accessor.get(IEditorService);
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const paneInstanceId = accessor.get(IParadisPaneTokenService).getInstanceForToken(paneToken);
-		const name = (await client.listAndroidDevices().catch(() => [])).find(candidate => candidate.serial === serial)?.name ?? serial;
-		await paradisOpenAndroidEditor(serial, name, editorService, editorGroupsService, configurationService, { paneInstanceId });
-		return;
-	}
-	if (!udid || !isMacintosh) {
-		// 起動していない Android の AVD なら起動する（起動した後の画面は「シミュレータを開く」か共有ダイアログから開く）
-		if (paradisAndroidAvdOf(deviceId)) {
-			await client.bootAndroid(deviceId).catch(error => notificationService.error(localize('paradis.simulator.android.bootFailed', "Android のエミュレータを起動できませんでした: {0}", error instanceof Error ? error.message : String(error))));
-		}
-		return;
-	}
-	const editorService = accessor.get(IEditorService);
-	const editorGroupsService = accessor.get(IEditorGroupsService);
-	const paneInstanceId = accessor.get(IParadisPaneTokenService).getInstanceForToken(paneToken);
-	const device = (await client.listDevices().catch(() => [])).find(candidate => candidate.udid === udid);
-	const input = await paradisOpenSimulatorEditor(udid, device?.name ?? '', editorService, editorGroupsService, configurationService, { paneInstanceId });
-	input.requestBoot();
+	await accessor.get(IParadisSimulatorPaneOpener).openForPane(paneToken, deviceId);
 });
 
 /** タブの右クリック「ターミナルに割り当てる…」: 共有ダイアログの「モバイル端末」タブを、この端末の渡し先ペインの一覧を開いて出す。 */
