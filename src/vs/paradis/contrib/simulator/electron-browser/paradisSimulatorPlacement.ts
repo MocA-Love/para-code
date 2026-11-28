@@ -13,7 +13,7 @@
 
 import { EditorActivation } from '../../../../platform/editor/common/editor.js';
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
-import { GroupDirection, GroupsOrder, IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupDirection, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IParadisAgentTabGroupInfo, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING, ParadisEditorSplitSizing, paradisChooseAgentTabPlacement, paradisPredictSplitWidth } from '../../agentBrowser/common/paradisAgentTabPlacement.js';
@@ -25,6 +25,15 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 export interface IParadisSimulatorOpenForPane {
 	/** 要求したペインのターミナルの instanceId（エディタ領域にあれば、その右へ分割する）。 */
 	readonly paneInstanceId: number | undefined;
+	/**
+	 * 置いてよいエディタ部分（頼んだペインのスペースにピン留めした補助ウィンドウなど）。無ければウィンドウ全体から選ぶ。
+	 * 同じ端末のタブを探すのもこの中だけ（ほかのスペースの画面のタブを前に出さない）。
+	 */
+	readonly parts?: readonly IEditorPart[];
+	/** 置かないエディタ部分（ほかのスペースにピン留めした補助ウィンドウ）。同じ端末のタブもこの中では探さない。 */
+	readonly exclude?: readonly IEditorPart[];
+	/** 前に出さない（分割もせず、裏のタブにする）。頼んだペインのスペースが分からないとき。 */
+	readonly inactive?: boolean;
 }
 
 /**
@@ -52,12 +61,18 @@ function isDeviceTab(editor: EditorInput): boolean {
 }
 
 async function openDeviceEditor<T extends EditorInput>(isSame: (editor: EditorInput) => editor is T, create: () => T, editorService: IEditorService, editorGroupsService: IEditorGroupsService, configurationService: IConfigurationService, forPane?: IParadisSimulatorOpenForPane): Promise<T> {
-	const groups = editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE);
+	const parts = forPane?.parts !== undefined && forPane.parts.length > 0 ? new Set(forPane.parts) : undefined;
+	const exclude = new Set(forPane?.exclude ?? []);
+	const groups = editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE).filter(group => {
+		const part = editorGroupsService.getPart(group);
+		return (!parts || parts.has(part)) && !exclude.has(part);
+	});
 	const background = forPane !== undefined;
+	const inactive = forPane?.inactive === true;
 	for (const group of groups) {
 		const existing = group.editors.find(isSame);
 		if (existing) {
-			await editorService.openEditor(existing, { pinned: true, preserveFocus: background }, group);
+			await editorService.openEditor(existing, { pinned: true, preserveFocus: background, ...(inactive ? { inactive: true, activation: EditorActivation.PRESERVE } : {}) }, group);
 			return existing;
 		}
 	}
@@ -76,16 +91,17 @@ async function openDeviceEditor<T extends EditorInput>(isSame: (editor: EditorIn
 		};
 	});
 	const placement = paradisChooseAgentTabPlacement(infos, configurationService.getValue<number>(PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING));
-	if (placement?.kind === 'split') {
+	if (placement?.kind === 'split' && !inactive) {
 		const base = groups.find(group => group.id === placement.besideGroupId)!;
 		const split = editorGroupsService.getPart(base).addGroup(base, GroupDirection.RIGHT);
 		await openInto(editorService, editorGroupsService, input, split, false, true, background);
 		return input;
 	}
-	const group = (placement ? groups.find(candidate => candidate.id === placement.groupId) : undefined) ?? editorGroupsService.activeGroup;
+	const placedId = placement?.kind === 'split' ? placement.besideGroupId : placement?.groupId;
+	const group = (placedId !== undefined ? groups.find(candidate => candidate.id === placedId) : undefined) ?? groups[0] ?? (parts ? [...parts][0].activeGroup : editorGroupsService.mainPart.activeGroup);
 	// 利用者がコマンドで開いたときは、ターミナルしか無いグループでも前に出す。エージェントの要求で開くときは、
-	// ターミナルを隠さないよう裏のタブにする
-	await openInto(editorService, editorGroupsService, input, group, background && (placement?.kind === 'group' && placement.inactive), false, background);
+	// ターミナルを隠さないよう裏のタブにする。スペースの分からないペインの要求は、いつも裏のタブにする
+	await openInto(editorService, editorGroupsService, input, group, inactive || (background && (placement?.kind === 'group' && placement.inactive)), false, background);
 	return input;
 }
 

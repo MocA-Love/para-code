@@ -40,7 +40,8 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { PARADIS_MOBILE_MAX_DEVICES_PER_PANE } from '../common/paradisMobileAttachmentBook.js';
 import { IParadisMobileReleasePick, paradisShowMobileReleasePick } from './paradisMobileReleasePickDialog.js';
-import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { ParadisDeviceOpenSpaceNote, paradisDescribeDeviceOpenSpace } from './paradisSimulatorPaneOpener.js';
 import {
 	IParadisMobileDeviceRequestAnswer,
 	PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
@@ -58,6 +59,7 @@ const HELD_NAME_IN_SENTENCE_MAX_LENGTH = 32;
 /** ダイアログに出すインストールするパスの最大文字数。超えたら先頭を切り、末尾（ファイル名）を残す。 */
 const PATH_MAX_LENGTH = 200;
 const APP_ID_MAX_LENGTH = 200;
+const SPACE_NAME_MAX_LENGTH = 80;
 /**
  * 端末の要求を拒否された直後、同じペインからのほかの端末の要求も断る時間。3 分の断りは端末ごとなので、
  * これが無いと端末の数だけ続けてダイアログを出せる。
@@ -80,6 +82,8 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		private readonly _onDidApproveDevice?: (paneToken: string, deviceId: string) => void,
 		/** 上限まで端末を持っているペインの要求で、外す端末を選ぶ確認を出す。 */
 		private readonly _showReleasePick?: ParadisMobileReleasePickPresenter,
+		/** 端末の画面を開く先のスペース（開くときと同じ判定。今のスペースに今までどおり開くなら undefined）。 */
+		private readonly _openSpaceOf?: (paneToken: string) => ParadisDeviceOpenSpaceNote | undefined,
 	) { }
 
 	/** ペイン → 端末の要求を最後に拒否された時刻。 */
@@ -127,6 +131,8 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		// 上限まで持っているときは、外す 1 台を利用者が選ぶ（選ぶ口が無ければふつうの確認を出し、台帳が上限で断る）
 		const pickRelease = prompt.mustRelease === true && held.length > 0 && this._showReleasePick !== undefined;
 		const heldNames = held.map(device => localize('paradis.mobileDeviceRequest.heldName', "「{0}」", paradisSanitizeDisplayText(device.name, HELD_NAME_IN_SENTENCE_MAX_LENGTH) ?? device.name)).join(localize('paradis.mobileDeviceRequest.heldSeparator', "、"));
+		const openSpace = typeof token === 'string' ? this._openSpaceOf?.(token) : undefined;
+		const otherSpace = openSpace?.kind === 'otherSpace' ? paradisSanitizeDisplayText(openSpace.name, SPACE_NAME_MAX_LENGTH) : undefined;
 		const detail = [
 			reason ? localize('paradis.mobileDeviceRequest.reason', "エージェントが書いた理由: {0}", reason) : undefined,
 			runtime
@@ -136,6 +142,11 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 				? localize('paradis.mobileDeviceRequest.full', "このターミナルには、上限の {0} 台を渡しています。渡すには、下から外す端末を 1 台選んでください。", PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
 				: held.length > 0
 					? localize('paradis.mobileDeviceRequest.adding', "このターミナルには今 {0} 台を渡しています（{1}）。承認すると {2} 台目として足されます（1 つのターミナルに {3} 台まで）。渡してある端末は外れません。", held.length, heldNames, held.length + 1, PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
+					: undefined,
+			otherSpace
+				? localize('paradis.mobileDeviceRequest.otherSpace', "このターミナルは、今のスペースではなくスペース「{0}」のものです。承認すると、端末の画面はスペース「{0}」に開きます（今のスペースは切り替えません）。", otherSpace)
+				: openSpace !== undefined
+					? localize('paradis.mobileDeviceRequest.unknownSpace', "このターミナルがどのスペースのものか分かりません。承認すると、端末の画面は今のスペースに裏のタブで開きます。")
 					: undefined,
 			localize('paradis.mobileDeviceRequest.effect', "承認すると、このターミナルのエージェントはこの端末の画面を読み、タップ・入力・回転などの操作と、アプリの起動・権限の付与ができます。共有ダイアログの「モバイル端末」タブからいつでも外せます。"),
 			localize('paradis.mobileDeviceRequest.install', "アプリのインストールは、そのたびに確認します。エージェントが入れたアプリは Para Code の権限で動き、エージェントの作業フォルダの制限の外に出られます。"),
@@ -275,13 +286,18 @@ class ParadisMobileDeviceRequestContribution extends Disposable implements IWork
 		@ILayoutService layoutService: ILayoutService,
 		@IKeybindingService keybindingService: IKeybindingService,
 		@IHostService hostService: IHostService,
+		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
+		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 	) {
 		super();
-		// 承認した端末の画面を開く（simulator/electron-browser/paradisSimulator.contribution.ts）。iOS のシミュレータは
-		// 開いて起動し、動いている Android の端末は開き、起動していない Android の AVD は起動だけする
+		// 承認した端末の画面を開く（simulator/electron-browser/paradisSimulatorPaneOpener.ts）。iOS のシミュレータは
+		// 開いて起動し、動いている Android の端末は開き、起動していない Android の AVD は起動だけする。頼んだペインが
+		// 別のスペースのものなら、今の画面は切り替えず、そのスペースへ切り替えたときに開く
 		const openSimulator = (paneToken: string, deviceId: string) => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paneToken, deviceId).catch(() => undefined);
 		sharedProcessService.registerChannel(PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL, new ParadisMobileDeviceRequestChannel(approvals, paneTokens, terminalScopes, Date.now, PARADIS_AGENT_APPROVAL_DEADLINE_MS, openSimulator,
-			(pick, presentation) => paradisShowMobileReleasePick({ layoutService, keybindingService, hostService }, pick, presentation)));
+			(pick, presentation) => paradisShowMobileReleasePick({ layoutService, keybindingService, hostService }, pick, presentation),
+			paneToken => paradisDescribeDeviceOpenSpace({ paneTokenService: paneTokens, terminalScopeService: terminalScopes, workspaceSwitchService, worktreeService, auxiliaryWindowScopeService }, paneToken)));
 	}
 }
 

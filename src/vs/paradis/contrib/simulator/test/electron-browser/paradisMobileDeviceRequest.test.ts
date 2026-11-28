@@ -12,6 +12,7 @@ import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../..
 import { IParadisMobileDeviceRequestAnswer } from '../../common/paradisMobileDeviceOps.js';
 import { ParadisMobileDeviceRequestChannel } from '../../electron-browser/paradisMobileDeviceRequest.contribution.js';
 import { IParadisMobileReleasePick } from '../../electron-browser/paradisMobileReleasePickDialog.js';
+import { ParadisDeviceOpenSpaceNote } from '../../electron-browser/paradisSimulatorPaneOpener.js';
 
 /** 双方向制御の文字。ソースに生のまま置かない（表示と中身がずれるため）。 */
 const RIGHT_TO_LEFT_OVERRIDE = '\u202E';
@@ -78,6 +79,35 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 			adding: [true, true, true, false, false],
 			lines: [4, 3],
 		});
+	});
+
+	// 別のスペースのペインからの要求は、どのスペースのものか・画面はそのスペースに開くことを書く。スペースが分からなければそう書く
+	test('says which space the pane belongs to when it is not the current space, or that the space is unknown', async () => {
+		const asked: string[][] = [];
+		const make = (note: ParadisDeviceOpenSpaceNote | undefined) => new ParadisMobileDeviceRequestChannel(
+			{
+				approvalBlock: () => undefined,
+				askApproval: async (_token: string, request: IParadisAgentApprovalRequest) => {
+					asked.push([...request.detail]);
+					return 'approve';
+				},
+			},
+			{ getInstanceForToken: () => 7 },
+			{ getStateKeyForInstance: () => 'space-2' },
+			Date.now, 60_000, undefined, undefined,
+			() => note,
+		);
+		const prompt = { deviceId: 'ios:iphone', deviceName: 'iPhone 17' };
+		await make({ kind: 'otherSpace', name: `repo${RIGHT_TO_LEFT_OVERRIDE}-b` }).call(undefined, 'requestDevice', ['pane-a', prompt]);
+		await make({ kind: 'unknownSpace' }).call(undefined, 'requestDevice', ['pane-a', prompt]);
+		await make(undefined).call(undefined, 'requestDevice', ['pane-a', prompt]);
+		const note = asked[0].find(line => line.includes('repo'));
+		assert.deepStrictEqual({
+			lines: asked.map(lines => lines.length),
+			names: note?.split('「repo -b」').length,
+			sanitised: !note?.includes(RIGHT_TO_LEFT_OVERRIDE),
+			unknown: asked[1].some(line => line.includes('どのスペースのものか分かりません')),
+		}, { lines: [4, 4, 3], names: 3, sanitised: true, unknown: true });
 	});
 
 	// 上限まで持っているペインでは、外す 1 台を利用者が選ぶ。選んだ id を返す（台帳がそのペインの端末かを確かめる）
