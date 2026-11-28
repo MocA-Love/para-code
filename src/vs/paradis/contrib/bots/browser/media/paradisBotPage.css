@@ -1037,7 +1037,7 @@ button.paradis-bot-page-link:hover {
 	}
 }
 
-/* Very narrow: the face and the chat / terminal buttons (⇧⌘J also switches) give way. Before that, the name is only cut. */
+/* Very narrow: the face and the chat / terminal buttons (⇧⌘J also switches) give way. The name is only cut. */
 @container paradis-bot-strip (max-width: 280px) {
 	.paradis-bot-page-face,
 	.paradis-bot-page-view {
@@ -1049,11 +1049,6 @@ button.paradis-bot-page-link:hover {
 	}
 }
 
-@container paradis-bot-strip (max-width: 240px) {
-	.paradis-bot-page-name {
-		display: none;
-	}
-}
 
 /*
 	Results of the bot's scheduled tasks, over the top right of the conversation below the strip. They are not part of the
