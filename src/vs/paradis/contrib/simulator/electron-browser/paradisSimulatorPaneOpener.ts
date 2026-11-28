@@ -43,8 +43,13 @@ export type ParadisDeviceOpenWhere =
 	| { readonly kind: 'hidden'; readonly stateKey: string }
 	/** 切り替えの最中。済んでから決め直す。 */
 	| { readonly kind: 'later' }
-	/** ペインが閉じた・そのスペースへもう行けない。開かない。 */
-	| { readonly kind: 'none' };
+	/**
+	 * そのスペースへ切り替えられない（一覧に無い worktree・所属の分からないターミナル。どちらも画面に出ていない）。
+	 * タブは開かず、端末の起動だけをする（エージェントは承認された端末を使える）。
+	 */
+	| { readonly kind: 'unreachable' }
+	/** ペインが閉じた。何もしない。 */
+	| { readonly kind: 'closed' };
 
 export interface IParadisDeviceOpenWhereServices {
 	readonly paneTokenService: Pick<IParadisPaneTokenService, 'getInstanceForToken'>;
@@ -58,7 +63,7 @@ export interface IParadisDeviceOpenWhereServices {
 export function paradisResolveDeviceOpenWhere(services: IParadisDeviceOpenWhereServices, paneToken: string): ParadisDeviceOpenWhere {
 	const instanceId = services.paneTokenService.getInstanceForToken(paneToken);
 	if (instanceId === undefined) {
-		return { kind: 'none' };
+		return { kind: 'closed' };
 	}
 	const switchService = services.workspaceSwitchService;
 	if (switchService.isSwitching) {
@@ -75,15 +80,18 @@ export function paradisResolveDeviceOpenWhere(services: IParadisDeviceOpenWhereS
 	if (pinned.length > 0) {
 		return { kind: 'visible', parts: pinned };
 	}
-	// 一覧に無いスペース（実体を失った worktree など）は、戻ってこられないので控えない
+	// 一覧に無いスペース（実体を失った worktree、所属の分からないターミナルの置き場など）は、戻ってこられないので控えない
 	const reachable = paradisListSpaces(switchService.repositories, services.worktreeService as IParadisWorktreeService).some(entry => entry.space === stateKey);
-	return reachable ? { kind: 'hidden', stateKey } : { kind: 'none' };
+	return reachable ? { kind: 'hidden', stateKey } : { kind: 'unreachable' };
 }
 
 export interface IParadisDeviceOpenDeferralHost extends IParadisDeviceOpenWhereServices {
 	readonly workspaceSwitchService: IParadisDeviceOpenWhereServices['workspaceSwitchService'] & Pick<IParadisWorkspaceSwitchService, 'onDidSwitchScope' | 'onDidRetireScope'>;
-	/** 見えている画面へ端末のタブを開く。 */
-	open(paneToken: string, deviceId: string, parts: readonly IEditorPart[] | undefined): Promise<void>;
+	/**
+	 * 見えている画面へ端末のタブを開く。開く前に待つもの（端末の名前の取得など）がある間に今のスペースが変わったら、
+	 * `unchanged()` が false になる。そのときは開かずに {@link ParadisDeviceOpenDeferrals.openForPane} からやり直す。
+	 */
+	open(paneToken: string, deviceId: string, parts: readonly IEditorPart[] | undefined, unchanged: () => boolean): Promise<void>;
 	/** 画面を控えた端末を、エージェントが使えるように起動する（止まっていれば）。 */
 	bootWhileHidden(deviceId: string): Promise<void>;
 }
@@ -118,8 +126,11 @@ export class ParadisDeviceOpenDeferrals extends Disposable {
 	async openForPane(paneToken: string, deviceId: string): Promise<void> {
 		const where = paradisResolveDeviceOpenWhere(this._host, paneToken);
 		switch (where.kind) {
-			case 'visible':
-				return this._host.open(paneToken, deviceId, where.parts);
+			case 'visible': {
+				const switchService = this._host.workspaceSwitchService;
+				const active = switchService.activeStateKey;
+				return this._host.open(paneToken, deviceId, where.parts, () => !switchService.isSwitching && switchService.activeStateKey === active);
+			}
 			case 'hidden': {
 				let devices = this._hidden.get(where.stateKey);
 				if (!devices) {
@@ -132,7 +143,9 @@ export class ParadisDeviceOpenDeferrals extends Disposable {
 			case 'later':
 				this._later.set(deviceId, paneToken);
 				return;
-			case 'none':
+			case 'unreachable':
+				return this._host.bootWhileHidden(deviceId);
+			case 'closed':
 				return;
 		}
 	}
@@ -180,7 +193,7 @@ class ParadisSimulatorPaneOpener extends Disposable implements IParadisSimulator
 			workspaceSwitchService,
 			worktreeService,
 			auxiliaryWindowScopeService,
-			open: (paneToken, deviceId, parts) => this._open(paneTokenService.getInstanceForToken(paneToken), deviceId, parts),
+			open: (paneToken, deviceId, parts, unchanged) => this._open(paneToken, paneTokenService.getInstanceForToken(paneToken), deviceId, parts, unchanged),
 			bootWhileHidden: deviceId => this._bootWhileHidden(deviceId),
 		}));
 	}
@@ -199,11 +212,15 @@ class ParadisSimulatorPaneOpener extends Disposable implements IParadisSimulator
 	}
 
 	/** その端末の画面をペインのターミナルの右に開き、止まっていれば起動する。 */
-	private async _open(paneInstanceId: number | undefined, deviceId: string, parts: readonly IEditorPart[] | undefined): Promise<void> {
+	private async _open(paneToken: string, paneInstanceId: number | undefined, deviceId: string, parts: readonly IEditorPart[] | undefined, unchanged: () => boolean): Promise<void> {
 		const forPane = { paneInstanceId, ...(parts ? { parts } : {}) };
 		const serial = paradisAndroidSerialOf(deviceId);
 		if (serial) {
 			const name = (await this._client.listAndroidDevices().catch(() => [])).find(candidate => candidate.serial === serial)?.name ?? serial;
+			// 名前を待つ間にスペースが切り替わったら、開く先を決め直す（切り替え先に開かない）
+			if (!unchanged()) {
+				return this._deferrals.openForPane(paneToken, deviceId);
+			}
 			await paradisOpenAndroidEditor(serial, name, this._editorService, this._editorGroupsService, this._configurationService, forPane);
 			return;
 		}
@@ -212,11 +229,17 @@ class ParadisSimulatorPaneOpener extends Disposable implements IParadisSimulator
 			return;
 		}
 		const device = (await this._client.listDevices().catch(() => [])).find(candidate => candidate.udid === udid);
+		if (!unchanged()) {
+			return this._deferrals.openForPane(paneToken, deviceId);
+		}
 		const input = await paradisOpenSimulatorEditor(udid, device?.name ?? '', this._editorService, this._editorGroupsService, this._configurationService, forPane);
 		input.requestBoot();
 	}
 
-	/** 画面を控えた iOS のシミュレータを、止まっていれば起動する（タブを開いたときの起動の代わり）。Android の端末は動いている。 */
+	/**
+	 * 画面を控えた（または開けるスペースが無い）iOS のシミュレータを、止まっていれば起動する（タブを開いたときの起動の代わり）。
+	 * Android の端末は動いている。
+	 */
 	private async _bootWhileHidden(deviceId: string): Promise<void> {
 		const udid = paradisSimulatorUdidOfDeviceId(deviceId);
 		if (!udid) {

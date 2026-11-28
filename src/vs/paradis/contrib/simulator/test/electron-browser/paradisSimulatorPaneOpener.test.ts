@@ -19,7 +19,7 @@ suite('ParadisDeviceOpenDeferrals', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	/** ペイン a は「space-a」、ペイン b は「space-b」、bot はどのスペースにも属さない（今のスペースと答える）。 */
-	function setup(options?: { readonly pinned?: Record<string, readonly IEditorPart[]> }) {
+	function setup(options?: { readonly pinned?: Record<string, readonly IEditorPart[]>; readonly whileOpening?: () => void }) {
 		const onDidSwitchScope = store.add(new Emitter<string>());
 		const onDidRetireScope = store.add(new Emitter<string>());
 		const state = { active: 'space-a' as string | undefined, switching: false };
@@ -27,7 +27,7 @@ suite('ParadisDeviceOpenDeferrals', () => {
 		const spaces = new Map<number, string>([[1, 'space-a'], [2, 'space-b']]);
 		const opened: { token: string; deviceId: string; parts: readonly IEditorPart[] | undefined }[] = [];
 		const booted: string[] = [];
-		const deferrals = store.add(new ParadisDeviceOpenDeferrals({
+		const deferrals: ParadisDeviceOpenDeferrals = store.add(new ParadisDeviceOpenDeferrals({
 			paneTokenService: { getInstanceForToken: token => panes.get(token) },
 			terminalScopeService: {
 				// Bot のペイン（#1267）は所属を持たず、切り替えていなければ今のスペースと答える
@@ -43,7 +43,14 @@ suite('ParadisDeviceOpenDeferrals', () => {
 			},
 			worktreeService: { getWorktrees: () => [] },
 			auxiliaryWindowScopeService: { getPinnedParts: (stateKey?: string) => (options?.pinned?.[stateKey ?? ''] ?? []) as readonly IAuxiliaryEditorPart[] },
-			open: async (token, deviceId, parts) => { opened.push({ token, deviceId, parts }); },
+			open: async (token, deviceId, parts, unchanged): Promise<void> => {
+				// 端末の名前を待つ間（ここで利用者がスペースを切り替えうる）
+				options?.whileOpening?.();
+				if (!unchanged()) {
+					return deferrals.openForPane(token, deviceId);
+				}
+				opened.push({ token, deviceId, parts });
+			},
 			bootWhileHidden: async deviceId => { booted.push(deviceId); },
 		}));
 		// 開く側には切り替えの API（switchToStateKey）を渡していないので、今のスペースを切り替えることはできない。
@@ -112,19 +119,40 @@ suite('ParadisDeviceOpenDeferrals', () => {
 		});
 	});
 
-	test('drops what waits for a removed space, a closed pane, or a space the user cannot reach', async () => {
-		const { deferrals, opened, panes, spaces, switchTo, onDidRetireScope } = setup();
+	test('drops what waits for a removed space or a closed pane; a pane in a space the user cannot reach gets the device booted but no tab', async () => {
+		const { deferrals, opened, booted, panes, spaces, switchTo, onDidRetireScope } = setup();
 		await deferrals.openForPane('pane-b', 'ios:sim-1');
 		onDidRetireScope.fire('space-b');
 		const retired = deferrals.waiting();
 		await deferrals.openForPane('pane-b', 'ios:sim-2');
 		panes.delete('pane-b');
 		await switchTo('space-b');
-		// 一覧に無いスペース（実体を失った worktree など）のペインは控えない
+		// 一覧に無いスペース（実体を失った worktree・所属の分からないターミナルの置き場）のペインは控えないが、起動はする
 		panes.set('pane-z', 4);
-		spaces.set(4, 'space-z');
+		spaces.set(4, 'paradis:unattributed-terminals');
 		await deferrals.openForPane('pane-z', 'ios:sim-3');
-		assert.deepStrictEqual({ retired, opened, waiting: deferrals.waiting() }, { retired: { hidden: {}, later: {} }, opened: [], waiting: { hidden: {}, later: {} } });
+		assert.deepStrictEqual({ retired, opened, booted, waiting: deferrals.waiting() }, {
+			retired: { hidden: {}, later: {} },
+			opened: [],
+			booted: ['ios:sim-1', 'ios:sim-2', 'ios:sim-3'],
+			waiting: { hidden: {}, later: {} },
+		});
+	});
+
+	test('when the user switches away while the device name is being read, it does not open in the new space', async () => {
+		const holder: { state?: { active: string | undefined; switching: boolean } } = {};
+		let once = true;
+		const fixture = setup({
+			whileOpening: () => {
+				if (once && holder.state) {
+					once = false;
+					holder.state.active = 'space-b';
+				}
+			},
+		});
+		holder.state = fixture.state;
+		await fixture.deferrals.openForPane('pane-a', 'ios:sim-1');
+		assert.deepStrictEqual({ opened: fixture.opened, waiting: fixture.deferrals.waiting() }, { opened: [], waiting: { hidden: { 'space-a': { 'ios:sim-1': 'pane-a' } }, later: {} } });
 	});
 
 	test('the same device requested twice from a hidden space waits once, for the last pane', async () => {
