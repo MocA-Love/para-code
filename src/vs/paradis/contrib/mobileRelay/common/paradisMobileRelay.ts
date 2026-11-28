@@ -214,7 +214,17 @@ export interface IParadisMobileBot {
 	readonly openSuggestions: number;
 	readonly activity: string;
 	readonly lastActivityAt: number;
+	/** 会話のペインが無く、前の会話が残っている（PC の帯の「眠っています」。`bots.status.v1`）。眠っていなければ載せない。 */
+	readonly sleeping?: true;
+	/** 会話のエージェントが止まっている理由（`activity` が `idle` のときだけ。`bots.status.v1`）。 */
+	readonly halt?: IParadisMobileBotHalt;
 }
+
+/** {@link IParadisMobileBot.halt}（PC の `ParadisBotPaneHalt` と同じ形）。 */
+export type IParadisMobileBotHalt =
+	| { readonly kind: 'notFound' }
+	| { readonly kind: 'exited'; readonly exitCode?: number }
+	| { readonly kind: 'needsUser' };
 
 /** protocol v3: Main manifest上のRendererと、そのstate同期barrier。 */
 export interface IParadisMobileRendererStateV3 {

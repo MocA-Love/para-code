@@ -11,7 +11,9 @@ import { Icon, iconSize } from '../../ui/index.js';
 import { RowSeparator } from '../pc/agentListRow.js';
 import { SectionToggle } from '../pc/pcListParts.js';
 import { BotFace } from './botFace.js';
-import { botSectionRows, botStatusLine, type MobileBot } from './bots.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { PcCapability } from '../../pcCompat.js';
+import { botFaceState, botSectionRows, botStatusLine, type MobileBot } from './bots.js';
 
 const FACE_SIZE = 22;
 
@@ -66,6 +68,7 @@ export const BotSection = memo(function BotSection({ bots, query, collapsed, onT
 
 const BotRow = memo(function BotRow({ bot, current, onOpen }: { bot: MobileBot; current: boolean; onOpen: (botId: string) => void }) {
 	const line = botStatusLine(bot);
+	const statusKnown = usePcCapability(PcCapability.BotsStatus);
 	const attention = !bot.paused && bot.needsYou > 0;
 	return (
 		<PointerHover effect="tint" cornerRadius={0}>
@@ -76,7 +79,7 @@ const BotRow = memo(function BotRow({ bot, current, onOpen }: { bot: MobileBot; 
 				accessibilityLabel={`Bot ${bot.name}、${line}`}
 			>
 				<View style={styles.face}>
-					<BotFace color={bot.faceColor} shape={bot.faceShape} size={FACE_SIZE} dim={bot.paused} />
+					<BotFace color={bot.faceColor} shape={bot.faceShape} size={FACE_SIZE} dim={bot.paused} state={botFaceState(bot, statusKnown)} />
 				</View>
 				<View style={styles.main}>
 					<View style={styles.nameRow}>

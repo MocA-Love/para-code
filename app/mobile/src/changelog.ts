@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.33',
+		date: '2026-11-28',
+		items: [
+			{
+				icon: 'moon-outline',
+				title: '試験中の機能で、眠っている・終了したなどの様子が PC と同じ文と顔で出るようになりました',
+				body: '設定の確認で「権限が広がります。」が 2 回出ていたのも直しました。PC の Para Code の更新が要ります。',
+			},
+		],
+	},
+	{
 		version: '0.12.32',
 		date: '2026-11-27',
 		// Bot の画面は PC の設定（既定オフ）の下なので、まだ知らせない。既定をオンにする版でまとめて書く
