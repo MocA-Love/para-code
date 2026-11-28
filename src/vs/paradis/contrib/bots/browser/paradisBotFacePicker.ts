@@ -82,7 +82,6 @@ export class ParadisBotFacePicker extends Disposable {
 		const titleElement = dom.append(head, $('span.pbcd-pick-title'));
 		titleElement.textContent = title;
 		const value = dom.append(head, $('span.pbcd-pick-value'));
-		value.setAttribute('aria-live', 'polite');
 		const reset = dom.append(head, $('button.pbcd-pick-reset.paradis-focus-ring')) as HTMLButtonElement;
 		reset.type = 'button';
 		reset.textContent = localize('paradis.bots.create.faceReset', "名前から自動に戻す");

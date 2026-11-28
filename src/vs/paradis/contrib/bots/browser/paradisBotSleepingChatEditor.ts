@@ -247,7 +247,7 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 			return;
 		}
 		dom.clearNode(this.face);
-		renderParadisBotFace(this.face, paradisBotFace(bot));
+		renderParadisBotFace(this.face, { ...paradisBotFace(bot), props: 'all' });
 		const persona = paradisBotChatPersona(bot);
 		if (persona.key !== this.persona?.key) {
 			this.persona = persona;
