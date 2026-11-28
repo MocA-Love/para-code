@@ -133,9 +133,13 @@ suite('ParadisMobileWireGolden', () => {
 		assert.deepStrictEqual({ shape: shapeOf(built), values: pick(built) }, { shape: shapeOf(golden.current), values: pick(golden.current) });
 	});
 
-	test('Bot の画面（bots.page.v1）は、Bot の一覧が置かれている間（設定がオンの間）だけ広告する', () => {
+	test('Bot の画面（bots.page.v1・bots.status.v1）は、Bot の一覧が置かれている間（設定がオンの間）だけ広告する', () => {
 		const registry = new ParadisMobileTerminalRegistry('bots-capability-epoch');
-		const advertised = () => (registry.desktopState().capabilities as readonly string[]).includes('bots.page.v1');
+		const advertised = () => {
+			const capabilities = registry.desktopState().capabilities as readonly string[];
+			// 様子の元（bots.status.v1）も一緒に出し入れする
+			return capabilities.includes('bots.page.v1') && capabilities.includes('bots.status.v1') ? true : capabilities.includes('bots.page.v1') || capabilities.includes('bots.status.v1') ? 'half' : false;
+		};
 		const off = advertised();
 		registry.setBots({ bots: [], botOfToken: () => undefined, panesKey: '' });
 		const on = advertised();

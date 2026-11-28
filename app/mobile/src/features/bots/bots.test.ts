@@ -6,6 +6,8 @@ import {
 	BotHeldChoice,
 	appendBotDraft,
 	botConfirmedItemAction,
+	botConfirmMessage,
+	botFaceState,
 	botSendConfirmedChange,
 	botAskFor,
 	botItemActRequest,
@@ -60,6 +62,52 @@ describe('Bot の State', () => {
 			lines: ['待機中', '待機中', '一時停止中', '3 件が要対応', '見回り中'],
 			query: ['d'],
 		});
+	});
+
+	test('眠っている・止まっている理由（bots.status.v1）を読み、PC の帯と同じ文と顔にする。広告しない PC の顔は今までのまま', () => {
+		const parsed = parseMobileBots([
+			{ id: 's', name: 's', activity: 'idle', sleeping: true },
+			{ id: 'sp', name: 'sp', activity: 'patrolling', sleeping: true },
+			{ id: 'so', name: 'so', activity: 'stopped', sleeping: true },
+			{ id: 'o', name: 'o', activity: 'stopped' },
+			{ id: 'e', name: 'e', activity: 'idle', halt: { kind: 'exited', exitCode: 2 } },
+			{ id: 'e0', name: 'e0', activity: 'idle', halt: { kind: 'exited', exitCode: 0 } },
+			{ id: 'n', name: 'n', activity: 'idle', halt: { kind: 'notFound' } },
+			{ id: 'u', name: 'u', activity: 'idle', halt: { kind: 'needsUser' } },
+			{ id: 'x', name: 'x', activity: 'idle', sleeping: 'yes', halt: { kind: 'boom' } },
+			{ id: 'w', name: 'w', activity: 'working', sleeping: true },
+			{ id: 'a', name: 'a', activity: 'stopped', sleeping: true, needsYou: 1 },
+			{ id: 'p', name: 'p', activity: 'stopped', sleeping: true, paused: true },
+		]) ?? [];
+		expect(parsed.map(entry => [entry.id, botStatusLine(entry), botFaceState(entry, true), botFaceState(entry, false)])).toEqual([
+			['s', '眠っています', 'sleep', undefined],
+			['sp', '眠っています・見回り中', 'patrol', undefined],
+			['so', '眠っています', 'sleep', undefined],
+			['o', '起動していません', 'off', undefined],
+			['e', '終了しました（コード 2）', 'halt', undefined],
+			['e0', '終了しました', 'halt', undefined],
+			['n', '見つかりません', 'halt', undefined],
+			['u', '操作が要ります', 'need', undefined],
+			['x', '待機中', 'idle', undefined],
+			['w', '作業中', 'work', undefined],
+			['a', '1 件が要対応', 'ask', undefined],
+			['p', '一時停止中', 'paused', undefined],
+		]);
+	});
+});
+
+describe('設定の変更の確認の本文', () => {
+	test('権限が広がるとき、PC の本文の先頭に同じ文があれば足さず、無ければ（古い PC）先頭に足す', () => {
+		const now = '権限が広がります。Bot が確認なしでできることが増えます。\n権限: 既定 → すべて許可';
+		expect([
+			botConfirmMessage(now, true),
+			botConfirmMessage('権限: 既定 → すべて許可', true),
+			botConfirmMessage('モデル: opus → sonnet', false),
+		]).toEqual([
+			now,
+			'権限が広がります。\n\n権限: 既定 → すべて許可',
+			'モデル: opus → sonnet',
+		]);
 	});
 });
 
