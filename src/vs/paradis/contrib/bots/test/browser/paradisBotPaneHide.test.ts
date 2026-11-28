@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { EditorCloseContext } from '../../../../../workbench/common/editor.js';
 import { ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { PARADIS_BOT_GREETING_PROMPT, paradisBotFirstPrompt } from '../../common/paradisBotTools.js';
-import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisResetBotPaneHideForTest, paradisShowHiddenBotPane } from '../../browser/paradisBotPaneHide.js';
+import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisDisposeBotPane, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisResetBotPaneHideForTest, paradisShowHiddenBotPane } from '../../browser/paradisBotPaneHide.js';
 import { paradisAddTerminalHiddenOnClose, paradisResetTerminalHiddenOnCloseForTest, paradisTerminalEditorsHideOnClose } from '../../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 
 suite('Paradis bot pane hide on close', () => {
@@ -114,5 +114,14 @@ suite('Paradis bot pane hide on close', () => {
 			sent: false, typedThenEsc: false, typedThenCtrlC: false, backspaceOnly: false,
 			composer: [true, false, true, false],
 		});
+	});
+	test('このウィンドウが閉じた Bot のペインは、閉じてから結び付けを外す（終わりの知らせが届かなくても、異常終了した Bot を起こせる）。外せなくても閉じる', async () => {
+		const calls: string[] = [];
+		const instance = { dispose: () => { calls.push('dispose'); } };
+		await paradisDisposeBotPane({ releasePane: async token => { calls.push(`release ${token}`); } }, 'pane-1', instance);
+		await paradisDisposeBotPane({ releasePane: async token => { calls.push(`release ${token}`); throw new Error('channel closed'); } }, 'pane-2', instance);
+		// トークンが分からないペインは外せない（TerminalExit を待つ）
+		await paradisDisposeBotPane({ releasePane: async token => { calls.push(`release ${token}`); } }, undefined, instance);
+		assert.deepStrictEqual(calls, ['dispose', 'release pane-1', 'dispose', 'release pane-2', 'dispose']);
 	});
 });

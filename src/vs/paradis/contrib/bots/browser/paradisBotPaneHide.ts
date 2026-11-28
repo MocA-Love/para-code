@@ -20,6 +20,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { EditorCloseContext } from '../../../../workbench/common/editor.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { paradisIsTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 
 /** 閉じて裏に回した Bot の会話のペイン。 */
@@ -122,5 +123,19 @@ export async function paradisShowHiddenBotPane(terminalService: Pick<ITerminalSe
 export function paradisResetBotPaneHideForTest(): void {
 	for (const instanceId of [...hiddenPanes.keys()]) {
 		forgetHidden(instanceId);
+	}
+}
+
+/**
+ * このウィンドウが Bot のペインを閉じる。このウィンドウが閉じたペインの終わりの知らせ（TerminalExit）は、shared process の
+ * 受け口で断られて届かない（実機で確認。シェルが自分で終わったときは届く。断られる理由は未確認）。届かないと結び付けが
+ * 残り、異常終了した Bot を開き直すと「まだ動いているかもしれません」で起こせず、「止めて起こし直す」も失敗していた。
+ * 閉じたのはこのウィンドウなので、結び付けもここで外す（窓の再読み込みで隠したペインを閉じるときと同じ）。
+ */
+export async function paradisDisposeBotPane(botsService: { releasePane(paneToken: string): Promise<void> }, token: string | undefined, instance: Pick<ITerminalInstance, 'dispose'>): Promise<void> {
+	instance.dispose(TerminalExitReason.User);
+	if (token !== undefined) {
+		// 外せなくても閉じたことは変わらない（TerminalExit が届けば外れる）
+		await botsService.releasePane(token).catch(() => undefined);
 	}
 }

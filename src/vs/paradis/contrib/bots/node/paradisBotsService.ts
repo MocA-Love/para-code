@@ -1114,10 +1114,11 @@ export class ParadisBotsService extends Disposable {
 		}
 		const deadline = Date.now() + this.restartTimeoutMs;
 		for (; ;) {
-			// 終了が届いて外れたペインは終わった。残っているペインは、所有者のプロセスで確かめる（分からなければ終わったと言えない）
-			const remaining = this.panes.detachedTokensOf(botId).filter(token => tokens.includes(token));
-			const alive = this.paneAlive === undefined ? [] : await Promise.all(remaining.map(token => this.paneAlive!(token).catch(() => undefined)));
-			if (alive.every(value => value === false)) {
+			// 外れたペイン（終了が届いた・閉じたウィンドウが外した）は、所有者のプロセスがまだ生きていると分かる間だけ待つ（閉じても
+			// プロセスはすぐには終わらない）。残っているペインは、所有者のプロセスで確かめる（分からなければ終わったと言えない）
+			const remaining = new Set(this.panes.detachedTokensOf(botId));
+			const alive = this.paneAlive === undefined ? [] : await Promise.all(tokens.map(async token => ({ bound: remaining.has(token), alive: await this.paneAlive!(token).catch(() => undefined) })));
+			if (alive.every(value => value.bound ? value.alive === false : value.alive !== true)) {
 				this.panes.waiveDetachedChat(botId);
 				return true;
 			}

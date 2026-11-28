@@ -382,6 +382,69 @@ suite('Paradis bot wake and sleep', () => {
 		});
 	});
 
+	test('異常終了した Bot: 閉じたウィンドウが結び付けを外せば話しかけて起こせる。「止めて起こし直す」は止める依頼で閉じたウィンドウが外せば起こし、外した後も所有者が生きている間は待つ', async () => {
+		const disposables = store.add(new DisposableStore());
+		const clock = { now: 1_000 };
+		const homes = { ensure: async () => '/tmp/bot-home', read: async () => undefined, existingFolders: async () => [] } as unknown as ParadisBotHomes;
+		const alive = new Map<string, boolean | undefined>();
+		const hooks = disposables.add(new Emitter<{ token: string; event: string; sessionId?: string; observedExit?: true }>());
+		const humanAsk = disposables.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
+		const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), humanAsk, new NullLogService(), {
+			now: () => clock.now, hookEvents: hooks.event, panesFile: new MemoryFile<IParadisBotPanesState>(EMPTY_PARADIS_BOT_PANES_STATE), homes, revealTimeoutMs: 10,
+			paneAlive: async token => alive.get(token),
+			restartTimeoutMs: 600,
+		}));
+		await service.ready;
+		const created = await service.createBot({ name: 'A', agent: 'claude' });
+		assert.ok(created.ok, created.ok ? '' : created.message);
+		const botId = created.value.id;
+		const bind = async (token: string) => {
+			const launch = await service.requestLaunch(botId, 'chat');
+			assert.ok(launch.ok, launch.ok ? '' : launch.code);
+			service.reportLaunch(launch.value.launchId, token);
+			hooks.fire({ token, event: 'SessionStart', sessionId: SESSION });
+			hooks.fire({ token, event: 'Stop', sessionId: SESSION });
+		};
+		const launchCode = async () => {
+			const result = await service.requestLaunch(botId, 'chat');
+			if (result.ok) {
+				service.cancelLaunch(result.value.launchId);
+			}
+			return result.ok ? 'launch' : result.code;
+		};
+
+		// エージェントが落ちてシェルだけが残る（所有者の pid は分からない）。話しかけたウィンドウがペインを閉じて外す
+		await bind('pane-1');
+		service.notePaneCommand('pane-1', 143, true);
+		const whileBound = await launchCode();
+		service.releasePane('pane-1');
+		const afterWindowReleased = await launchCode();
+
+		// 応えの無かったペイン（所有者は分からない）を「止めて起こし直す」: 止める依頼を受けたウィンドウが閉じて外す。
+		// 閉じてもしばらく所有者が生きていれば待ち、終わったら起こす
+		await bind('pane-2');
+		assert.strictEqual(await service.requestReveal(botId), false);
+		const detached = await launchCode();
+		alive.set('pane-2', true);
+		disposables.add(service.onDidRequestStop(() => service.releasePane('pane-2')));
+		let settled = false;
+		const restarting = service.restartChat(botId).then(value => { settled = true; return value; });
+		await new Promise(resolve => setTimeout(resolve, 150));
+		const waitingWhileAlive = !settled;
+		alive.set('pane-2', undefined);
+		const restarted = await restarting;
+		const afterRestart = await launchCode();
+
+		assert.deepStrictEqual({ whileBound, afterWindowReleased, detached, waitingWhileAlive, restarted, afterRestart }, {
+			whileBound: 'already_open',
+			afterWindowReleased: 'launch',
+			detached: 'detached_alive',
+			waitingWhileAlive: true,
+			restarted: true,
+			afterRestart: 'launch',
+		});
+	});
+
 	test('bot_tell: 宛先が止まっていても起こさない（受け箱に入れるだけ。利用者の居ない所で頼まれたことを実行させない）', async () => {
 		const disposables = store.add(new DisposableStore());
 		let ids = 0;
