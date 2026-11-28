@@ -865,7 +865,7 @@ export class ParadisAgentChatView extends Disposable {
 	 * エージェントの発言の形（左に小さい丸い顔、右に吹き出し）。吹き出しの下（column）に画像と時刻を足す。
 	 * 生成中の返答も同じ形で描き、確定したときに形が跳ねないようにする。
 	 */
-	private renderAgentMessage(state: IParadisAgentChatState | undefined): { element: HTMLElement; column: HTMLElement; bubble: HTMLElement } {
+	private renderAgentMessage(state: IParadisAgentChatState | undefined, live = false): { element: HTMLElement; column: HTMLElement; bubble: HTMLElement } {
 		const element = $('.paradis-agent-chat-message.assistant');
 		const face = append(element, $('.paradis-agent-chat-face'));
 		face.setAttribute('aria-hidden', 'true');
@@ -874,9 +874,9 @@ export class ParadisAgentChatView extends Disposable {
 		const logo = state === undefined ? undefined : paradisAgentDescriptor(state.agent)?.logo;
 		if (persona !== undefined) {
 			face.classList.add(PERSONA_FACE_CLASS);
-			// いったん静かな顔で描き、画面へ付いた後に今の顔を決め直す
-			face.dataset.current = 'false';
-			persona.renderFace(face, false);
+			// 生成中の返答は今の顔で描く（印のない顔を一瞬も見せない）。ほかはいったん静かな顔で描き、画面へ付いた後に今の顔を決め直す
+			face.dataset.current = String(live);
+			persona.renderFace(face, live);
 			this.personaFaceScheduler.schedule();
 			if (this.personaFaces.size >= PERSONA_FACE_PRUNE_SIZE) {
 				// 外れた発言の顔を溜めない
@@ -1833,7 +1833,7 @@ export class ParadisAgentChatView extends Disposable {
 		const bubble = append(this.liveElement, $('.paradis-agent-chat-live'));
 		bubble.dataset.phase = live.phase;
 		if (live.phase === 'message' && live.text !== undefined && live.text.length > 0) {
-			const message = this.renderAgentMessage(state);
+			const message = this.renderAgentMessage(state, true);
 			bubble.classList.add('with-face');
 			bubble.appendChild(message.element);
 			const body = append(message.bubble, $('.paradis-agent-chat-markdown'));

@@ -802,9 +802,12 @@
 .paradis-bots-group-faces {
 	display: flex;
 	flex: none;
+	/* The faces are stacked left over right (z-index set per face), kept inside this row. */
+	isolation: isolate;
 }
 
 .paradis-bots-group-faces > .paradis-bot-face {
+	position: relative;
 	width: 14px;
 	height: 14px;
 }

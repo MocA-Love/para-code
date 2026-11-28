@@ -40,9 +40,12 @@
 .paradis-bot-group-room .pbgr-faces {
 	display: flex;
 	flex: none;
+	/* The faces are stacked left over right (z-index set per face), kept inside this header. */
+	isolation: isolate;
 }
 
 .paradis-bot-group-room .pbgr-faces > .paradis-bot-face {
+	position: relative;
 	width: 18px;
 	height: 18px;
 }

@@ -288,8 +288,9 @@ export class ParadisBotGroupEditor extends EditorPane {
 		const members = this.members;
 		this.root.classList.toggle('missing', group === undefined);
 		dom.clearNode(this.faces);
-		for (const bot of members) {
-			renderParadisBotFace(this.faces, paradisBotFace(bot));
+		for (const [index, bot] of members.entries()) {
+			// 左の顔を上に重ねる（右上の印が右隣の顔に隠れないように）
+			renderParadisBotFace(this.faces, paradisBotFace(bot)).style.zIndex = String(members.length - index);
 		}
 		this.title.textContent = group?.name ?? localize('paradis.botGroups.gone', "このグループは削除されました");
 		this.replyMode.value = group?.replyMode ?? 'mentioned';
