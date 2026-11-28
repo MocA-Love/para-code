@@ -168,3 +168,58 @@ export function paradisBotSuggestionText(text: string, multiline: boolean): stri
 		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 	return multiline ? plain : plain.replace(/\s*\n\s*/g, ' ').trim();
 }
+
+// ---- 会話の表示（吹き出し・ターミナル）の記憶 ----------------------------------------------------------
+
+/** Bot の会話をどちらで見るか。既定は吹き出し（`chat`）。 */
+export type ParadisBotConversationView = 'chat' | 'terminal';
+
+/** Bot ごとに選んだ表示を覚えるキー（APPLICATION。どの窓でも、再起動の後も同じ表示にする）。 */
+export const PARADIS_BOT_VIEWS_STORAGE_KEY = 'paradis.bots.conversationView.v1';
+
+/** 保存した値を読む。壊れた値・知らない値は捨てる（覚えているのはターミナルを選んだ Bot だけ）。 */
+export function paradisBotViewsParse(raw: string | undefined): ReadonlyMap<string, ParadisBotConversationView> {
+	const views = new Map<string, ParadisBotConversationView>();
+	if (raw === undefined) {
+		return views;
+	}
+	try {
+		const value: unknown = JSON.parse(raw);
+		if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+			for (const [botId, view] of Object.entries(value)) {
+				if (view === 'terminal') {
+					views.set(botId, view);
+				}
+			}
+		}
+	} catch {
+		// 壊れていれば、すべて既定（吹き出し）に戻す
+	}
+	return views;
+}
+
+/**
+ * その Bot の表示を替えた後に保存する値。既定（吹き出し）に戻した Bot と、もういない Bot は消す（`liveBotIds`）。
+ * 何も覚えていなければ undefined（キーごと消す）。
+ */
+export function paradisBotViewsStringify(views: ReadonlyMap<string, ParadisBotConversationView>, botId: string, view: ParadisBotConversationView, liveBotIds: readonly string[]): string | undefined {
+	const live = new Set(liveBotIds);
+	const next: Record<string, ParadisBotConversationView> = {};
+	for (const [id, value] of views) {
+		if (id !== botId && live.has(id) && value === 'terminal') {
+			next[id] = value;
+		}
+	}
+	if (view === 'terminal' && live.has(botId)) {
+		next[botId] = view;
+	}
+	return Object.keys(next).length > 0 ? JSON.stringify(next) : undefined;
+}
+
+/**
+ * Bot を起こしたペインを吹き出しで見せるか（起こす経路の `pinChatMode` の `show`）。ターミナルを選んだ Bot だけ false で、
+ * 吹き出しを選んだ Bot・選んでいない Bot・壊れた値は true。`raw` は {@link PARADIS_BOT_VIEWS_STORAGE_KEY} の保存の値。
+ */
+export function paradisBotLaunchShowsChat(raw: string | undefined, botId: string): boolean {
+	return paradisBotViewsParse(raw).get(botId) !== 'terminal';
+}

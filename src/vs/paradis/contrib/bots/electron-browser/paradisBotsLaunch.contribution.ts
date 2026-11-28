@@ -16,6 +16,8 @@
 // - エージェントの管理の道具（start_bot・remove_bot）から呼ばれるチャネル {@link PARADIS_BOTS_WINDOW_CHANNEL}。
 //   道具からの起動は利用者のフォーカスを奪わず（裏のタブ）、削除は利用者の確認を通す。
 
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
+import { paradisBotLaunchShowsChat, PARADIS_BOT_VIEWS_STORAGE_KEY } from '../common/paradisBotPageModel.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -117,6 +119,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const editorService = accessor.get(IEditorService);
 	const paradisDialogService = accessor.get(IParadisDialogService);
 	const notificationService = accessor.get(INotificationService);
+	const storageService = accessor.get(IStorageService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -201,8 +204,9 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			paradisAddTerminalHiddenOnClose(outcome.terminal.instanceId);
 			// どのスペースにも属さないペインとして控える（スペースを切り替えても退避せず、着いたスペースの画面へ持ち越す）
 			paradisMarkTerminalSpaceFree(outcome.terminal.instanceId);
-			// 会話はいつも吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ
-			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent);
+			// 会話は吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ。
+			// 利用者がこの Bot でターミナルを選んでいたら、控えるだけでターミナルのまま見せる（Bot のページの見出しで選んだ表示）
+			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent, paradisBotLaunchShowsChat(storageService.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION), botId));
 		}
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };

@@ -508,8 +508,10 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		row.tabIndex = first ? 0 : -1;
 		row.dataset.groupId = group.id;
 		const faces = DOM.append(row, $('span.paradis-bots-group-faces'));
-		for (const bot of members.slice(0, 3)) {
-			renderParadisBotFace(faces, paradisBotFace(bot));
+		const shown = members.slice(0, 3);
+		for (const [index, bot] of shown.entries()) {
+			// 左の顔を上に重ねる（右上の印が右隣の顔に隠れないように）
+			renderParadisBotFace(faces, paradisBotFace(bot)).style.zIndex = String(shown.length - index);
 		}
 		const names = members.map(bot => bot.name).join('・');
 		DOM.append(row, $('span.paradis-bots-row-name')).textContent = group.name;

@@ -162,35 +162,58 @@
 }
 
 .paradis-bot-page-model[hidden],
-.paradis-bot-page-terminal[hidden] {
+/*
+	Chat / terminal (Q690 option A): two buttons right of the title, before the tabs. The pressed one is what the
+	conversation shows; it stays on every tab. Below 460px only the icons remain (the rules at the end of this file).
+*/
+.paradis-bot-page-view[hidden] {
 	display: none;
 }
 
-.paradis-bot-page-terminal:not([hidden]) {
+.paradis-bot-page-view:not([hidden]) {
 	margin-left: auto;
 }
 
-.paradis-bot-page-terminal:not([hidden]) + .paradis-bot-page-tabs {
+.paradis-bot-page-view:not([hidden]) + .paradis-bot-page-tabs {
 	margin-left: 0;
 }
 
-.paradis-bot-page-terminal {
+.paradis-bot-page-view {
 	display: flex;
 	flex: none;
+	gap: 2px;
+	padding: 2px;
+	border-radius: var(--vscode-cornerRadius-large, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-page-view-option {
+	display: flex;
 	align-items: center;
-	justify-content: center;
-	width: 26px;
+	gap: var(--vscode-spacing-size60);
 	height: 26px;
-	padding: 0;
+	padding: 0 var(--vscode-spacing-size100);
 	border: none;
 	border-radius: var(--vscode-cornerRadius-medium, 6px);
 	background: transparent;
-	color: var(--vscode-icon-foreground);
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	white-space: nowrap;
 	cursor: pointer;
 }
 
-.paradis-bot-page-terminal:hover {
-	background: var(--vscode-paradis-fillHover);
+.paradis-bot-page-view-option:hover {
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-view-option[aria-checked="true"] {
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-view-option > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact, 14px);
 }
 
 /* Unread bot messages in the inbox, and "ask it to read them" while the bot is idle. */
@@ -909,8 +932,13 @@ button.paradis-bot-page-link:hover {
 /* Narrow split: drop the status and model (the band row says the same), and tighten the padding so all four tabs fit. */
 @container paradis-bot-strip (max-width: 460px) {
 	.paradis-bot-page-status,
-	.paradis-bot-page-model {
+	.paradis-bot-page-model,
+	.paradis-bot-page-view-label {
 		display: none;
+	}
+
+	.paradis-bot-page-view-option {
+		padding: 0 var(--vscode-spacing-size60);
 	}
 
 	.paradis-bot-page-tab {

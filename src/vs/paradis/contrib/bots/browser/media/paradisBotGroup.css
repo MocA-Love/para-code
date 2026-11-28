@@ -40,9 +40,12 @@
 .paradis-bot-group-room .pbgr-faces {
 	display: flex;
 	flex: none;
+	/* The faces are stacked left over right (z-index set per face), kept inside this header. */
+	isolation: isolate;
 }
 
 .paradis-bot-group-room .pbgr-faces > .paradis-bot-face {
+	position: relative;
 	width: 18px;
 	height: 18px;
 }
@@ -245,8 +248,8 @@
 }
 
 /* The face's eyes use the sidebar color; in the editor they sit on the editor background. */
-.paradis-bot-group-room .paradis-bot-face-eye {
-	fill: var(--vscode-editor-background);
+.paradis-bot-group-room .paradis-bot-face {
+	--paradis-bot-face-eye: var(--vscode-editor-background);
 }
 
 /* --- The group dialog (S box) --- */

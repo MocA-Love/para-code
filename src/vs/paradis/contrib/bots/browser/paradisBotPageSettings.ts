@@ -31,7 +31,7 @@ import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialog
 import { paradisApplyBotChange, paradisBotChangeRequest, PARADIS_BOT_ROLE_LIMIT } from '../common/paradisBotManageTools.js';
 import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES } from '../common/paradisBots.js';
 import { IParadisBotSummary, IParadisBotsService } from '../common/paradisBotsApi.js';
-import { paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { paradisBotFaceColorLabel, paradisBotFaceShapeLabel, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { IParadisBotMemorySnapshotInfo, IParadisBotSettingsDraft, IParadisBotUndoTidyResult, paradisBotMemorySnapshotCount, paradisBotUndoTidyLines, PARADIS_BOT_HOME_FILES, paradisBotHomeFileConflict, paradisBotHomeFileDiff, paradisBotRoleOverflow, paradisBotPermissionOptions, ParadisBotSettingsBase, paradisBotSettingsAgents, paradisBotSettingsChange, ParadisBotSettingsField, paradisBotSettingsRebase } from '../common/paradisBotSettingsModel.js';
 import { paradisBotGithubStatusText } from '../common/paradisBotPageModel.js';
 import { paradisBotChangeDetail } from './paradisBotChangeDetail.js';
@@ -152,10 +152,10 @@ export class ParadisBotSettingsPanel {
 		for (const color of PARADIS_BOT_FACE_COLORS) {
 			const button = DOM.append(colors, $('button.paradis-bot-settings-swatch.paradis-focus-ring')) as HTMLButtonElement;
 			button.type = 'button';
-			renderParadisBotFace(button, { shape: 'circle', color });
+			renderParadisBotFace(button, { shape: 'circle', color, still: true });
 			button.setAttribute('role', 'radio');
 			button.setAttribute('aria-checked', String(bot.faceColor === color));
-			button.setAttribute('aria-label', color);
+			button.setAttribute('aria-label', paradisBotFaceColorLabel(color));
 			store.add(DOM.addDisposableListener(button, DOM.EventType.CLICK, () => void this.quick({ faceColor: color }, false)));
 		}
 		const shapes = DOM.append(row(localize('paradis.botPage.settings.shape', "形")), $('.paradis-bot-settings-swatches'));
@@ -166,8 +166,8 @@ export class ParadisBotSettingsPanel {
 			button.type = 'button';
 			button.setAttribute('role', 'radio');
 			button.setAttribute('aria-checked', String(bot.faceShape === shape));
-			button.setAttribute('aria-label', shape);
-			renderParadisBotFace(button, { shape, color: bot.faceColor });
+			button.setAttribute('aria-label', paradisBotFaceShapeLabel(shape));
+			renderParadisBotFace(button, { shape, color: bot.faceColor, still: true });
 			store.add(DOM.addDisposableListener(button, DOM.EventType.CLICK, () => void this.quick({ faceShape: shape }, false)));
 		}
 
