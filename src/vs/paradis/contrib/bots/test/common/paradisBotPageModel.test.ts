@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText } from '../../common/paradisBotPageModel.js';
+import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -106,5 +106,23 @@ suite('Paradis bots page', () => {
 			'まだ会話はありません / Codex が見つかりません / ターミナルで確かめてください',
 			'まだ会話はありません / エージェントは終了しました / ターミナルで確かめてください',
 		]);
+	});
+	test('会話の表示は Bot ごとに覚える（ターミナルを選んだ Bot だけ。吹き出しに戻した Bot・もういない Bot は消し、壊れた値は既定に戻す）', () => {
+		const one = paradisBotViewsStringify(new Map(), 'release', 'terminal', ['release', 'review']);
+		const two = paradisBotViewsStringify(paradisBotViewsParse(one), 'review', 'terminal', ['release', 'review']);
+		const back = paradisBotViewsStringify(paradisBotViewsParse(two), 'release', 'chat', ['release', 'review']);
+		const gone = paradisBotViewsStringify(paradisBotViewsParse(two), 'ci', 'chat', ['ci']);
+		assert.deepStrictEqual({
+			one, two, back, gone,
+			read: [...paradisBotViewsParse(two)],
+			broken: [paradisBotViewsParse('{'), paradisBotViewsParse('[1]'), paradisBotViewsParse('{"a":"chat","b":"x","c":"terminal"}'), paradisBotViewsParse(undefined)].map(views => [...views]),
+		}, {
+			one: '{"release":"terminal"}',
+			two: '{"release":"terminal","review":"terminal"}',
+			back: '{"review":"terminal"}',
+			gone: undefined,
+			read: [['release', 'terminal'], ['review', 'terminal']],
+			broken: [[], [], [['c', 'terminal']], []],
+		});
 	});
 });

@@ -44,11 +44,17 @@ export interface IParadisAgentChatService {
 	 * そのターミナルを、いつもチャット表示にするペインとして控え、チャット表示にする（Bot の会話のペイン）。会話が見つかる前でも
 	 * 切り替え、見つかるまでは {@link setChatGuide} の案内を出す。利用者がターミナルを開いた後も控えは残り、もう一度呼ぶと
 	 * チャット表示へ戻る。フォーカスは `moveFocus` で、そのタブが前に出ているときだけ入力欄へ移す。チャット表示の設定（`paradis.agentChat.enabled`）を
-	 * オフにしていても控える（その設定は Bot でないペインにだけ効く）。
+	 * オフにしていても控える（その設定は Bot でないペインにだけ効く）。`show` を false にすると、控えるだけで表示は切り替えない
+	 * （利用者がその Bot でターミナルを選んでいたとき。既定は true）。
 	 */
-	pinChatMode(instanceId: number, moveFocus: boolean): void;
+	pinChatMode(instanceId: number, moveFocus: boolean, show?: boolean): void;
 	/** {@link pinChatMode} で控えたペインか（チャット表示の設定に関わらない）。 */
 	isChatPinned(instanceId: number): boolean;
+	/**
+	 * そのペインをチャット表示に切り替えているか（会話の有無に関わらない。{@link isChatActive} は会話が無いと false）。利用者が
+	 * 選んだ表示を覚えるときに使う。変化は {@link onDidChangeChatActive} で知らせる。
+	 */
+	isChatMode(instanceId: number): boolean;
 	/** そのペインで会話が見つかるまで出す案内を差し替える（undefined で消す）。ペインが閉じたら忘れる。 */
 	setChatGuide(instanceId: number, guide: IParadisAgentChatGuide | undefined): void;
 	/** そのペインのチャット表示に出す顔と指示の見分けを差し替える（undefined で戻す）。ペインが閉じたら忘れる。 */

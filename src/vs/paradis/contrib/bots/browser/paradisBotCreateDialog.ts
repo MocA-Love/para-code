@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 新しい Bot（Bot の帯の ＋ から開く S 段のモーダル。モック bots-paradot-mock.html 第 3 版の作成の画面）。
-// テンプレート・名前・役割・エージェントを入れて作る。役割は人格メモ（SOUL.md）の種として本体へ渡す。
+// テンプレート・名前・顔の色と形・役割・エージェントを入れて作る。役割は人格メモ（SOUL.md）の種として本体へ渡す。
 // 幕に paradis-modal-backdrop を付けるので、内蔵ブラウザの前にも出る（overlayManager.ts に登録済みの印）。
 //
 // 包んでいる本家のファイル: 無し（箱は paradisModal.ts、フォーカスの閉じ込めと Esc は paradisModalFocus.ts）。
@@ -31,11 +31,12 @@ import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
-import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, paradisBotCreateFace, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { IParadisBotTemplate, paradisBotTemplateDefaultName, paradisBotTemplateSoul } from '../common/paradisBotTemplates.js';
 import { IParadisBotTemplatePick, ParadisBotTemplatesDialog } from './paradisBotTemplatesDialog.js';
-import { PARADIS_BOT_LIMITS, paradisBotDefaultFace } from '../common/paradisBots.js';
+import { PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape } from '../common/paradisBots.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
+import { ParadisBotFacePicker } from './paradisBotFacePicker.js';
 
 const $ = dom.$;
 
@@ -51,8 +52,12 @@ export class ParadisBotCreateDialog extends Disposable {
 
 	private readonly backdrop: HTMLElement;
 	private readonly nameField: ParadisInputField;
-	/** 名前の左の顔の見本（名前から決まる既定の顔。作るときに同じ顔を渡す）。 */
+	/** 名前の左の顔の見本（作るときに同じ顔を渡す）。 */
 	private readonly facePreview: HTMLElement;
+	/** 名前の下に並べる色と形の選ぶ欄。手で選んだ方だけ覚え、選んでいない方は名前から決まる。 */
+	private readonly facePicker: ParadisBotFacePicker;
+	private pickedColor: ParadisBotFaceColor | undefined;
+	private pickedShape: ParadisBotFaceShape | undefined;
 	private readonly roleInput: HTMLTextAreaElement;
 	private readonly agents: ParadisSegmented<ParadisAgentKind>;
 	private readonly note: HTMLElement;
@@ -124,6 +129,15 @@ export class ParadisBotCreateDialog extends Disposable {
 			this.nameTouched = true;
 			this.update();
 		}));
+		this.facePicker = this._register(this.instantiationService.createInstance(ParadisBotFacePicker, body));
+		this._register(this.facePicker.onDidPick(pick => {
+			if (pick.kind === 'color') {
+				this.pickedColor = pick.value;
+			} else {
+				this.pickedShape = pick.value;
+			}
+			this.update();
+		}));
 
 		// 役割
 		const roleLabel = localize('paradis.bots.create.role', "役割（何者で、何をするか）");
@@ -167,7 +181,7 @@ export class ParadisBotCreateDialog extends Disposable {
 		}));
 		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.MOUSE_DOWN, event => {
 			// 何か入れているときは、幕の外を押しても閉じない
-			if (event.target === this.backdrop && !this.nameField.value.trim() && !this.roleInput.value.trim()) {
+			if (event.target === this.backdrop && !this.nameField.value.trim() && !this.roleInput.value.trim() && this.pickedColor === undefined && this.pickedShape === undefined) {
 				this.dispose();
 			}
 		}));
@@ -226,7 +240,8 @@ export class ParadisBotCreateDialog extends Disposable {
 			: localize('paradis.bots.create.blank', "白紙");
 		dom.clearNode(this.facePreview);
 		const face = this.face();
-		renderParadisBotFace(this.facePreview, { shape: face.faceShape, color: face.faceColor });
+		renderParadisBotFace(this.facePreview, { shape: face.faceShape, color: face.faceColor, props: 'none' });
+		this.facePicker.update(face, { color: this.pickedColor, shape: this.pickedShape });
 		const checked = paradisValidateBotName(this.nameField.value, this.botsService.snapshot.bots);
 		this.createButton.enabled = checked.ok && !this.creating;
 		const showProblem = !checked.ok && (this.nameTouched || checked.problem !== 'empty');
@@ -289,9 +304,9 @@ export class ParadisBotCreateDialog extends Disposable {
 		return this.botsService.snapshot.bots.map(bot => bot.name);
 	}
 
-	/** 見本の顔。名前がまだ空なら「新」から決まる顔。 */
-	private face(): ReturnType<typeof paradisBotDefaultFace> {
-		return paradisBotDefaultFace(this.nameField.value.trim() || localize('paradis.bots.create.faceSeed', "新"));
+	/** 見本の顔。手で選んだ色・形はそのまま、選んでいない方は名前から決まる（名前がまだ空なら「新」から）。 */
+	private face(): ReturnType<typeof paradisBotCreateFace> {
+		return paradisBotCreateFace(this.nameField.value, localize('paradis.bots.create.faceSeed', "新"), { color: this.pickedColor, shape: this.pickedShape });
 	}
 
 	override dispose(): void {

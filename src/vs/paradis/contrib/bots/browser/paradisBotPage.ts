@@ -37,6 +37,7 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
@@ -51,7 +52,7 @@ import { paradisBotAskId } from '../common/paradisBotAsk.js';
 import { IParadisBotItem, IParadisBotItemLink, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemLocked, paradisIsBotItemSnoozed } from '../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisBotFace } from '../common/paradisBotsBandModel.js';
-import { paradisBotChatGuide, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab, paradisBotStripHeader, paradisBotSuggestionText } from '../common/paradisBotPageModel.js';
+import { paradisBotChatGuide, ParadisBotConversationView, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, PARADIS_BOT_VIEWS_STORAGE_KEY, ParadisBotPageTab, paradisBotStripHeader, paradisBotSuggestionText, paradisBotViewsParse, paradisBotViewsStringify } from '../common/paradisBotPageModel.js';
 import { IParadisBotGroupsService } from '../common/paradisBotGroupsApi.js';
 import { paradisBotGroupUnreadCount } from '../common/paradisBotGroups.js';
 import { onDidRequestParadisBotPageTab, paradisTakeRequestedBotPageTab } from './paradisBotPageTabRequest.js';
@@ -129,9 +130,15 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly stripStatus: HTMLElement;
 	/** チャット表示を見ている間だけ出す、会話の記録から取ったモデル（見出しを畳んだ分）。 */
 	private readonly stripModel: HTMLElement;
-	/** 会話のタブで出す「ターミナルを開く」（チャット表示の間）と「チャットに戻る」（ターミナルを開いた後）。 */
-	private readonly terminalButton: HTMLButtonElement;
-	private readonly terminalButtonIcon: HTMLElement;
+	/** 会話の表示（吹き出し・ターミナル）を切り替える 2 つのボタン。押されている側が今の表示（Q690 の案 A）。 */
+	private readonly viewGroup: HTMLElement;
+	private readonly viewButtons = new Map<ParadisBotConversationView, HTMLButtonElement>();
+	/** Bot ごとに選んだ表示（ターミナルを選んだ Bot だけ。既定は吹き出し）。 */
+	private views: ReadonlyMap<string, ParadisBotConversationView>;
+	/** ペインごとの、最後に見たチャット表示か（変わったときだけ、その Bot の表示として覚える）。 */
+	private readonly lastChatMode = new Map<number, boolean>();
+	/** 見出しの顔に最後に描いた値（同じなら描き直さない。目の移りを途中で切らない）。 */
+	private stripFaceKey: string | undefined;
 	/** 今のペインをチャット表示にしてから、会話が見つからないまま {@link CHAT_WAIT_MS} が過ぎた。 */
 	private waitedLong = false;
 	private readonly waitTimer = this._register(new RunOnceScheduler(() => {
@@ -204,8 +211,15 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
 		@IHoverService private readonly hoverService: IHoverService,
 		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
+		this.views = paradisBotViewsParse(this.storageService.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION));
+		// ほかの窓で選んだ表示も、次にその Bot を開いたときに使う
+		this._register(this.storageService.onDidChangeValue(StorageScope.APPLICATION, PARADIS_BOT_VIEWS_STORAGE_KEY, this._store)(() => {
+			this.views = paradisBotViewsParse(this.storageService.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION));
+			this.renderStrip();
+		}));
 		this.strip = DOM.append(container, $('.paradis-bot-page-strip'));
 		this.strip.hidden = true;
 		this.stripFace = DOM.append(this.strip, $('.paradis-bot-page-face'));
@@ -225,25 +239,37 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		this.tab(tabs, 'files', localize('paradis.botPage.tab.files', "ファイル"));
 		this.tab(tabs, 'settings', localize('paradis.botPage.tab.settings', "設定"));
 		this.itemsCount = DOM.append(this.itemsTab, $('span.paradis-bot-page-tab-count'));
-		// タブ列の左に置く（帯が収まらない幅では右端から切れるので、このボタンを先に切らない）
-		this.terminalButton = this.strip.insertBefore($('button.paradis-bot-page-terminal.paradis-focus-ring-inset'), tabs) as HTMLButtonElement;
-		this.terminalButton.type = 'button';
-		// チャット表示の切り替えと同じキーをホバーに出す
-		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this.terminalButton, () => {
-			const keybinding = this.agentChatService.getToggleKeybindingLabel();
-			const label = this.terminalButtonLabel();
-			return keybinding !== undefined ? localize('paradis.botPage.terminalButtonKey', "{0} ({1})", label, keybinding) : label;
-		}));
-		this.terminalButtonIcon = DOM.append(this.terminalButton, $('span'));
-		this._register(DOM.addDisposableListener(this.terminalButton, DOM.EventType.CLICK, () => {
-			if (this.instanceId === undefined) {
-				return;
-			}
-			// ターミナルは裏に持ち、ここから開く。開いた後は、同じボタンでチャット表示へ戻る
-			if (this.chatShown()) {
-				this.agentChatService.showTerminal(this.instanceId);
-			} else {
-				this.agentChatService.pinChatMode(this.instanceId, true);
+		// タブ列の左に置く（帯が収まらない幅では右端から切れるので、この切り替えを先に切らない）。会話以外のタブでも出したままにする
+		this.viewGroup = this.strip.insertBefore($('.paradis-bot-page-view'), tabs);
+		this.viewGroup.setAttribute('role', 'radiogroup');
+		this.viewGroup.setAttribute('aria-label', localize('paradis.botPage.view', "会話の表示"));
+		const viewOptions: readonly { readonly view: ParadisBotConversationView; readonly label: string; readonly icon: ThemeIcon }[] = [
+			{ view: 'chat', label: localize('paradis.botPage.view.chat', "吹き出し"), icon: Codicon.commentDiscussion },
+			{ view: 'terminal', label: localize('paradis.botPage.view.terminal', "ターミナル"), icon: Codicon.terminal },
+		];
+		for (const option of viewOptions) {
+			const button = DOM.append(this.viewGroup, $('button.paradis-bot-page-view-option.paradis-focus-ring-inset')) as HTMLButtonElement;
+			button.type = 'button';
+			button.setAttribute('role', 'radio');
+			// 狭い幅ではアイコンだけになるので、読み上げの名前は文字の表示に頼らない
+			button.setAttribute('aria-label', option.label);
+			DOM.append(button, $(ThemeIcon.asCSSSelector(option.icon)));
+			DOM.append(button, $('span.paradis-bot-page-view-label')).textContent = option.label;
+			// チャット表示の切り替えと同じキーをホバーに出す
+			this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), button, () => {
+				const keybinding = this.agentChatService.getToggleKeybindingLabel();
+				return keybinding !== undefined ? localize('paradis.botPage.viewKey', "{0} ({1} で切り替え)", option.label, keybinding) : option.label;
+			}));
+			this._register(DOM.addDisposableListener(button, DOM.EventType.CLICK, () => this.showView(option.view)));
+			this.viewButtons.set(option.view, button);
+		}
+		this._register(DOM.addDisposableListener(this.viewGroup, DOM.EventType.KEY_DOWN, e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.RightArrow) || event.equals(KeyCode.UpArrow) || event.equals(KeyCode.DownArrow)) {
+				DOM.EventHelper.stop(e, true);
+				const view: ParadisBotConversationView = event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.UpArrow) ? 'chat' : 'terminal';
+				this.showView(view);
+				this.viewButtons.get(view)?.focus();
 			}
 		}));
 		// 見出しに出ていたもの（状態・モデル）は帯に写す。変わったら描き直す。会話が替わると見出しの畳みが戻るので畳み直す
@@ -253,8 +279,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 				this.renderStrip();
 			}
 		}));
-		// チャット表示とターミナル表示の切り替えで、見出しを畳むか・帯を 1 段にするかを決め直す
+		// チャット表示とターミナル表示の切り替えで、見出しを畳むか・帯を 1 段にするかを決め直す。利用者が切り替えた（見出しの
+		// ボタン・切り替えのキー・「ターミナルで操作が要ります」の帯の「ターミナルを開く」）なら、その Bot の表示として覚える
 		this._register(this.agentChatService.onDidChangeChatActive(instanceId => {
+			this.rememberChatMode(instanceId);
 			if (instanceId === this.instanceId && this.botId !== undefined) {
 				this.syncHeaderHidden();
 				this.renderStrip();
@@ -449,7 +477,11 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			return;
 		}
 		if (!this.agentChatService.isChatPinned(instanceId)) {
-			this.agentChatService.pinChatMode(instanceId, true);
+			// その Bot でターミナルを選んでいたら、控えるだけでターミナルのまま見せる
+			this.agentChatService.pinChatMode(instanceId, true, this.viewOf(this.botId!) === 'chat');
+		}
+		if (!this.lastChatMode.has(instanceId)) {
+			this.lastChatMode.set(instanceId, this.agentChatService.isChatMode(instanceId));
 		}
 		if (!this.waitedLong && !this.waitTimer.isScheduled()) {
 			this.waitTimer.schedule();
@@ -471,10 +503,64 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return this.botId !== undefined && this.instanceId !== undefined && !this.patrolPane;
 	}
 
-	private terminalButtonLabel(): string {
-		return this.chatShown()
-			? localize('paradis.botPage.openTerminal', "ターミナルを開く")
-			: localize('paradis.botPage.backToChat', "チャットに戻る");
+	/** その Bot の会話を見る表示（覚えていなければ吹き出し）。 */
+	private viewOf(botId: string): ParadisBotConversationView {
+		return this.views.get(botId) ?? 'chat';
+	}
+
+	/** 見出しのボタンから表示を選ぶ。会話以外のタブにいたら会話のタブへ移してから切り替える。 */
+	private showView(view: ParadisBotConversationView): void {
+		const instanceId = this.instanceId;
+		if (instanceId === undefined || !this.chatPane()) {
+			return;
+		}
+		if (this.currentTab() !== 'chat') {
+			this.setTab('chat');
+		}
+		const chatMode = this.agentChatService.isChatMode(instanceId);
+		if (view === 'terminal' && chatMode) {
+			this.agentChatService.showTerminal(instanceId);
+		} else if (view === 'chat' && !chatMode) {
+			this.agentChatService.pinChatMode(instanceId, true);
+		}
+		// 切り替えの知らせ（{@link rememberChatMode}）でも覚えるが、もう同じ表示だったときもこの Bot の表示として残す
+		this.rememberView(view);
+	}
+
+	/** チャット表示に切り替えているかが変わったペインなら、そのペインの Bot の表示として覚える。 */
+	private rememberChatMode(instanceId: number): void {
+		const last = this.lastChatMode.get(instanceId);
+		if (last === undefined) {
+			return;
+		}
+		const instance = this.terminalService.getInstanceFromId(instanceId);
+		if (instance === undefined || instance.isDisposed) {
+			// 閉じたペインは忘れる（閉じたことで表示が替わったのを、利用者の選択と数えない）
+			this.lastChatMode.delete(instanceId);
+			return;
+		}
+		const chatMode = this.agentChatService.isChatMode(instanceId);
+		if (chatMode === last) {
+			return;
+		}
+		this.lastChatMode.set(instanceId, chatMode);
+		if (instanceId === this.instanceId && this.chatPane()) {
+			this.rememberView(chatMode ? 'chat' : 'terminal');
+		}
+	}
+
+	private rememberView(view: ParadisBotConversationView): void {
+		const botId = this.botId;
+		if (botId === undefined || this.viewOf(botId) === view) {
+			return;
+		}
+		const value = paradisBotViewsStringify(this.views, botId, view, this.botsService.snapshot.bots.map(bot => bot.id));
+		this.views = paradisBotViewsParse(value);
+		if (value === undefined) {
+			this.storageService.remove(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
+		} else {
+			this.storageService.store(PARADIS_BOT_VIEWS_STORAGE_KEY, value, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		}
 	}
 
 	/** チャット表示を見ているか。 */
@@ -548,8 +634,13 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			}
 			return;
 		}
-		DOM.clearNode(this.stripFace);
-		renderParadisBotFace(this.stripFace, paradisBotFace(bot));
+		const face = paradisBotFace(bot);
+		const faceKey = `${face.id}/${face.shape}/${face.color}/${face.state}`;
+		if (faceKey !== this.stripFaceKey) {
+			this.stripFaceKey = faceKey;
+			DOM.clearNode(this.stripFace);
+			renderParadisBotFace(this.stripFace, { ...face, props: 'all' });
+		}
 		this.stripName.textContent = bot.name;
 		// チャット表示を見ている間は、畳んだ見出しの状態（許可待ち・質問待ちなど）とモデルを帯に出す。ターミナル表示の間は
 		// 見出しの値が古いことがある（中継はチャット表示中のペインの分しか送らない）ので、Bot の台帳の値だけを出す
@@ -567,12 +658,13 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			// 吹き出しの顔をこの Bot の顔にする（様子が変わったら渡し直す）
 			this.setPersona(this.instanceId!, paradisBotChatPersona(bot));
 		}
-		// 項目・ファイル・設定のタブで下の会話が覆われている間は出さない。ターミナルを開いた後は「チャットに戻る」にする
-		const pinned = this.chatPane() && this.agentChatService.isChatPinned(this.instanceId!);
-		this.terminalButton.hidden = (!chat && !pinned) || this.currentTab() !== 'chat';
-		const label = this.terminalButtonLabel();
-		this.terminalButton.setAttribute('aria-label', label);
-		this.terminalButtonIcon.className = ThemeIcon.asClassName(chat ? Codicon.terminal : Codicon.commentDiscussion);
+		// 会話のペインでだけ出す（見回りのペインは誰も話しかけないので切り替えない）。押されている側が今の表示
+		this.viewGroup.hidden = !this.chatPane();
+		const shown: ParadisBotConversationView = this.instanceId !== undefined && this.agentChatService.isChatMode(this.instanceId) ? 'chat' : 'terminal';
+		for (const [view, button] of this.viewButtons) {
+			button.setAttribute('aria-checked', String(view === shown));
+			button.tabIndex = view === shown ? 0 : -1;
+		}
 		this.itemsCount.textContent = bot.needsYou > 0 ? (bot.needsYou > 99 ? '99+' : String(bot.needsYou)) : '';
 		this.itemsCount.hidden = bot.needsYou === 0;
 		this.itemsTab.setAttribute('aria-label', bot.needsYou > 0

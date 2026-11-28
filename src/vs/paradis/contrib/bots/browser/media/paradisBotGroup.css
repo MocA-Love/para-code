@@ -245,8 +245,8 @@
 }
 
 /* The face's eyes use the sidebar color; in the editor they sit on the editor background. */
-.paradis-bot-group-room .paradis-bot-face-eye {
-	fill: var(--vscode-editor-background);
+.paradis-bot-group-room .paradis-bot-face {
+	--paradis-bot-face-eye: var(--vscode-editor-background);
 }
 
 /* --- The group dialog (S box) --- */
