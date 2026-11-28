@@ -12,6 +12,7 @@ import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../..
 import { IParadisMobileDeviceRequestAnswer } from '../../common/paradisMobileDeviceOps.js';
 import { ParadisMobileDeviceRequestChannel } from '../../electron-browser/paradisMobileDeviceRequest.contribution.js';
 import { IParadisMobileReleasePick } from '../../electron-browser/paradisMobileReleasePickDialog.js';
+import { ParadisDeviceOpenSpaceNote } from '../../electron-browser/paradisSimulatorPaneOpener.js';
 
 /** 双方向制御の文字。ソースに生のまま置かない（表示と中身がずれるため）。 */
 const RIGHT_TO_LEFT_OVERRIDE = '\u202E';
@@ -80,10 +81,10 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 		});
 	});
 
-	// 別のスペースのペインからの要求は、どのスペースのものか・画面はそのスペースに開くことを書く
-	test('says which space the pane belongs to when it is not the current space', async () => {
+	// 別のスペースのペインからの要求は、どのスペースのものか・画面はそのスペースに開くことを書く。スペースが分からなければそう書く
+	test('says which space the pane belongs to when it is not the current space, or that the space is unknown', async () => {
 		const asked: string[][] = [];
-		const make = (otherSpace: string | undefined) => new ParadisMobileDeviceRequestChannel(
+		const make = (note: ParadisDeviceOpenSpaceNote | undefined) => new ParadisMobileDeviceRequestChannel(
 			{
 				approvalBlock: () => undefined,
 				askApproval: async (_token: string, request: IParadisAgentApprovalRequest) => {
@@ -94,12 +95,19 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 			{ getInstanceForToken: () => 7 },
 			{ getStateKeyForInstance: () => 'space-2' },
 			Date.now, 60_000, undefined, undefined,
-			() => otherSpace,
+			() => note,
 		);
-		await make(`repo${RIGHT_TO_LEFT_OVERRIDE}-b`).call(undefined, 'requestDevice', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }]);
-		await make(undefined).call(undefined, 'requestDevice', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }]);
+		const prompt = { deviceId: 'ios:iphone', deviceName: 'iPhone 17' };
+		await make({ kind: 'otherSpace', name: `repo${RIGHT_TO_LEFT_OVERRIDE}-b` }).call(undefined, 'requestDevice', ['pane-a', prompt]);
+		await make({ kind: 'unknownSpace' }).call(undefined, 'requestDevice', ['pane-a', prompt]);
+		await make(undefined).call(undefined, 'requestDevice', ['pane-a', prompt]);
 		const note = asked[0].find(line => line.includes('repo'));
-		assert.deepStrictEqual({ lines: asked.map(lines => lines.length), names: note?.split('「repo -b」').length, sanitised: !note?.includes(RIGHT_TO_LEFT_OVERRIDE) }, { lines: [4, 3], names: 3, sanitised: true });
+		assert.deepStrictEqual({
+			lines: asked.map(lines => lines.length),
+			names: note?.split('「repo -b」').length,
+			sanitised: !note?.includes(RIGHT_TO_LEFT_OVERRIDE),
+			unknown: asked[1].some(line => line.includes('どのスペースのものか分かりません')),
+		}, { lines: [4, 4, 3], names: 3, sanitised: true, unknown: true });
 	});
 
 	// 上限まで持っているペインでは、外す 1 台を利用者が選ぶ。選んだ id を返す（台帳がそのペインの端末かを確かめる）

@@ -14,7 +14,10 @@
 // - 別のスペースのペインなら、今の画面は切り替えず、前にも出さない。そのスペースにピン留めした補助ウィンドウがあれば
 //   そこへ、無ければ控えておき、利用者がそのスペースへ切り替えたときに開く（preview_file の予約・ブラウザのタブの
 //   待ちと同じ決め方）。iOS のシミュレータは、控えている間もエージェントが使えるよう、止まっていればここで起動する。
+// - どのスペースのペインか分からない（再起動の復元で所属を引けず待避されたターミナル・一覧に無いスペース）なら、
+//   勝手に別のスペースへ置かず、今のスペースに裏のタブで開く（前に出さない）。確認の文でも「分からない」と伝える。
 // - 切り替えの最中に承認されたら、切り替えが済んでから決め直す。
+// 確認の文（paradisMobileDeviceRequest.contribution.ts）も {@link paradisDescribeDeviceOpenSpace} で同じ判定を使う。
 // 控えはメモリにだけ持つ（スペースの working set は upstream の保存形式で、外から足す口が無い）。再読み込みすると消えるが、
 // 端末の割り当て自体は shared process の台帳に残るので、共有ダイアログの「モバイル端末」タブから画面を開ける。
 
@@ -29,32 +32,40 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces, paradisResolveInstanceSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisIsSettledOnSpace, paradisListSpaces, paradisResolveInstanceSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisAndroidAvdOf, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
 import { paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
+import { IParadisMobileCanvasModel } from './paradisMobileCanvasModel.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
-import { paradisOpenAndroidEditor, paradisOpenSimulatorEditor } from './paradisSimulatorPlacement.js';
+import { IParadisSimulatorOpenForPane, paradisOpenAndroidEditor, paradisOpenSimulatorEditor } from './paradisSimulatorPlacement.js';
+
+/** 見えている画面へ開くときの置き方。 */
+export interface IParadisDeviceOpenVisible {
+	readonly kind: 'visible';
+	/** 置いてよいエディタ部分だけ（頼んだペインのスペースにピン留めした補助ウィンドウ）。 */
+	readonly parts?: readonly IEditorPart[];
+	/** 置かないエディタ部分（ほかのスペースにピン留めした補助ウィンドウ）。 */
+	readonly exclude?: readonly IEditorPart[];
+	/** 開く先のスペース（今のスペースでない補助ウィンドウへ開くとき）。 */
+	readonly stateKey?: string;
+	/** どのスペースのペインか分からない。今のスペースに裏のタブで開く。 */
+	readonly unknownSpace?: true;
+}
 
 /** 端末の画面をどこへ開くか。 */
 export type ParadisDeviceOpenWhere =
-	/** 見えている画面へ開く。`parts` が無ければ今までどおりウィンドウ全体から置き場所を選ぶ。 */
-	| { readonly kind: 'visible'; readonly parts?: readonly IEditorPart[] }
+	| IParadisDeviceOpenVisible
 	/** 画面に出ていないスペース。切り替えたときに開く。 */
 	| { readonly kind: 'hidden'; readonly stateKey: string }
 	/** 切り替えの最中。済んでから決め直す。 */
 	| { readonly kind: 'later' }
-	/**
-	 * そのスペースへ切り替えられない（一覧に無い worktree・所属の分からないターミナル。どちらも画面に出ていない）。
-	 * タブは開かず、端末の起動だけをする（エージェントは承認された端末を使える）。
-	 */
-	| { readonly kind: 'unreachable' }
 	/** ペインが閉じた。何もしない。 */
 	| { readonly kind: 'closed' };
 
 export interface IParadisDeviceOpenWhereServices {
 	readonly paneTokenService: Pick<IParadisPaneTokenService, 'getInstanceForToken'>;
 	readonly terminalScopeService: Pick<IParadisTerminalScopeService, 'getStateKeyForInstance' | 'resolveScope' | 'isSharedPanelTerminal'>;
-	readonly workspaceSwitchService: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'isSwitching' | 'repositories'>;
+	readonly workspaceSwitchService: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'isSwitching' | 'pendingSwitchTargetKey' | 'repositories'>;
 	readonly worktreeService: Pick<IParadisWorktreeService, 'getWorktrees'>;
 	readonly auxiliaryWindowScopeService: Pick<IParadisAuxiliaryWindowScopeService, 'getPinnedParts'>;
 }
@@ -66,23 +77,50 @@ export function paradisResolveDeviceOpenWhere(services: IParadisDeviceOpenWhereS
 		return { kind: 'closed' };
 	}
 	const switchService = services.workspaceSwitchService;
-	if (switchService.isSwitching) {
+	const active = switchService.activeStateKey;
+	// 切り替えの最中か、次の切り替えが始まっている（行き先が今のスペースでない）。済んでから決め直す
+	if (switchService.isSwitching || (switchService.pendingSwitchTargetKey !== undefined && switchService.pendingSwitchTargetKey !== active)) {
 		return { kind: 'later' };
 	}
-	const active = switchService.activeStateKey;
-	const stateKey = paradisResolveInstanceSpace(services.terminalScopeService, active, instanceId);
-	// スペースを使っていないウィンドウ・今のスペースのペイン・所属がまだ決まっていないペインは今までどおり。
-	// 所属が決まっていないのは、承認ダイアログの間にペインが再接続しているときくらいで、承認は済んでいるので開く
-	if (stateKey === undefined || stateKey === active) {
+	if (active === undefined) {
+		// スペースを使っていないウィンドウ。振り分ける相手がいないので今までどおり
 		return { kind: 'visible' };
+	}
+	const pinnedElsewhere = (stateKey: string | undefined) => services.auxiliaryWindowScopeService.getPinnedParts().filter(part => !services.auxiliaryWindowScopeService.getPinnedParts(stateKey).includes(part));
+	const stateKey = paradisResolveInstanceSpace(services.terminalScopeService, active, instanceId);
+	if (stateKey === active) {
+		return { kind: 'visible', exclude: pinnedElsewhere(active) };
+	}
+	// 所属が分からない（復元で所属を引けず待避された・まだ決まっていない）か、一覧に無いスペース（実体を失った worktree、
+	// 所属の分からないターミナルの置き場）。勝手に別のスペースへ置かず、今のスペースに裏のタブで開く
+	const reachable = stateKey !== undefined && paradisListSpaces(switchService.repositories, services.worktreeService as IParadisWorktreeService).some(entry => entry.space === stateKey);
+	if (stateKey === undefined || !reachable) {
+		return { kind: 'visible', exclude: pinnedElsewhere(active), unknownSpace: true };
 	}
 	const pinned = services.auxiliaryWindowScopeService.getPinnedParts(stateKey);
 	if (pinned.length > 0) {
-		return { kind: 'visible', parts: pinned };
+		return { kind: 'visible', parts: pinned, stateKey };
 	}
-	// 一覧に無いスペース（実体を失った worktree、所属の分からないターミナルの置き場など）は、戻ってこられないので控えない
-	const reachable = paradisListSpaces(switchService.repositories, services.worktreeService as IParadisWorktreeService).some(entry => entry.space === stateKey);
-	return reachable ? { kind: 'hidden', stateKey } : { kind: 'unreachable' };
+	return { kind: 'hidden', stateKey };
+}
+
+/** 確認の文に出す、開く先のスペース。今のスペースに今までどおり開くなら undefined。 */
+export type ParadisDeviceOpenSpaceNote =
+	| { readonly kind: 'otherSpace'; readonly name: string }
+	| { readonly kind: 'unknownSpace' };
+
+/** 確認の文のための、開く先のスペース（開くときと同じ {@link paradisResolveDeviceOpenWhere} で決める）。 */
+export function paradisDescribeDeviceOpenSpace(services: IParadisDeviceOpenWhereServices, paneToken: string): ParadisDeviceOpenSpaceNote | undefined {
+	const where = paradisResolveDeviceOpenWhere(services, paneToken);
+	if (where.kind === 'visible' && where.unknownSpace) {
+		return { kind: 'unknownSpace' };
+	}
+	const stateKey = where.kind === 'hidden' || where.kind === 'visible' ? where.stateKey : undefined;
+	if (stateKey === undefined) {
+		return undefined;
+	}
+	const name = paradisListSpaces(services.workspaceSwitchService.repositories, services.worktreeService as IParadisWorktreeService).find(entry => entry.space === stateKey)?.name;
+	return name ? { kind: 'otherSpace', name } : { kind: 'unknownSpace' };
 }
 
 export interface IParadisDeviceOpenDeferralHost extends IParadisDeviceOpenWhereServices {
@@ -91,9 +129,11 @@ export interface IParadisDeviceOpenDeferralHost extends IParadisDeviceOpenWhereS
 	 * 見えている画面へ端末のタブを開く。開く前に待つもの（端末の名前の取得など）がある間に今のスペースが変わったら、
 	 * `unchanged()` が false になる。そのときは開かずに {@link ParadisDeviceOpenDeferrals.openForPane} からやり直す。
 	 */
-	open(paneToken: string, deviceId: string, parts: readonly IEditorPart[] | undefined, unchanged: () => boolean): Promise<void>;
+	open(paneToken: string, deviceId: string, where: IParadisDeviceOpenVisible, unchanged: () => boolean): Promise<void>;
 	/** 画面を控えた端末を、エージェントが使えるように起動する（止まっていれば）。 */
 	bootWhileHidden(deviceId: string): Promise<void>;
+	/** そのペインにその端末がまだ割り当てられているか（控えている間に外されたら開かない）。 */
+	isStillAttached(paneToken: string, deviceId: string): Promise<boolean>;
 }
 
 /**
@@ -129,7 +169,8 @@ export class ParadisDeviceOpenDeferrals extends Disposable {
 			case 'visible': {
 				const switchService = this._host.workspaceSwitchService;
 				const active = switchService.activeStateKey;
-				return this._host.open(paneToken, deviceId, where.parts, () => !switchService.isSwitching && switchService.activeStateKey === active);
+				// 開く直前も、次の切り替えが始まっていないか（行き先が立っていないか）まで見る
+				return this._host.open(paneToken, deviceId, where, () => !switchService.isSwitching && (active === undefined ? switchService.activeStateKey === undefined : paradisIsSettledOnSpace(switchService, active)));
 			}
 			case 'hidden': {
 				let devices = this._hidden.get(where.stateKey);
@@ -143,8 +184,6 @@ export class ParadisDeviceOpenDeferrals extends Disposable {
 			case 'later':
 				this._later.set(deviceId, paneToken);
 				return;
-			case 'unreachable':
-				return this._host.bootWhileHidden(deviceId);
 			case 'closed':
 				return;
 		}
@@ -154,8 +193,11 @@ export class ParadisDeviceOpenDeferrals extends Disposable {
 		const entries = [...this._later, ...(this._hidden.get(stateKey) ?? [])];
 		this._later.clear();
 		this._hidden.delete(stateKey);
-		// 決め直す（まだ別のスペースなら控え直し、閉じたペインの分は捨てる）
+		// 決め直す（まだ別のスペースなら控え直し、閉じたペイン・外された端末の分は捨てる）
 		for (const [deviceId, paneToken] of entries) {
+			if (!await this._host.isStillAttached(paneToken, deviceId).catch(() => true)) {
+				continue;
+			}
 			await this.openForPane(paneToken, deviceId).catch(() => undefined);
 		}
 	}
@@ -185,6 +227,7 @@ class ParadisSimulatorPaneOpener extends Disposable implements IParadisSimulator
 		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		@IParadisMobileCanvasModel private readonly _mobileCanvasModel: IParadisMobileCanvasModel,
 	) {
 		super();
 		this._deferrals = this._register(new ParadisDeviceOpenDeferrals({
@@ -193,8 +236,14 @@ class ParadisSimulatorPaneOpener extends Disposable implements IParadisSimulator
 			workspaceSwitchService,
 			worktreeService,
 			auxiliaryWindowScopeService,
-			open: (paneToken, deviceId, parts, unchanged) => this._open(paneToken, paneTokenService.getInstanceForToken(paneToken), deviceId, parts, unchanged),
+			open: (paneToken, deviceId, where, unchanged) => this._open(paneToken, paneTokenService.getInstanceForToken(paneToken), deviceId, where, unchanged),
 			bootWhileHidden: deviceId => this._bootWhileHidden(deviceId),
+			isStillAttached: async (paneToken, deviceId) => {
+				await this._mobileCanvasModel.refresh();
+				const snapshot = this._mobileCanvasModel.snapshot;
+				// 台帳を読めなかったときは、外されたとは言えないので開く
+				return snapshot.unavailableReason !== undefined || snapshot.attachments.some(attachment => attachment.paneToken === paneToken && attachment.deviceId === deviceId);
+			},
 		}));
 	}
 
@@ -212,8 +261,13 @@ class ParadisSimulatorPaneOpener extends Disposable implements IParadisSimulator
 	}
 
 	/** その端末の画面をペインのターミナルの右に開き、止まっていれば起動する。 */
-	private async _open(paneToken: string, paneInstanceId: number | undefined, deviceId: string, parts: readonly IEditorPart[] | undefined, unchanged: () => boolean): Promise<void> {
-		const forPane = { paneInstanceId, ...(parts ? { parts } : {}) };
+	private async _open(paneToken: string, paneInstanceId: number | undefined, deviceId: string, where: IParadisDeviceOpenVisible, unchanged: () => boolean): Promise<void> {
+		const forPane: IParadisSimulatorOpenForPane = {
+			paneInstanceId,
+			...(where.parts ? { parts: where.parts } : {}),
+			...(where.exclude ? { exclude: where.exclude } : {}),
+			...(where.unknownSpace ? { inactive: true } : {}),
+		};
 		const serial = paradisAndroidSerialOf(deviceId);
 		if (serial) {
 			const name = (await this._client.listAndroidDevices().catch(() => [])).find(candidate => candidate.serial === serial)?.name ?? serial;
