@@ -135,8 +135,6 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly viewButtons = new Map<ParadisBotConversationView, HTMLButtonElement>();
 	/** Bot ごとに選んだ表示（ターミナルを選んだ Bot だけ。既定は吹き出し）。 */
 	private views: ReadonlyMap<string, ParadisBotConversationView>;
-	/** ペインごとの、最後に見たチャット表示か（変わったときだけ、その Bot の表示として覚える）。 */
-	private readonly lastChatMode = new Map<number, boolean>();
 	/** 見出しの顔に最後に描いた値（同じなら描き直さない。目の移りを途中で切らない）。 */
 	private stripFaceKey: string | undefined;
 	/** 今のペインをチャット表示にしてから、会話が見つからないまま {@link CHAT_WAIT_MS} が過ぎた。 */
@@ -279,10 +277,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 				this.renderStrip();
 			}
 		}));
-		// チャット表示とターミナル表示の切り替えで、見出しを畳むか・帯を 1 段にするかを決め直す。利用者が切り替えた（見出しの
-		// ボタン・切り替えのキー・「ターミナルで操作が要ります」の帯の「ターミナルを開く」）なら、その Bot の表示として覚える
+		// チャット表示とターミナル表示の切り替えで、見出しを畳むか・帯を 1 段にするかを決め直す。覚える表示は見出しの 2 つの
+		// ボタンで選んだときだけ変える（「ターミナルで操作が要ります」の帯の「ターミナルを開く」・切り替えのキーは、その場で
+		// 一時的に替えるだけ）
 		this._register(this.agentChatService.onDidChangeChatActive(instanceId => {
-			this.rememberChatMode(instanceId);
 			if (instanceId === this.instanceId && this.botId !== undefined) {
 				this.syncHeaderHidden();
 				this.renderStrip();
@@ -480,9 +478,6 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			// その Bot でターミナルを選んでいたら、控えるだけでターミナルのまま見せる
 			this.agentChatService.pinChatMode(instanceId, true, this.viewOf(this.botId!) === 'chat');
 		}
-		if (!this.lastChatMode.has(instanceId)) {
-			this.lastChatMode.set(instanceId, this.agentChatService.isChatMode(instanceId));
-		}
 		if (!this.waitedLong && !this.waitTimer.isScheduled()) {
 			this.waitTimer.schedule();
 		}
@@ -523,30 +518,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		} else if (view === 'chat' && !chatMode) {
 			this.agentChatService.pinChatMode(instanceId, true);
 		}
-		// 切り替えの知らせ（{@link rememberChatMode}）でも覚えるが、もう同じ表示だったときもこの Bot の表示として残す
+		// 見出しのボタンで選んだ表示だけを、この Bot の表示として覚える
 		this.rememberView(view);
-	}
-
-	/** チャット表示に切り替えているかが変わったペインなら、そのペインの Bot の表示として覚える。 */
-	private rememberChatMode(instanceId: number): void {
-		const last = this.lastChatMode.get(instanceId);
-		if (last === undefined) {
-			return;
-		}
-		const instance = this.terminalService.getInstanceFromId(instanceId);
-		if (instance === undefined || instance.isDisposed) {
-			// 閉じたペインは忘れる（閉じたことで表示が替わったのを、利用者の選択と数えない）
-			this.lastChatMode.delete(instanceId);
-			return;
-		}
-		const chatMode = this.agentChatService.isChatMode(instanceId);
-		if (chatMode === last) {
-			return;
-		}
-		this.lastChatMode.set(instanceId, chatMode);
-		if (instanceId === this.instanceId && this.chatPane()) {
-			this.rememberView(chatMode ? 'chat' : 'terminal');
-		}
 	}
 
 	private rememberView(view: ParadisBotConversationView): void {

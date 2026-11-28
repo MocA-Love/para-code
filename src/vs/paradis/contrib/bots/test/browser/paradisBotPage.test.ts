@@ -650,7 +650,7 @@ suite('Paradis bots page overlay', () => {
 		});
 	});
 
-	test('選んだ表示は Bot ごとに覚え、開き直し（再起動）でもその表示で控える。帯の「ターミナルを開く」や切り替えのキーで替えても覚える', async () => {
+	test('見出しのボタンで選んだ表示だけを Bot ごとに覚え、開き直し（再起動）でもその表示で控える。帯の「ターミナルを開く」で一時的に開いても覚えない', async () => {
 		const storage = store.add(new InMemoryStorageService());
 		const first = setup(undefined, undefined, undefined, undefined, storage);
 		first.page.setInstance(1);
@@ -659,6 +659,8 @@ suite('Paradis bots page overlay', () => {
 		// 「ターミナルで操作が要ります」の帯のボタン（チャット表示の側がターミナルへ切り替える）
 		first.setChatActive(1, false);
 		const afterBand = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
+		(first.container.getElementsByClassName('paradis-bot-page-view-option')[1] as HTMLElement).click();
+		const afterButton = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
 		first.page.dispose();
 		// 再起動の後: ターミナルのまま控える（吹き出しへ切り替えない）
 		const second = setup(undefined, undefined, undefined, undefined, storage);
@@ -682,8 +684,9 @@ suite('Paradis bots page overlay', () => {
 		(third.container.getElementsByClassName('paradis-bot-page-view-option')[1] as HTMLElement).click();
 		const pruned = storage.get(PARADIS_BOT_VIEWS_STORAGE_KEY, StorageScope.APPLICATION);
 		third.page.dispose();
-		assert.deepStrictEqual({ afterBand, restored, tab, afterChat, chatNow, pruned, first: first.chatCalls, second: second.chatCalls }, {
-			afterBand: '{"release":"terminal"}',
+		assert.deepStrictEqual({ afterBand, afterButton, restored, tab, afterChat, chatNow, pruned, first: first.chatCalls, second: second.chatCalls }, {
+			afterBand: undefined,
+			afterButton: '{"release":"terminal"}',
 			restored: ['ターミナル'],
 			tab: 'true',
 			afterChat: undefined,
@@ -696,14 +699,14 @@ suite('Paradis bots page overlay', () => {
 
 	test('Bot の会話のペインの吹き出しの顔はその Bot の顔（様子が変われば渡し直す）。作った直後の挨拶の頼みは印にし、利用者の文はそのまま。見回りのペインには渡さない', async () => {
 		const { page, personas, bots, botsChanged, patrolPanes, panes } = setup();
-		const face = (persona: IParadisAgentChatPersona | undefined) => {
+		const face = (persona: IParadisAgentChatPersona | undefined, current = true) => {
 			if (persona === undefined) {
 				return undefined;
 			}
 			const parent = document.createElement('div');
-			persona.renderFace(parent);
+			persona.renderFace(parent, current);
 			const element = parent.firstElementChild as HTMLElement;
-			return `${element.className} ${element.dataset.color} ${element.dataset.state}`;
+			return `${element.className} ${element.dataset.color} ${element.dataset.state} ${element.dataset.props}${element.dataset.still === 'true' ? ' still' : ''}`;
 		};
 		bots[0] = { ...bots[0], needsYou: 0 };
 		page.setInstance(1);
@@ -719,12 +722,15 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual({
 			idle: face(idle),
 			working: face(working),
+			// 過去の発言の顔は動かさず、小道具も出さない
+			past: face(working, false),
 			greeting: idle?.promptLabel(`${PARADIS_BOT_GREETING_PROMPT}\n`),
 			user: idle?.promptLabel('こんにちは'),
 			patrol: personas.get(2),
 		}, {
-			idle: 'paradis-bot-face blue idle',
-			working: 'paradis-bot-face blue work',
+			idle: 'paradis-bot-face blue idle all',
+			working: 'paradis-bot-face blue work all',
+			past: 'paradis-bot-face blue idle none still',
 			greeting: 'Bot を作ったので、自己紹介を頼みました',
 			user: undefined,
 			patrol: undefined,

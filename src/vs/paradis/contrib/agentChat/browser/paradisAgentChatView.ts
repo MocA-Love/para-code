@@ -249,6 +249,8 @@ export class ParadisAgentChatView extends Disposable {
 	private lastScrollTop = 0;
 	private visible = false;
 	private readonly renderScheduler = this._register(new RunOnceScheduler(() => this.render(), 0));
+	/** 発言の顔のうち、今の様子を表す 1 つ（いちばん新しいもの）を決め直す（描いた発言が画面へ付いた後に）。 */
+	private readonly personaFaceScheduler = this._register(new RunOnceScheduler(() => this.refreshPersonaFaces(false), 0));
 	private readonly ticker = this._register(new IntervalTimer());
 
 	constructor(
@@ -872,7 +874,10 @@ export class ParadisAgentChatView extends Disposable {
 		const logo = state === undefined ? undefined : paradisAgentDescriptor(state.agent)?.logo;
 		if (persona !== undefined) {
 			face.classList.add(PERSONA_FACE_CLASS);
-			persona.renderFace(face);
+			// いったん静かな顔で描き、画面へ付いた後に今の顔を決め直す
+			face.dataset.current = 'false';
+			persona.renderFace(face, false);
+			this.personaFaceScheduler.schedule();
 			if (this.personaFaces.size >= PERSONA_FACE_PRUNE_SIZE) {
 				// 外れた発言の顔を溜めない
 				for (const old of [...this.personaFaces]) {
@@ -899,15 +904,33 @@ export class ParadisAgentChatView extends Disposable {
 
 	/** 持ち主の顔が変わった（様子が変わった）ら、描いてある顔だけを描き直す（発言の吹き出しは作り直さない）。 */
 	private redrawPersonaFaces(): void {
+		this.refreshPersonaFaces(true);
+	}
+
+	/**
+	 * いちばん新しい発言の顔（生成中の返答があればそれ）だけを今の顔にし、ほかは静かな顔にする。`all` が false なら、
+	 * 今の顔かどうかが変わった顔だけを描き直す。
+	 */
+	private refreshPersonaFaces(all: boolean): void {
 		const persona = this.persona();
+		let latest: HTMLElement | undefined;
 		for (const face of [...this.personaFaces]) {
 			if (!face.isConnected) {
 				// 描き直し・切り替えで外れた発言の顔は忘れる
 				this.personaFaces.delete(face);
 				continue;
 			}
-			clearNode(face);
-			persona?.renderFace(face);
+			if (latest === undefined || latest.compareDocumentPosition(face) & Node.DOCUMENT_POSITION_FOLLOWING) {
+				latest = face;
+			}
+		}
+		for (const face of this.personaFaces) {
+			const current = face === latest;
+			if (all || face.dataset.current !== String(current)) {
+				face.dataset.current = String(current);
+				clearNode(face);
+				persona?.renderFace(face, current);
+			}
 		}
 	}
 

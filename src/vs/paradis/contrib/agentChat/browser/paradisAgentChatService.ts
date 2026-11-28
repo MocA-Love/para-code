@@ -18,8 +18,11 @@ import { IParadisAgentChatGuide } from '../common/paradisAgentChat.js';
  * agentChat は Bot を知らないので、Bot の側がこの形で渡す。
  */
 export interface IParadisAgentChatPersona {
-	/** エージェントの発言の左の顔を描く（エージェントの種類のロゴの代わり）。様子が変わったら、持ち主が新しいものを渡し直す。 */
-	renderFace(parent: HTMLElement): void;
+	/**
+	 * エージェントの発言の左の顔を描く（エージェントの種類のロゴの代わり）。様子が変わったら、持ち主が新しいものを渡し直す。
+	 * `current` は今の様子を表す顔（いちばん新しい発言・生成中の返答）か。過去の発言の顔は動かさない静かな顔にする。
+	 */
+	renderFace(parent: HTMLElement, current: boolean): void;
 	/** Para Code が送った指示なら、利用者の発言の吹き出しの代わりに出す短い印の文。利用者が打った文なら undefined。 */
 	promptLabel(text: string): string | undefined;
 }
